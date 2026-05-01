@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local runtime state
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+logs/
+var/
+
+# Output directory of the local proxy (runtime)
+~/.local/share/llm-tracker/

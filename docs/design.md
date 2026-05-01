@@ -407,8 +407,7 @@ Claude Code는 대화 상태를 자체 관리하므로, 프록시 입장에서 "
 
 - 세션 식별 전략 확정(§6.2).
 - Anthropic API ToS와 연구 목적 수집/재사용의 합법성 검토(법무 자문 필요).
-- 중앙 서버를 별도 레포로 둘지, 이 레포에 `server/`로 같이 둘지(권장: 같은 레포).
-  스택 자체는 §11에 잠정 봉인 — ADR-0004로 정식 봉인 예정.
+- 중앙 서버 스택과 코드 위치는 ADR-0004에서 봉인됨 (Supabase + Fly.io + 동일 레포).
 - 연구 참여자 동의서 흐름(UX, 저장 기간, 삭제 요청 프로세스).
 - Stage 2 judge 모델 확정(Claude Haiku vs 로컬 모델). 비용·프라이버시 트레이드오프.
 - 연속 차단 시 사용자 경험(Claude Code가 무한 retry할 가능성 검토).
@@ -426,34 +425,23 @@ Claude Code는 대화 상태를 자체 관리하므로, 프록시 입장에서 "
    엔드포인트 또는 read-only DB 접근.
 5. **Admin UI** (후순위) — task 정의 관리, false positive 검토.
 
-### 11.2 데모/Phase 1 옵션 (무료 우선)
+### 11.2 데모 스택 (확정: Supabase + Fly.io)
 
-데모 단계에선 **무료**로 시작하고, 코드 구조(§11.9)를 깔끔히 두어 마이그레이션 비용을
-작게 유지한다. 두 갈래.
+ADR-0004로 봉인됨. 데모는 무료 한도 안에서 외부에서 접근 가능한 형태로 운영한다.
 
-**옵션 A — 로컬 docker-compose + 터널 (가장 단순)**
+- **DB**: **Supabase** Postgres 무료 한도. 단, **표준 Postgres 프로토콜만** 사용한다
+  (RLS 자동·RPC·Edge Function·Storage·Realtime 등 Supabase 전용 기능 사용 금지).
+  이렇게 두면 self-host Postgres / Neon / RDS로 이전이 환경변수 한 줄로 끝난다.
+- **앱**: **Fly.io** 무료 한도. Dockerfile 푸시로 배포. Persistent VM(콜드스타트 없음).
+- **TLS**: Fly.io 기본 제공 (커스텀 도메인은 Phase 1 후반 결정).
+- **TaskDefinition 서명 키**: 운영자 머신에 보관, Fly.io secret으로 주입. 공개키만
+  코드에 임베딩(클라이언트 검증용).
 
-- Postgres 16 + FastAPI 앱(`llm-tracker-server`)을 한 `docker-compose.yaml`로.
-- 운영자 한 명이 자기 머신/사내 서버에 띄움.
-- 외부 노출 필요 시 `cloudflared tunnel`(가입 무료) 또는 `ngrok`(무료 한도 충분).
-- 장점: 클라우드 가입 불필요, 5분 셋업, 비용 0.
-- 단점: 운영자 머신이 꺼지면 중앙도 멈춤. 데모/연구 시작점으론 OK.
-
-**옵션 B — 클라우드 무료 한도 (Neon + Fly.io)**
-
-- DB: **Neon** Postgres 무료 한도 (~0.5 GB, scale-to-zero, 일반 Postgres 프로토콜).
-  Neon-specific 기능을 쓰지 않으면 self-host Postgres로 그대로 이전 가능.
-- 앱: **Fly.io** 무료 한도(작은 인스턴스 3개). Dockerfile 푸시 한 번으로 배포.
-- 대안: Railway($5/월 무료 크레딧), Render(슬립 있음), Supabase(Postgres + auth 한 번에).
-  모두 일반 Postgres 프로토콜이면 OK.
-- 장점: 항상 켜져 있음, 외부 접근 가능, 운영자 머신과 독립.
-- 단점: 가입·CLI·secret 관리. 무료 한도 초과 시 과금 주의.
-
-**권장**: 데모 시작 = **옵션 A**. 외부 연구자가 직접 접속해야 할 때 **옵션 B**로 전환.
-코드 구조가 §11.9 원칙을 지키면 환경변수(`DATABASE_URL` 등)만 바꿔 오갈 수 있다.
+**코드 위치**: 동일 레포 `src/llm_tracker_server/`. 자세한 디렉토리는 §11.8.
 
 **Phase 1 후반(production)**: §11.3 트리거에 따라 self-host VM(Hetzner ~€4/월) +
-Postgres 매니지드 백업. ClickHouse·MinIO 도입은 그 다음.
+Postgres 매니지드 백업. ClickHouse·MinIO 도입은 그 다음. Supabase에서 self-host로
+이전은 `pg_dump` 한 번 + `DATABASE_URL` 변경.
 
 ### 11.3 확장 트리거 (Phase 2 이후 도입)
 
@@ -664,11 +652,10 @@ src/llm_tracker_server/
 
 ### 11.9 무엇이 아직 결정 안 됐나
 
-- **중앙 서버 코드를 어디에 둘 것인가** (이 레포에 `server/` 패키지로 vs 별도 레포).
-  현재 권장: **같은 레포**. 모델/스키마 공유로 drift 위험 감소. ADR로 봉인 필요.
-- 호스팅 환경(자체 VM vs 클라우드 매니지드 RDS).
 - 서명 키 회전 정책.
 - 분석 인터페이스의 형태(SQL 직접 vs REST). 지표 담당자 작업 스타일에 맞춰 결정.
+- Supabase auth를 enrollment에 활용할지(편함, 약간의 vendor 결합) vs 자체 토큰 발급
+  (복잡, 이식성 우수). ADR-0004 미해결 항목.
 
 ---
 

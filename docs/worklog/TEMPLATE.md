@@ -1,43 +1,44 @@
-# YYYY-MM-DD · <짧은 제목>
+# YYYY-MM-DD · <short title>
 
-**작업자**: Claude Code
-**세션 트리거**: (사용자가 내린 지시 원문 또는 요약)
-**관련 문서**: `docs/design.md#section`, ADR-NNNN, 이전 워크로그 …
+**Author**: Claude Code
+**Session trigger**: (the user's instruction, verbatim or summarized)
+**Related docs**: `docs/design.md#section`, ADR-NNNN, prior worklog ...
 
-## 의도 해석
+## Interpretation
 
-(시킨 걸 어떻게 이해했는지. 모호했던 부분과 어느 쪽으로 해석했는지. 사용자에게
-질문해서 명확히 한 부분이 있으면 링크/인용.)
+(How you read the request. What was ambiguous and which way you interpreted
+it. If you asked the user a clarifying question, link / quote it.)
 
-## 한 일
+## What was done
 
-- 생성: `path/to/file.py` — 한 줄 요약
-- 수정: `path/to/other.py` — 한 줄 요약
-- 삭제: …
+- Created `path/to/file.py` — one-line summary
+- Modified `path/to/other.py` — one-line summary
+- Deleted ...
 
-## 결정
+## Decisions
 
-- **A 대신 B를 골랐다**: 이유 ….
-  (되돌리기 어려운 결정이면 ADR로 옮긴다.)
+- **Picked B instead of A**: reason ...
+  (If hard-to-reverse, lift to an ADR.)
 
-## 검증
+## Verification
 
 ```
 $ pytest tests/test_proxy.py -q
-…………                                                      12 passed in 1.2s
+............                                                  12 passed in 1.2s
 ```
 
-(또는 수동 검증 과정, 로그 발췌, 스크린샷 경로.)
+(Or manual verification steps, log excerpts, screenshot paths.)
 
-## 남은 일 / 알려진 한계
+## What's left / known limits
 
-- …
-- …
+- ...
+- ...
 
-## 이어받는 사람에게
+## Handoff
 
-(다음 세션의 Claude Code 또는 사람을 위한 힌트. 지금 멈춘 이유, 다음 한 걸음.)
+(For the next session — Claude Code or human — why we paused here, the
+single next step.)
 
-## 제안 (손대지 않은 것)
+## Suggestions (untouched)
 
-- …
+- ...

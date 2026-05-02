@@ -1,276 +1,376 @@
-# Claude Code 작업 지침 (CLAUDE.md)
+# Claude Code Working Guide (CLAUDE.md)
 
-이 문서는 **Claude Code가 이 리포지토리에서 작업할 때 따라야 하는 규칙**을 정의한다.
-전략·설계 논의는 Claude Cowork에서 진행되고, 이 문서와 `docs/` 하위 문서들에 결론이
-반영된다. Claude Code는 여기서 **구현**을 담당한다.
+This document defines the rules Claude Code must follow when working in this
+repository. Strategy and design discussions happen in Claude Cowork; the
+results land in this file and the documents under `docs/`. Claude Code's job
+here is **implementation**.
 
-## 1. 프로젝트 한 눈에 보기
+## 1. Project at a glance
 
-- **목적**: Claude Code 같은 CLI 코딩 에이전트와 LLM API 서버 사이에 끼우는 로컬
-  사이드카 프록시 **프레임워크**. 코어는 hook 점·capability·egress 통제만 제공하고
-  *기능*(scope guard, drift 추적, 데이터 업로드 등)은 모두 **플러그인**으로 구현.
-- **세 가지 핵심 원칙** (충돌 시 위에서부터):
-  1. 확장성 우선 — 새 기능 = 코어 수정 없이 플러그인 추가.
-  2. 보안 우선 — 데이터 egress 기본 OFF, capability 명시 승인, 모든 행동 audit.
-  3. 모드 인지 — L(local-only)/A(audit-light)/R(research) 모드별 capability 강제.
-- **배포 형태**: 로컬 사이드카. 협업자들이 플러그인 추가로 기능을 확장.
-- **언어/스택**: Python 3.11+, FastAPI, httpx, SQLite, Alembic.
-- **스코프**: 코어는 Claude Code(Anthropic Messages API) 우선. 어댑터 추상화만
-  열어두고 OpenAI/Gemini 구현은 후순위. 도메인 기능은 코어 밖 — 플러그인.
+- **Purpose**: A local sidecar proxy **framework** between CLI coding agents
+  (Claude Code, etc.) and LLM API servers. The core only provides hook points,
+  capability gating, and egress control. Actual *features* (scope guard, drift
+  metrics, data upload, etc.) are built as **plugins**.
+- **Three core principles** (top wins on conflict):
+  1. Extensibility first — new feature = new plugin, not a core change.
+  2. Security first — data egress off by default, capabilities granted
+     explicitly, every action audited.
+  3. Mode-aware — the framework knows the deployment mode (L/A/R) and
+     enforces what capabilities each mode permits.
+- **Distribution**: Local sidecar. Collaborators extend functionality via plugins.
+- **Language/stack**: Python 3.11+, FastAPI, httpx, SQLite, Alembic.
+- **Scope**: Core targets Claude Code (Anthropic Messages API) first. Adapter
+  abstraction exists, but OpenAI/Gemini implementations are deferred. Domain
+  features live outside the core — plugins.
 
-자세한 설계는 `docs/design.md` (특히 §4 핵심 원칙, §6 아키텍처, §7 보안 모델),
-플러그인 작성은 `docs/plugins.md`. 결정을 임의로 뒤집지 말 것 — ADR 거치기.
+For detailed design see `docs/design.md` (especially §4 core principles, §6
+architecture, §7 security model). For plugin authoring see `docs/plugins.md`.
+Don't reverse decisions silently — open an ADR.
 
-## 2. 역할 분담 (중요)
+## 2. Engineering principles (general)
 
-| 영역 | 주체 | 산출물 |
-|---|---|---|
-| 프로젝트 방향, 아키텍처 결정, 스코프 조정 | 사람 + Claude Cowork | `docs/design.md`, `docs/decisions/*.md` |
-| 코드 구현, 리팩토링, 테스트, 버그 수정 | Claude Code | `src/`, `tests/`, `docs/worklog/*.md` |
+These behavioral guidelines apply to all coding work, regardless of project
+specifics. They bias toward caution over speed. For trivial tasks, use judgment.
 
-**Claude Code는 아키텍처를 바꾸는 결정을 혼자 내리지 않는다.** 예: 새 의존성 추가,
-저장소 스키마 변경, 프록시 동작 방식 변경, 공개 인터페이스(CLI 플래그, 환경변수,
-이벤트 스키마) 변경. 이런 게 필요하다고 판단되면 **작업을 멈추고** 워크로그에
-"decision needed" 섹션을 쓴 뒤 사용자에게 알린다.
+### 2.1 Think before coding
 
-## 3. 작업 추적 (필수)
+Don't assume. Don't hide confusion. Surface tradeoffs.
 
-본 프로젝트는 사용량 제한·세션 cutoff가 잦다고 가정한다. **세션이 갑자기 끊겨도
-다음 세션이 잃는 정보가 거의 없도록** 일하는 게 규약의 목적이다.
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them — don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
 
-### 3.1 세 개의 진입점
+### 2.2 Simplicity first
 
-| 파일 | 역할 | 누가 갱신 |
-|---|---|---|
-| `docs/STATUS.md` | "지금 어디 와 있나" 한 페이지. 새 세션의 첫 진입점. | 매 체크포인트마다 |
-| `docs/worklog/<YYYY-MM-DD>-<slug>.md` | 현 세션의 작업 일지. 의도·결정·검증 등 *서사*. | 매 의미 단위 작업마다 |
-| git log | 코드 차원의 체크포인트. *정확히 무엇이 바뀌었는지*. | 매 commit마다 (자동) |
+Minimum code that solves the problem. Nothing speculative.
 
-세 개가 서로를 가리킨다(STATUS는 worklog와 commit 해시를 가리키고, worklog는 commit
-해시를 인용하고, commit은 worklog를 Refs로). 한 군데만 봐도 다른 두 개로 점프 가능.
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
 
-### 3.2 워크로그 규칙
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes,
+simplify.
 
-- 위치: `docs/worklog/YYYY-MM-DD-<slug>.md`
-- 템플릿: `docs/worklog/TEMPLATE.md`
-- 한 세션에 여러 작업을 하면 같은 파일에 합친다(같은 날짜 + 같은 주제).
-- 주제가 바뀌면 새 파일.
-- **작업 완료 시점이 아니라 작업 중에 갱신**한다. cutoff에 대비.
+### 2.3 Surgical changes
 
-워크로그에 반드시 포함:
-- 요청(사용자가 시킨 것)과 의도 해석
-- 수정/생성한 파일 목록 (경로 + 한 줄 요약 + 관련 commit 해시)
-- 내린 결정과 근거
-- 검증(테스트/실행/수동확인) 내용과 결과
-- 남은 일, 알려진 한계, **"이어받는 사람에게"** 섹션
+Touch only what you must. Clean up only your own mess.
 
-### 3.3 체크포인트 규칙 (cutoff 대비)
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it — don't delete it.
 
-다음 시점 *각각이 하나의 체크포인트*다. 체크포인트마다 **세 개를 한 단위로** 처리한다.
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
 
-체크포인트 시점:
-- 의미 있는 코드 변경 단위가 끝났을 때
-- 테스트가 새로 통과했을 때
-- 의존성/마이그레이션을 추가한 직후
-- 한 작업 단위(roadmap 체크리스트 한 줄)가 끝났을 때
-- **사용자가 "체크포인트" 또는 "pause"를 요청했을 때**
+Test: every changed line should trace directly to the user's request.
 
-매 체크포인트의 세 단위:
+### 2.4 Goal-driven execution
 
-1. **코드 commit** — CLAUDE.md §9 규칙대로.
-2. **워크로그 갱신** — "한 일" 섹션에 새 commit 해시 추가, "남은 일/이어받는 사람"
-   섹션을 *현재 시점 기준*으로 다시 쓴다. 작업 도중에 적었던 옛 메모는 두지 말 것.
-3. **STATUS.md 갱신** — 최종 업데이트 시각, 활성 worklog 경로, 최근 커밋 3–5개,
-   "지금 멈춘 위치", "다음 한 걸음"을 갱신.
+Define success criteria. Loop until verified.
 
-이 셋을 한 atomic unit으로 처리하지 않으면 cutoff 시 다음 세션이 길을 잃는다.
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
 
-### 3.4 ADR
-
-아키텍처 수준의 결정은 워크로그 대신 **ADR**.
-
-- 위치: `docs/decisions/NNNN-<slug>.md`
-- 템플릿: `docs/decisions/TEMPLATE.md`
-- ADR은 되돌리기 어려운/영향이 넓은 결정에만. 사소한 구현 선택은 워크로그로 충분.
-
-## 4. 작업 전 체크리스트
-
-새 작업을 시작할 때마다:
-
-1. **`docs/STATUS.md` 를 가장 먼저 읽는다.** 거기서 가리키는 worklog와 다음 한
-   걸음을 확인.
-2. STATUS가 가리키는 worklog를 읽고, 마지막 "이어받는 사람에게" 섹션을 본다.
-3. `git log -5 --oneline` 로 최근 commit 흐름 확인. 필요하면 마지막 commit의
-   `git show` 로 차이 확인.
-4. `docs/design.md`, `docs/roadmap.md` 에서 현 phase의 우선순위 재확인.
-5. 관련 ADR(`docs/decisions/`) 확인.
-6. **시작 전 한 줄 announce**: "STATUS.md에 적힌 다음 한 걸음 = X. 지금부터 그것을
-   시작합니다." 사용자가 다른 걸 원하면 그 시점에 끼어들 수 있게.
-7. 불분명하거나 아키텍처에 영향 주는 부분이 있으면 **작업 시작 전** 사용자에게 질문.
-
-### 4.1 표준 "이어받기" 프롬프트
-
-사용자가 새 Claude Code 세션을 열고 다음 한 줄만 던지면 위 절차가 자동 실행된다:
-
-> 이어받기. STATUS.md → 거기 적힌 worklog → `git log -5` 순서로 읽고, "다음 한
-> 걸음"을 한 줄로 announce 후 그대로 수행해. 도중에 §3.3 체크포인트 규칙대로
-> 갱신하면서 진행.
-
-## 5. 코드/구현 규약
-
-- Python 3.11+ 문법 가정. 타입 힌트는 가능하면 쓰고, public 함수/클래스는 필수.
-- 포매터/린터: `ruff` (format + lint). 커밋 전 항상 실행.
-- 테스트: `pytest`. 순수 함수는 단위 테스트, 프록시 동작은 통합 테스트 (가짜
-  Anthropic 서버 띄워서 end-to-end).
-- 비동기 기본(`async def`). 블로킹 IO 금지.
-- 로깅은 `structlog`. print 쓰지 말 것.
-- 설정은 `pydantic-settings` 기반. 환경변수 이름은 `LLMTRACK_*` 접두사.
-- 시크릿/PII는 로그에도 남기지 않는다. 스크러빙은 `llm_tracker.scrubbers`에서만.
-- 파일 상단 주석은 과하게 달지 말 것. 모듈 docstring은 OK.
-
-## 6. 검증 (Verify) 규약
-
-"작업 완료"라고 보고하기 전에 최소 한 가지의 **능동적 검증**이 있어야 한다.
-
-- 함수 추가/수정 → 해당 테스트 실행 결과를 워크로그에 복붙.
-- 프록시 동작 변경 → 로컬에서 실제 플로우를 재현한 로그/스크린샷.
-- 문서만 수정 → 관련 링크가 깨지지 않는지 확인.
-- 의존성 추가 → `pip install -e .` 또는 동등 절차가 깨끗하게 끝나는지 확인.
-
-"테스트는 통과할 것으로 보인다" 같은 추정형 진술 금지. 실행하거나, 못 했으면 못 했다고 쓴다.
-
-## 7. 스코프 드리프트 방지
-
-- 요청되지 않은 리팩토링·최적화 금지. 눈에 띄는 개선점은 워크로그에 "제안" 섹션으로 적어두되 손대지 않는다.
-- 포매팅 대량 변경을 기능 PR에 섞지 말 것. 분리.
-- 요청이 모호하면 **최소 스코프**로 해석하고 질문한다.
-
-## 8. 공개 인터페이스
-
-아래 항목은 "바뀌면 하위 시스템·플러그인 생태가 깨지는" 계약이다. 변경은 ADR 필수.
-
-- CLI 명령 이름 및 플래그 (`llm-tracker ...`)
-- 환경변수 이름 (`LLMTRACK_*`, `ANTHROPIC_BASE_URL` 포함)
-- 프록시가 듣는 경로 (Anthropic Messages API 모양을 따름)
-- **Hook 라이프사이클** (8개 hook의 이름·시점·반환값 의미)
-- **Capability 어휘** (capability 이름·의미)
-- **Plugin manifest 스키마** (`plugin.toml` 키와 검증 규칙)
-- **콘텐츠 레벨 정의** (L0/L1/L2/L3)
-- 코어 SQLite 스키마 (`exchanges`, `events`, `tool_calls`, `audit_log`)
-- 모드별 capability 정책 (L/A/R 각각 무엇이 허용/거부되는지)
-- 서명 검증 규칙(plugin manifest, TaskDefinition 등)
-
-## 9. Git 커밋 규칙 (자동 커밋 활성)
-
-Claude Code는 비자명한 변경 단위마다 **자동으로 git commit**한다.
-**`git push`는 절대 자동으로 하지 않는다** — 사람이 직접 한다.
-
-### 커밋 시점
-
-- 워크로그 엔트리의 한 작업 단위가 완료될 때마다.
-- 의존성 변경(`pyproject.toml` 수정 + lock 갱신) 후.
-- Alembic 마이그레이션 추가 후.
-- 테스트가 통과한 직후. 실패 상태로 커밋 금지.
-
-작업 도중 임시 상태(빌드 깨짐, 테스트 실패)는 **커밋하지 않는다**. 그런 경우엔
-`docs/worklog/`만 업데이트하고 다음 단계로 넘어간다.
-
-### 커밋 메시지 형식
+For multi-step tasks, state a brief plan:
 
 ```
-<scope>: <한 줄 요약 (50자 이내)>
+1. [step] → verify: [check]
+2. [step] → verify: [check]
+3. [step] → verify: [check]
+```
 
-- 변경한 핵심 내용 1
-- 변경한 핵심 내용 2
+Strong success criteria let you loop independently. Weak criteria ("make it
+work") require constant clarification.
+
+These principles are working if: fewer unnecessary changes in diffs, fewer
+rewrites due to overcomplication, and clarifying questions arrive before
+implementation rather than after mistakes.
+
+## 3. Language and communication
+
+- **All artifacts** in this repository — source code, comments, commit
+  messages, worklogs, ADRs, design docs, status pages, READMEs — are written
+  in **English**. This applies to anything you create or edit, regardless of
+  the language used in the conversation.
+- **Chat replies to the user** are written in **Korean** (the user's
+  preferred language). Use natural, professional Korean.
+- This split is deliberate: English in artifacts gives consistent search,
+  better tooling and model performance; Korean in chat reduces friction for
+  the user.
+
+## 4. Roles (important)
+
+| Area | Owner | Output |
+|---|---|---|
+| Direction, architecture, scope | Human + Claude Cowork | `docs/design.md`, `docs/decisions/*.md` |
+| Code, refactoring, tests, fixes | Claude Code | `src/`, `tests/`, `docs/worklog/*.md` |
+
+**Claude Code does not make architectural decisions alone.** Examples: adding
+a new dependency, changing storage schema, changing proxy behavior, changing
+public interfaces (CLI flags, env vars, event schema). When such a need
+arises, **stop**, write a "decision needed" section in the worklog, and tell
+the user.
+
+## 5. Work tracking (required)
+
+This project assumes session cutoffs from rate limits are common. The whole
+point of these conventions is to **lose almost nothing across cutoffs**.
+
+### 5.1 Three entry points
+
+| File | Role | Updated by |
+|---|---|---|
+| `docs/STATUS.md` | "Where are we right now?" One-page entry for any new session. | Every checkpoint |
+| `docs/worklog/<YYYY-MM-DD>-<slug>.md` | Current session's narrative — intent, decisions, verification. | Every meaningful unit of work |
+| git log | Code-level checkpoints — what *exactly* changed. | Every commit (automatic) |
+
+These three reference each other (STATUS points to worklog and commit hashes;
+worklog cites commit hashes; commits use worklog as `Refs:`). Read any one
+and you can jump to the other two.
+
+### 5.2 Worklog rules
+
+- Path: `docs/worklog/YYYY-MM-DD-<slug>.md`
+- Template: `docs/worklog/TEMPLATE.md`
+- One file per (date, topic). New topic → new file.
+- **Update during work, not after.** That's the whole point of cutoff resilience.
+
+A worklog must contain:
+- The user's request and your interpretation.
+- Files created/modified (path + one-line summary + commit hash).
+- Decisions made and their rationale.
+- Verification — tests run, manual checks, results.
+- What's left, known limits, a **"Handoff"** section.
+
+### 5.3 Checkpoint rule (cutoff-resilient)
+
+Each of these moments is a *checkpoint*. At every checkpoint, do **three
+things as one atomic unit**.
+
+Triggers:
+- A meaningful unit of code change is complete.
+- A test newly passes.
+- A dependency or migration is added.
+- A roadmap checklist line completes.
+- **The user says "checkpoint" or "pause".**
+
+The three units:
+
+1. **Commit code** — per CLAUDE.md §11.
+2. **Update worklog** — append the new commit hash to "What was done", and
+   rewrite "What's left / Handoff" as of *now*. Don't leave stale mid-work
+   notes.
+3. **Update STATUS.md** — refresh the timestamp, active worklog path, last
+   3–5 commits, "Where we paused", and "Next single step".
+
+If you don't bundle these three, the next session is lost.
+
+### 5.4 ADR
+
+Architecture-level decisions go in **ADRs**, not the worklog.
+
+- Path: `docs/decisions/NNNN-<slug>.md`
+- Template: `docs/decisions/TEMPLATE.md`
+- ADRs are for hard-to-reverse / wide-impact decisions. Smaller
+  implementation choices belong in the worklog.
+
+## 6. Pre-task checklist
+
+At the start of any new task:
+
+1. **Read `docs/STATUS.md` first.** Note the worklog it points to and the
+   "Next single step".
+2. Read that worklog, especially its last "Handoff" section.
+3. `git log -5 --oneline` for the most recent commits. `git show` the latest
+   if needed.
+4. Re-read `docs/design.md` and `docs/roadmap.md` for the current phase's
+   priorities.
+5. Check related ADRs in `docs/decisions/`.
+6. **Announce in one line before starting**: "Per STATUS.md the next step
+   is X. Starting that now." Gives the user a chance to redirect.
+7. If anything is unclear or architecture-touching, ask **before** starting.
+
+### 6.1 Standard "resume" prompt
+
+When the user opens a new Claude Code session and says only:
+
+> Resume. Read STATUS.md → the worklog it points to → `git log -5`. Announce
+> the next single step in one line, then execute it. Update per §5.3 along
+> the way.
+
+…that triggers the entire flow above.
+
+## 7. Code conventions
+
+- Python 3.11+ syntax. Type hints encouraged; required on public functions
+  and classes.
+- Formatter/linter: `ruff` (format + lint). Run before every commit.
+- Tests: `pytest`. Pure functions get unit tests; proxy behavior gets
+  integration tests against a fake Anthropic server end-to-end.
+- Async by default (`async def`). No blocking IO.
+- Logging: `structlog`. No `print`.
+- Configuration: `pydantic-settings`. Env var prefix `LLMTRACK_*`.
+- Secrets/PII never appear in logs. Scrubbing happens only inside
+  `llm_tracker.scrubbers`.
+- Don't pile comments at the top of files. Module docstrings are fine.
+
+## 8. Verification
+
+Before reporting "done", you must have at least one **active verification**.
+
+- Added/changed a function → paste the test run output into the worklog.
+- Changed proxy behavior → paste the local end-to-end logs/screenshots.
+- Documentation only → confirm internal links resolve.
+- Added a dependency → confirm `pip install -e .` (or equivalent) succeeds clean.
+
+No language like "tests should pass". Either run them, or say you couldn't.
+
+## 9. Scope drift control
+
+- Don't refactor or optimize what wasn't asked. Note observed improvements
+  in a "Suggestions" section of the worklog without acting.
+- Don't mix mass formatting changes into a feature commit. Split.
+- When the request is ambiguous, interpret minimally and ask.
+
+## 10. Public interfaces
+
+The following are contracts — changing them breaks downstream systems and
+plugins. Changes require an ADR.
+
+- CLI command names and flags (`llm-tracker ...`).
+- Environment variable names (`LLMTRACK_*`, `ANTHROPIC_BASE_URL`).
+- The HTTP paths the proxy listens on (Anthropic Messages API shape).
+- **Hook lifecycle** — names, timing, and meaning of return values for the
+  8 hooks.
+- **Capability vocabulary** — names and meaning of each capability.
+- **Plugin manifest schema** — keys and validation in `plugin.toml`.
+- **Content levels** — definitions of L0/L1/L2/L3.
+- Core SQLite schema (`exchanges`, `events`, `tool_calls`, `audit_log`).
+- Mode policies (what L/A/R each permit and deny).
+- Signing rules for plugin manifests, TaskDefinitions, etc.
+
+## 11. Git commit rules (auto-commit on)
+
+Claude Code **commits automatically** at every meaningful unit of change.
+**Never push automatically** — humans push.
+
+### When to commit
+
+- A worklog work-unit completes.
+- After dependency changes (`pyproject.toml` + lockfile updated).
+- After adding an Alembic migration.
+- Right after tests pass. **Never commit a failing state.**
+
+If the tree is mid-broken (build broken, tests red), don't commit. Update
+the worklog and proceed.
+
+### Message format
+
+```
+<scope>: <one-line summary, ≤ 50 chars>
+
+- key change 1
+- key change 2
 
 Refs: docs/worklog/YYYY-MM-DD-<slug>.md
-ADR: docs/decisions/NNNN-<slug>.md     (해당 시)
+ADR: docs/decisions/NNNN-<slug>.md     (when relevant)
 ```
 
-`<scope>` 예시: `proxy`, `server`, `scope-guard`, `storage`, `docs`, `infra`,
-`deps`, `tests`.
+`<scope>` examples: `proxy`, `server`, `scope-guard`, `storage`, `docs`,
+`infra`, `deps`, `tests`.
 
-**커밋 메시지에 자동 생성된 메타(예: "Generated with X", "Co-Authored-By: …")를
-넣지 말 것.** 깔끔한 메시지만.
+**Do not include auto-generated meta** in commit messages (e.g.
+"Generated with X", "Co-Authored-By: ..."). Keep it clean.
 
-### 스테이징
+### Staging
 
-- 의도한 파일만 스테이징. `git add -A`보단 명시적 경로.
-- 자동 생성/캐시 파일은 즉시 `.gitignore`에 추가하고 커밋에서 제외.
-- 커밋 전 `git diff --cached` 확인. **시크릿 정규식 검토 필수**:
+- Stage only the files you intended. Prefer explicit paths over `git add -A`.
+- Add generated/cache files to `.gitignore` immediately and exclude them.
+- Before committing run `git diff --cached`. **Scan for secrets**:
   `Bearer `, `sk-`, `AKIA`, `ghp_`, `xoxb-`, `password=`, `LLMTRACK_*_TOKEN=`,
-  이메일 패턴 등.
+  email patterns, etc.
 
-### 금지 사항
+### Forbidden
 
-- `git push` 자동 실행.
-- `git push --force` / `--force-with-lease` 자동 실행.
-- 히스토리 재작성(`rebase -i`, `commit --amend`) 자동 실행.
-- 사용자 확인 없이 대량 파일 삭제 커밋.
-- `.env`·키체인·secret 파일 커밋.
+- Auto-running `git push`.
+- Auto-running `--force` / `--force-with-lease`.
+- Auto-rewriting history (`rebase -i`, `commit --amend`).
+- Mass-deletion commits without confirmation.
+- Committing `.env`, keychain content, secret files.
 
-### 워크로그와의 연계
+### Worklog cross-reference
 
-워크로그 "한 일" 섹션엔 커밋 짧은 해시를 함께 적는다:
+In the worklog "What was done" section, cite the short commit hash:
 
 ```
-## 한 일
-- 생성: src/foo.py — bar 처리 (commit a1b2c3d)
-- 수정: tests/test_foo.py (commit a1b2c3d, e4f5g6h)
+## What was done
+- Created src/foo.py — handles bar (commit a1b2c3d)
+- Modified tests/test_foo.py (commits a1b2c3d, e4f5g6h)
 ```
 
-이렇게 두면 워크로그를 읽다가 "정확히 뭘 바꿨지?"가 궁금할 때 git에서 바로
-diff를 볼 수 있다.
-
-## 10. 자주 쓸 커맨드 (채워나갈 것)
+## 12. Common commands (fill in over time)
 
 ```bash
-# 의존성 설치 (계획; Phase 0 구현 후 실제 동작 확인 필요)
+# Install dependencies (planned; verify after Phase 0)
 pip install -e ".[dev]"
 
-# 포맷 + 린트
+# Format + lint
 ruff format . && ruff check .
 
-# 테스트
+# Tests
 pytest -q
 
-# 프록시 로컬 기동 (계획)
+# Run the proxy locally (planned)
 python -m llm_tracker.proxy
 
-# 중앙 서버 로컬 기동 (계획; Supabase에 연결)
+# Run the central receiver app locally (planned; against Supabase)
 DATABASE_URL=$SUPABASE_URL python -m llm_tracker_server
 
-# Alembic 마이그레이션 (계획)
+# Alembic migrations (planned)
 alembic revision -m "<message>"
 alembic upgrade head
 ```
 
-## 11. 파일 찾기 힌트
+## 13. Where to find things
 
 ```
-src/llm_tracker/             # 로컬 사이드카 프록시
-  proxy/        # FastAPI 앱, SSE 포워딩, tee 스트림
-  adapters/     # provider-specific 파싱 (지금은 anthropic만)
-  extractors/   # SSE 이벤트 → 구조화 레코드
-  scope_guard/  # task-scope 판정 (embedding + LLM judge)
-  scrubbers/    # PII/시크릿 제거
-  storage/      # SQLite 로컬 버퍼, 중앙 업로드 클라이언트
+src/llm_tracker/             # local sidecar proxy (core framework)
+  proxy/        # FastAPI app, SSE forwarding, tee
+  adapters/     # provider-specific parsing (anthropic only for now)
+  extractors/   # SSE events → structured records
+  scrubbers/    # PII / secret removal
+  storage/      # SQLite buffer
   config/       # pydantic-settings
   cli/          # Typer CLI
+  plugin_host/  # plugin loader, hook dispatcher, capability registry
+  egress_guard/ # single egress path with allowlist
+  audit/        # audit log writers
 
-src/llm_tracker_server/      # 중앙 서버 (Supabase + Fly.io 배포)
-  api/          # HTTP 라우트 (얇게)
-  domain/       # 비즈니스 로직 (DB 모름)
+src/llm_tracker_server/      # reference receiver app (Mode R only; pairs with supabase_sink plugin)
+  api/          # HTTP routes
+  domain/       # business logic (no DB)
   storage/      # SQLAlchemy + Alembic
-  analytics/    # 분석 쿼리 (ClickHouse 후보)
-  signing/      # ed25519 서명 헬퍼
+  signing/      # ed25519 helpers
 
 tests/          # pytest
-docs/           # 사람이 읽는 문서
-  STATUS.md     # 새 세션의 첫 진입점 — "지금 어디 와 있나"
-  worklog/      # 매 세션 작업 일지
-  decisions/    # ADR
-.claude/        # Claude Code 전용 설정 (슬래시 커맨드 등)
+docs/           # human-readable documents
+  STATUS.md     # first entry point for any new session
+  design.md     # full architecture
+  roadmap.md    # phased plan
+  plugins.md    # plugin authoring guide
+  distribution.md
+  worklog/      # per-session work logs
+  decisions/    # ADRs
+.claude/        # Claude Code-specific config (slash commands, hooks)
 ```
 
-현재는 뼈대만 있다. 채워 나가는 건 Claude Code의 일.
+The skeleton is mostly empty. Filling it in is Claude Code's job.

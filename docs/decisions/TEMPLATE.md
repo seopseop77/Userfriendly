@@ -1,30 +1,30 @@
-# ADR-NNNN · <결정 제목>
+# ADR-NNNN · <decision title>
 
-- **상태**: Proposed | Accepted | Superseded by NNNN | Deprecated
-- **날짜**: YYYY-MM-DD
-- **작성자**: …
-- **관련**: 워크로그/이슈/다른 ADR 링크
+- **Status**: Proposed | Accepted | Superseded by NNNN | Deprecated
+- **Date**: YYYY-MM-DD
+- **Author**: ...
+- **Related**: links to worklog / issues / other ADRs
 
-## 맥락
+## Context
 
-어떤 상황/제약에서 결정해야 했나. 왜 지금 결정해야 했나.
+What situation and constraints made this decision necessary? Why now?
 
-## 고려한 선택지
+## Options considered
 
-1. **옵션 A** — 장단점
-2. **옵션 B** — 장단점
-3. **옵션 C** — 장단점
+1. **Option A** — pros / cons
+2. **Option B** — pros / cons
+3. **Option C** — pros / cons
 
-## 결정
+## Decision
 
-**옵션 X를 선택.** 핵심 이유 1–3가지.
+**Pick option X.** One to three core reasons.
 
-## 결과 / 파급 효과
+## Consequences
 
-- 이 결정 때문에 가능해지는 것
-- 이 결정 때문에 포기해야 하는 것
-- 나중에 뒤집으려면 뭐가 필요한가(되돌리기 난이도)
+- What this decision enables.
+- What it forecloses.
+- How hard it is to reverse later.
 
-## 미해결
+## Open questions
 
-(있다면) 후속 결정이 필요한 파생 이슈.
+(If any) Follow-up decisions that this one creates.

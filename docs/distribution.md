@@ -1,104 +1,117 @@
-# 배포·업데이트 전략 (분석)
+# Distribution and update strategy (analysis)
 
-**상태**: 분석 문서. ADR-0005 framework pivot 이후 *코어 + 플러그인 별도 배포* 모델로
-재해석 필요. ADR-0003 및 본 문서는 Phase 1 시작 전 갱신할 것.
+**Status**: analysis document. After the framework pivot (ADR-0005), this
+document needs to be reinterpreted around *core + plugins distributed
+separately*. Update before Phase 1 starts. ADR-0003 will be revised to
+match.
 
-## 문제
+## The problem
 
-본 프로그램은 사용자 머신에서 실제로 도는 프록시이므로 **무언가는 반드시 사용자
-컴퓨터에 설치돼야 한다**. 이 사실 자체는 피할 수 없다. 다만 *사용자가 코드 변경을
-얼마나 자주 직접 받아야 하는가*는 설계로 줄일 수 있다.
+The proxy runs on the user's machine, so *something* has to be installed
+locally — that fact is unavoidable. But how often the user must pull code
+changes themselves is a design choice we can shape.
 
-핵심 통찰: 우리가 자주 바꾸고 싶은 것은 **정책·룰·작업 정의**이고, 실제
-프록시·스크럽·저장 코드는 안정화되면 거의 안 바뀐다. 두 변화 속도가 다르다는 점을
-배포 구조로 분리하면 사용자 부담이 크게 준다.
+Key insight: what we want to change frequently is **policy, rules, and task
+definitions**. The actual proxy / scrub / storage code stabilizes and rarely
+changes. Splitting these two cadences in distribution sharply reduces user
+friction.
 
-## 옵션
+After the pivot, the same insight applies but partitioned by package:
+- The **framework core** is the slowest-moving piece.
+- **Plugins** move at their own pace (fast, slow, abandoned, forked).
+- **Rules / policies / task definitions** can be shipped via a plugin's
+  data plane without code changes.
 
-### 옵션 A — PyPI 패키지 + `pip install -U`
+## Options
 
-표준 Python 배포. `pip install llm-tracker`. 업데이트는 `pip install -U llm-tracker`.
+### Option A — PyPI package + `pip install -U`
 
-- 장점: 가장 표준적. CI/CD 단순. 의존성 해결을 pip에 맡김.
-- 단점: 사용자가 Python 환경을 갖추고 있어야 함. 업데이트는 명시적 명령 필요.
+The standard. `pip install llm-tracker`; updates via `pip install -U`.
 
-### 옵션 B — 단일 바이너리 (PyInstaller / Nuitka / shiv zipapp)
+- Pros: standard tooling; pip handles dependencies.
+- Cons: requires Python on the user's box; updates require an explicit
+  command.
 
-Python 환경 없는 사용자도 받을 수 있도록 단일 실행 파일로 묶는다.
+### Option B — Single binary (PyInstaller / Nuitka / shiv)
 
-- 장점: 사용자가 Python 몰라도 됨. 바이너리 하나만 받으면 됨.
-- 단점: 빌드 파이프라인 복잡(macOS/Linux/Windows 별 빌드, 코드 사이닝). 업데이트
-  여전히 수동.
+Bundle Python and code into one executable so users without a Python env
+can run.
 
-### 옵션 C — 자동 업데이트 내장
+- Pros: one file; easy install.
+- Cons: cross-platform build pipeline; code signing; updates still manual.
 
-A 또는 B에 더해, 프록시 기동 시 중앙 서버에 버전 체크. 새 버전 있으면 다운로드해서
-다음 기동 때 적용. (Sparkle, Squirrel, 자체 구현 등.)
+### Option C — Auto-update built in
 
-- 장점: 사용자 무개입. 강제 업데이트 가능.
-- 단점: 업데이트 인프라 추가 구축. 보안 리스크(서명·검증 필수).
+On startup, the proxy checks for a new version against a central server and
+either prompts to upgrade or pulls automatically.
 
-### 옵션 D — 얇은 클라이언트 + 데이터 플레인 자체를 중앙에서 호스팅
+- Pros: no user action needed; can force-update.
+- Cons: extra infrastructure; security risk demands signing and
+  verification.
 
-극단: 로컬은 트래픽 forwarding만 하고 모든 처리(추출/스크럽/판정)는 중앙 서버에서.
+### Option D — Thin client + data plane hosted centrally
 
-- 장점: 사용자가 받는 코드는 거의 안 바뀜. 개선이 즉시 모든 사용자에 반영.
-- 단점: 모든 raw 트래픽이 외부로 나감. 우리 프로젝트의 프라이버시 약속(스크럽된
-  데이터만 중앙으로) 자체와 충돌. **연구 데이터 프로젝트의 신뢰 모델을 깨뜨림.**
-- 결론: 본 프로젝트엔 부적합.
+Extreme: the local side only forwards traffic; all processing (extraction,
+scrubbing, judging) runs on a central service.
 
-### 옵션 E — 얇은 코어 + 룰/정의의 원격 동기화 (권장)
+- Pros: one piece of code that almost never changes; improvements roll out
+  centrally.
+- Cons: every raw byte leaves the user's machine — directly contradicts our
+  privacy stance. **Not viable** for this project.
 
-옵션 A의 변종. 코드는 PyPI/패키지로 배포하되, 정책 본체는 원격에서 끌어와 핫리로드.
+### Option E — Thin core + remotely-synced rules (recommended)
 
-- 코드 측에 들어가는 것: 프록시, 어댑터, 스크럽 엔진, judge 인터페이스, 저장 로직 —
-  안정되면 거의 안 바뀐다.
-- 원격에서 끌어오는 것: TaskDefinition, judge 임계값, 스크럽 정책, 차단 메시지 템플릿
-  — 자주 바뀐다.
+A variant of A. Code ships via a package; policies pull from a remote
+source and hot-reload.
 
-이렇게 하면 사용자는 새 task가 추가됐다고 매번 업데이트할 필요가 없다. 코드 자체
-업데이트는 분기 한 번 정도로 줄일 수 있다.
+- In code: proxy, adapters, scrubbers, judge interfaces, storage. Rarely
+  changes once stabilized.
+- Remote: TaskDefinitions, judge thresholds, scrub policies, block-message
+  templates. Frequent updates without user action.
 
-## 권장 안
+After the framework pivot, this becomes per-plugin: each plugin can pull
+its own rules from its own backend on its own schedule.
 
-**옵션 E** + **옵션 A** + **옵션 C(부분)**.
+## Recommendation
 
-1. **PyPI 또는 사내 PyPI 미러**로 `llm-tracker` 패키지 배포.
-2. 설치는 `pipx install llm-tracker` 권장(격리 환경, CLI로 바로 사용 가능).
-   `pipx`는 사용자에게 권장되는 Python CLI 설치 도구이고 의존성 충돌을 피한다.
-3. 기동 시 중앙 서버에 **버전 체크 + 룰 동기화**.
-   - 룰 동기화는 항상 수행: TaskDefinition, 차단 메시지 템플릿, 스크럽 정책 갱신본을
-     로컬 SQLite에 캐시.
-   - 버전 체크는 알림만 기본(`새 버전이 있습니다: pipx upgrade llm-tracker`).
-     필수 업데이트 플래그가 켜진 경우엔 시작 거부하고 안내.
-4. **자동 다운로드/설치는 하지 않는다.** 보안 리스크 대비 사용자 마찰이 크지 않다고
-   판단. 연구 인원 규모에선 "메일로 한 번 안내" 정도가 더 신뢰도 높음.
+**Option E + Option A + a touch of C**.
 
-## 결과 — 사용자가 보는 흐름
+1. Distribute `llm-tracker` (the core) via **PyPI** or a private mirror.
+2. Recommend installation with `pipx install llm-tracker` (isolated env,
+   CLI immediately available).
+3. On startup the proxy does **version check** (notify only by default;
+   force-update flag for breaking changes) and a **rule sync** (pull
+   updated policy/task data into local SQLite).
+4. **Do not auto-download/install code.** Operator security trade-off:
+   manual upgrades + manifest signatures > automatic install for the
+   research-scale audience.
 
-**최초 등록**:
+## What the user sees
+
+**First-time enrollment**:
+
 ```bash
-# 관리자가 발급한 등록 토큰을 환경변수로
-export LLMTRACK_ENROLL_TOKEN=...
-
+export LLMTRACK_ENROLL_TOKEN=...     # operator-issued
 pipx install llm-tracker
-llm-tracker enroll              # 토큰으로 중앙에 등록, task 정의 받기
-llm-tracker start --task <id>   # 프록시 가동
+llm-tracker enroll                    # exchange token, fetch task defs
+llm-tracker start --task <id>         # start the proxy
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
-claude                          # 평소처럼 사용
+claude
 ```
 
-**일상 사용**: `llm-tracker start --task <id>` 한 줄. task 정의·룰은 백그라운드에서
-자동 동기화.
+**Daily**: `llm-tracker start --task <id>`. Tasks and rules sync in the
+background.
 
-**프로그램 자체 업데이트** (드물게):
+**When code changes (rare)**:
+
 ```bash
 pipx upgrade llm-tracker
 ```
-관리자가 메일/슬랙으로 안내. 강제 갱신이 필요한 경우 프록시 시작 시 "이 버전은 만료됨,
-업그레이드 후 다시 시도하세요"로 막을 수 있다.
 
-## 향후
+Operator notifies via email/Slack. Forced upgrade is achieved by refusing to
+start old versions when a critical change ships.
 
-연구 프로젝트가 사내 직원 단위까지 확대되면 옵션 B(단일 바이너리)나 옵션 C(자동
-업데이트)를 재검토. 현재 규모(연구 인원)에선 옵션 E + A로 충분.
+## Future
+
+If usage broadens beyond research participants, revisit Option B (single
+binary) and Option C (auto-update). At current scale, E + A is enough.

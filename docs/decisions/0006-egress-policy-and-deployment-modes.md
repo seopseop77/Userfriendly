@@ -1,83 +1,89 @@
-# ADR-0006 · Egress 정책과 배포 모드 (L/A/R)
+# ADR-0006 · Egress policy and deployment modes (L/A/R)
 
-- **상태**: Accepted
-- **날짜**: 2026-05-01
-- **작성자**: Claude Cowork (사용자 승인)
-- **관련**: `docs/design.md §7, §8`
+- **Status**: Accepted
+- **Date**: 2026-05-01
+- **Author**: Claude Cowork (user-approved)
+- **Related**: `docs/design.md §7, §8`
 
-## 맥락
+## Context
 
-본 프레임워크는 두 종류의 사용처를 동시에 지원해야 한다.
+The framework must safely host two kinds of deployment on the same core:
 
-- **고객 시나리오**: 회사 업무에 Claude Code를 쓰는 사용자. 로그가 외부로 나가는 걸
-  꺼린다. 극비 데이터 노출 위험.
-- **연구 시나리오**: drift 추적·지표 개발을 위해 풍부한 데이터를 중앙으로 수집하고
-  싶은 운영자. 사용자 opt-in 후.
+- **Customer scenario**: the user runs Claude Code at work; logs must not
+  leave the machine. Highly sensitive data risk.
+- **Research scenario**: an operator wants rich data flowing to a central
+  backend, after explicit user opt-in.
 
-두 시나리오를 같은 코어 위에서 안전하게 지원하려면, 데이터 egress가 *기본 OFF*이고
-*명시적 승인*이 있을 때만 일어나야 한다. 그리고 어떤 조건에서 어떤 데이터가 나갈 수
-있는지를 코드 곳곳에 흩어 두지 말고, **모드(mode)** 라는 단일 정책 축으로 강제해야
-한다.
+To support both safely, *data egress must be off by default and only
+permitted with explicit approval*. Furthermore, the conditions under which
+data may leave must not be scattered across the code; they must be
+enforced through a single policy axis: **deployment mode**.
 
-## 결정
+## Decision
 
-**1) 모든 외부 HTTP는 EgressGuard 단일 경로.**
+**1) All outbound HTTP goes through EgressGuard, a single path.**
 
-플러그인이든 코어 보조 컴포넌트든 외부로 나가려면 EgressGuard에 요청한다.
-EgressGuard는 다음을 검사:
+Whether a plugin or a core-side helper, anything wanting to reach an
+external endpoint asks EgressGuard. EgressGuard checks:
 
-- 요청자(plugin)에 `egress_http` capability가 부여돼 있는가.
-- 대상 URL이 plugin manifest의 `egress_destinations` allowlist에 있는가
-  (정확 매치, 와일드카드 금지).
-- 현재 deployment mode에서 그 capability가 허용되는가.
+- Does the requester (plugin) have the `egress_http` capability?
+- Is the URL on the requester's manifest `egress_destinations` allowlist
+  (exact match; no wildcards)?
+- Does the current deployment mode permit that capability?
 
-세 검사 모두 통과해야 forward. 모든 시도(성공/거부)는 audit_log.
+All three must pass. Every attempt (success or denial) is recorded in
+`audit_log`.
 
-업스트림 LLM(api.anthropic.com 등)은 코어가 직접 호출하므로 EgressGuard 경로가 별개
-지만, 같은 audit log에 기록.
+The upstream LLM (e.g., `api.anthropic.com`) is called by the core
+directly on a separate path, but logged in the same audit stream.
 
-**2) 세 deployment mode 정의.**
+**2) Three deployment modes.**
 
-| 모드 | 사용처 | egress 정책 | 콘텐츠 레벨 기본 |
+| Mode | Use | Egress policy | Default content level |
 |---|---|---|---|
-| **L** Local-only | 극비 고객 | LLM 업스트림 외 *전부 거부* | n/a |
-| **A** Audit-light | 컴플라이언스/경량 추적 | 운영자 승인 1개 destination, L0만 | L0 |
-| **R** Research | 연구 데이터 수집 | manifest 기반 다수, 사용자 opt-in 후 L1–L3 | L1 (opt-in 시 L2/L3) |
+| **L** Local-only | Highly sensitive customers | Deny everything except the LLM upstream | n/a |
+| **A** Audit-light | Compliance / lightweight tracking | One operator-approved destination, L0 only | L0 |
+| **R** Research | Research data collection | Manifest-driven, multiple destinations after user opt-in (L1–L3) | L1 (L2/L3 with opt-in) |
 
-모드는 운영자가 시작 시 fix. 변경하려면 재시작 + 재승인 (silent escalation 방지).
+Mode is fixed at startup. Changing it requires restart and re-approval
+(prevents silent escalation).
 
-**3) 콘텐츠 레벨 강등.**
+**3) Content-level downgrade.**
 
-코어가 plugin에 데이터를 전달할 때 *모드별 maximum 레벨 + plugin이 manifest에 선언한
-최소 필요 레벨*의 교집합으로 강등. Mode L에선 plugin이 L3 요청해도 L0/L1만 받는다.
-Plugin이 받지 못하는 정보는 처음부터 도달하지 않으므로 누수 위험 자체가 사라진다.
+When the core hands data to a plugin, the level is the *intersection* of
+the mode default and the plugin's declared minimum. In Mode L, even a
+plugin that requests L3 receives only L0/L1. The plugin never has access
+to information it shouldn't, so leakage is structurally prevented.
 
-## 결과
+## Consequences
 
-- 코어가 작은 *정책 평가기*를 갖는다 — `(plugin, capability, destination, mode)` →
-  allow/deny.
-- 새 모드 추가는 작은 코어 변경(허용 매트릭스 한 줄). 새 capability 추가는 ADR 필요.
-- 모든 보안 이벤트는 단일 audit_log로 통합되어 운영자 검토가 쉽다.
-- 정적 lint rule과 코드 리뷰로 plugin이 raw HTTP 라이브러리(`requests`, `urllib`,
-  `socket`, `httpx.AsyncClient` 등)를 import하지 못하게 강제. EgressGuard가 제공하는
-  `egress.fetch(...)` 만 허용.
+- The core gains a small *policy evaluator*: `(plugin, capability,
+  destination, mode) → allow/deny`.
+- New modes cost a one-line addition to the policy matrix. New
+  capabilities require an ADR.
+- All security events flow into one audit log, easing operator review.
+- Static lint rules and code review forbid plugins from importing raw HTTP
+  libraries (`requests`, `urllib`, `socket`, `httpx.AsyncClient`, etc.).
+  Only the SDK-provided `egress.fetch(...)` is permitted.
 
-### 포기하는 것
+### What we give up
 
-- 운영자가 "그냥 잠깐 쓰고 싶은데" 식 일회성 capability 부여 편의.
-- 운영자 의도와 무관하게 plugin이 새 destination에 알아서 붙는 자유.
+- The convenience of a one-off "let me just do this once" capability grant.
+- A plugin's freedom to talk to new destinations behind the operator's back.
 
-### 되돌리기 난이도
+### Reversibility
 
-낮음. EgressGuard와 mode 정책은 코어 한 모듈로 격리된다. 정책을 느슨히 하는 건
-설정 변경으로 가능, 강하게 만드는 건 plugin 사정에 따라 영향.
+Low. EgressGuard and the mode policy are localized to one core module.
+Loosening the policy is a config change; tightening depends on plugins'
+ability to comply.
 
-## 미해결
+## Open questions
 
-- in-process Python 환경에서 plugin이 EgressGuard를 우회하는 시도(`socket.socket()`
-  직접 사용 등)에 대한 *런타임 강제*. Phase 3 subprocess 격리 전엔 정적 lint +
-  코드 리뷰가 best-effort. 운영자가 신뢰하지 않는 plugin은 깔지 말아야 한다는 정책
-  유지.
-- audit_log 자체의 무결성 (운영자가 audit를 지우지 못하게). append-only 트리거는
-  데이터베이스 차원에서, 그래도 운영자가 DB 파일을 직접 건드릴 수 있으므로 한계 인정.
-- 사용자 opt-in 흐름의 UX (CLI 프롬프트 vs 별도 툴).
+- *Runtime* enforcement of EgressGuard against in-process Python plugins
+  that try to bypass via `socket.socket()` directly. Until Phase 3
+  subprocess isolation, static lint + code review is best effort. The
+  operating policy is: do not install untrusted plugins.
+- Audit log integrity (preventing operator-side deletion). Append-only
+  triggers help, but operators can still touch the SQLite file directly
+  — limitation acknowledged.
+- UX for the user opt-in flow (CLI prompt vs. separate tool).

@@ -1,89 +1,105 @@
-# ADR-0002 · Task-scope enforcement: 입력·판정·차단의 형태
+# ADR-0002 · Task-scope enforcement: input, judging, blocking
 
-- **상태**: Accepted (reframed by ADR-0005 — 이 결정은 이제 `scope_guard` *플러그인*의
-  스펙이며, 코어가 직접 구현하지 않는다)
-- **날짜**: 2026-05-01
-- **작성자**: Claude Cowork (사용자 승인)
-- **관련**: `docs/design.md §13.1`, `docs/roadmap.md` Phase 1c, ADR-0005
+- **Status**: Accepted (reframed by ADR-0005 — this decision now describes
+  the `scope_guard` *plugin*, not a core feature)
+- **Date**: 2026-05-01
+- **Author**: Claude Cowork (user-approved)
+- **Related**: `docs/design.md §13.1`, `docs/roadmap.md` Phase 1c, ADR-0005
 
-## 맥락
+## Context
 
-상위 프로젝트의 두 번째 목표("LLM 사용에 개입")의 1차 구체적 형태가 **작업 범위
-강제**로 확정됐다. 사용자가 등록된 작업(연구 주제, 회사 업무)과 무관한 요청을 하면
-프록시가 자동으로 답변을 차단해야 한다. 이를 위해 세 결정이 필요하다.
+The parent project's second goal — "intervention in LLM use" — has been
+made concrete as **task-scope enforcement**. When a user requests something
+unrelated to the registered task (research topic, work scope), the proxy
+auto-blocks the response. Three sub-decisions are required:
 
-1. 작업 정보를 어떻게 입력받을 것인가
-2. 들어온 프롬프트가 작업과 무관한지를 어떻게 판정할 것인가
-3. 판정 결과 차단할 때 어떻게 응답을 구성할 것인가
+1. How to take in the task-scope information.
+2. How to judge whether an incoming prompt is in or out of scope.
+3. How to compose the block response when out-of-scope.
 
-## 고려한 선택지
+## Options considered
 
-### (1) 작업 정의 입력
+### (1) Task-definition input
 
-- **A. 사용자가 자유 텍스트로 입력**: 가장 간단하지만 사용자가 자기 스코프를 임의로
-  넓히면 강제력이 사라짐.
-- **B. 중앙 발급 + 로컬 캐시 + 서명 검증**: 관리자가 정의를 발급, 사용자는 수정 불가.
-  연구·기업 양쪽 시나리오에 자연스러움. 비용은 발급 워크플로 구축.
-- **C. 옵션 A를 허용하되 모든 입력을 중앙에 동기화·감사**: 자유로움 + 추적성.
-  관리자가 사후에야 위반을 발견하므로 실시간 강제 효과는 약함.
+- **A. User-edited free text.** Simplest, but the user can broaden their
+  own scope arbitrarily, which neuters enforcement.
+- **B. Centrally issued + locally cached + signed.** Operator (PI / admin)
+  authors the definition; the user cannot edit it. Costs an issuance
+  workflow.
+- **C. Allow A, but sync everything centrally for audit.** Free-form +
+  traceability. Real-time enforcement is weaker — operators only catch
+  violations after the fact.
 
-### (2) 무관함 판정
+### (2) Judging
 
-- **A. 키워드/정규식 매칭**: 빠르고 결정적. 정밀도 낮고 우회 쉬움.
-- **B. 임베딩 코사인 유사도**: 빠르고 외부 호출 없음. 미묘한 경계에서 약함.
-- **C. LLM judge (호출당 추가 LLM 한 번)**: 정확도 높음. Latency·비용·프라이버시 부담.
-- **D. 하이브리드(B → 신뢰도 낮을 때만 C)**: 평균 latency 낮으면서 경계만 정확하게.
-  복잡도 증가.
+- **A. Keyword / regex.** Fast and deterministic. Low precision; trivial
+  to bypass.
+- **B. Embedding cosine similarity.** Fast, no external calls. Weak in
+  borderline cases.
+- **C. LLM judge (one extra LLM call per request).** High accuracy.
+  Latency, cost, and privacy overhead.
+- **D. Hybrid — B first; escalate to C only when uncertain.** Low average
+  latency with sharp accuracy at the boundary. Higher complexity.
 
-### (3) 차단 응답
+### (3) Block response
 
-- **A. HTTP 4xx 에러 반환**: 가장 간단하지만 Claude Code가 어떻게 표시할지 통제 불가.
-  retry 폭주 우려.
-- **B. 합성 SSE 스트림으로 200 OK + 차단 메시지**: Claude Code 입장에선 정상 응답.
-  사용자에게 차단 사유를 자연스럽게 전달. 합성 페이로드가 정확해야 함.
-- **C. 빈 응답(204 No Content)**: Claude Code 파서가 깨질 가능성 있음.
+- **A. Return HTTP 4xx.** Simple, but cannot control how Claude Code
+  surfaces it. Risk of retry storms.
+- **B. Synthetic SSE stream returning 200 OK with a block message.** From
+  Claude Code's view, a normal response. Lets us shape the user-facing
+  text. The synthetic payload must be precise.
+- **C. Empty (204).** Risk of breaking Claude Code's parser.
 
-## 결정
+## Decision
 
-**(1) 옵션 B**: TaskDefinition은 중앙에서 발급되어 로컬에 캐시. 서명/체크섬 검증.
-사용자 측 로컬 편집은 무시.
+**(1) Option B**: TaskDefinition is centrally issued and locally cached
+under signature/checksum verification. Local edits are ignored.
 
-**(2) 옵션 D**: 하이브리드 2단 judge.
-- Stage 1: 로컬 임베딩 모델(예: sentence-transformers small)로 user 메시지와 task의
-  positive/negative example 임베딩 비교. 임계값 이상이면 즉시 결정.
-- Stage 2: 신뢰도 낮으면 저렴한 LLM(잠정 Claude Haiku)에 `{verdict, reason}` JSON
-  강제 호출. 결과로 결정.
-- 캐시: `(task_id, sha256(user_message_normalized))` LRU.
-- 평가 대상: `messages` 배열의 마지막 `role: user`의 `text` content만. tool_result나
-  과거 turn은 무시.
+**(2) Option D**: hybrid two-stage judge.
+- Stage 1: a local embedding model (e.g., a small sentence-transformers)
+  compares the user message to the task's positive/negative example
+  centroids. If confident, decide here.
+- Stage 2: only on low confidence, call a cheap LLM (provisionally Claude
+  Haiku) with a prompt that demands `{verdict, reason}` JSON.
+- Cache: LRU keyed on `(task_id, sha256(normalized user message))`.
+- Subject of judging: only the `text` content of the **last `role: user`**
+  in the `messages` array. Tool results and prior turns are ignored.
 
-**(3) 옵션 B**: 합성 SSE 스트림으로 200 OK 반환. 본문은 `[llm-tracker]` prefix가 붙은
-한 덩어리 텍스트로, 차단 사유와 정상 사용 예시 1–2개 포함. `stop_reason: end_turn`.
-`tool_use`는 절대 포함하지 않음(Claude Code가 도구 실행 시도하면 안 됨).
+**(3) Option B**: synthetic SSE stream, 200 OK. The body is a single chunk
+prefixed with `[llm-tracker]`, containing the block reason and one or two
+in-scope examples. `stop_reason: end_turn`. **Never** include `tool_use`
+(must not trigger tool execution).
 
-## 결과
+## Consequences
 
-- 사용자는 기동 시 task id를 지정해야 한다. 미지정 시 프록시는 시작을 거부.
-- 모든 판정은 `scope_verdicts` 테이블에 기록되어 사후 감사 및 false positive 분석 가능.
-- 사용자측 override는 두지 않는다(강제력 보존). False positive는 관리자가 task 정의를
-  갱신하는 경로로만 해결.
-- 정상 요청에 first-token-latency가 추가된다 (목표: Stage 1 +30ms, Stage 2 +500ms).
+- The user must specify a task ID at startup. No task → proxy refuses to
+  start.
+- All verdicts go to the `scope_verdicts` table for post-hoc audit and
+  false-positive review.
+- No user-side override (preserves enforcement). False positives are
+  resolved by the operator updating the task definition.
+- A latency tax is added to in-scope requests (target: Stage 1 +30 ms,
+  Stage 2 +500 ms).
 
-### 포기하는 것
+### What we give up
 
-- 로컬에서 사용자가 자기 task를 편집할 수 있는 자유.
-- 응답 측에서 모델 거동을 보고 abort하는 더 일반적인 정책 엔진(Phase 3).
-- 토큰 단위 응답 rewrite (정책상 영구 비목표).
+- The convenience of editing one's own task definition locally.
+- A more general response-side policy engine that watches the model's
+  behavior (Phase 3).
+- Token-level rewriting of the response (permanent non-goal).
 
-### 되돌리기 난이도
+### Reversibility
 
-중간. 입력·판정·차단 각 결정을 모듈로 분리하면 부분 교체 가능. 단, TaskDefinition
-스키마는 중앙 발급/서명 시스템과 묶이므로 변경 시 양측 동기 변경 필요.
+Medium. Each of the input / judge / block decisions is modular and can be
+swapped piecewise. However, the TaskDefinition schema is coupled to the
+central issuance/signing system, so changing it requires synchronized
+changes on both sides.
 
-## 미해결
+## Open questions
 
-- Stage 2 judge 모델 확정: Claude Haiku(편하지만 외부 호출) vs 로컬 모델(프라이버시
-  우수, 셋업 복잡). 별도 ADR로 봉인 예정.
-- TaskDefinition 발급 워크플로(누가, 어떻게 서명, 갱신 주기). 중앙 서버 구축과 함께 결정.
-- 연속 차단 시 Claude Code의 retry 동작 확인 — 차단 응답을 받은 후 자동 재시도하는지,
-  하면 어떻게 안정시킬지.
+- Final pick for Stage 2 judge: Claude Haiku (convenient but external) vs.
+  a local model (better privacy, more setup). Sealed in a follow-up ADR.
+- TaskDefinition issuance workflow (who, how to sign, refresh cadence).
+  Decided alongside the central server build.
+- Behavior of Claude Code on consecutive blocks — does it auto-retry, and
+  if so, how do we keep it stable?

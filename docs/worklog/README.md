@@ -1,18 +1,21 @@
 # Worklog
 
-Claude Code가 수행하는 모든 비자명한 작업 세션을 기록하는 곳.
+A record of every non-trivial Claude Code work session.
 
-## 규칙
+## Rules
 
-- 파일명: `YYYY-MM-DD-<slug>.md` (예: `2026-04-25-proxy-skeleton.md`).
-- 같은 날짜 + 같은 주제는 같은 파일에 이어 쓴다.
-- 주제가 바뀌면 새 파일.
-- 템플릿: `TEMPLATE.md` 복사해서 시작.
-- **작업 완료 후가 아니라 작업 중에도** 업데이트한다. 중단되어도 이어받을 수 있어야 한다.
+- Filename: `YYYY-MM-DD-<slug>.md` (e.g., `2026-04-25-proxy-skeleton.md`).
+- Same date + same topic → append to the existing file.
+- New topic → new file.
+- Template: copy `TEMPLATE.md` to start.
+- **Update during work, not at completion.** Cutoff resilience is the
+  whole point.
 
-## 로그 vs ADR
+## Worklog vs. ADR
 
-- 워크로그: 무엇을 했는지, 어떻게 확인했는지, 다음에 할 일 — 일지 성격.
-- ADR: 왜 A 대신 B를 골랐는지, 되돌리기 어려운 결정 — 의사결정 성격. `../decisions/` 참조.
+- Worklog: what was done, how it was verified, what's next — narrative.
+- ADR: why A instead of B, hard-to-reverse decisions — decision record.
+  See `../decisions/`.
 
-둘 다 필요하면 각각 쓴다. 워크로그에서 "이 결정은 ADR-NNNN 참조" 형태로 링크.
+If both apply, write both. The worklog should reference the ADR like
+"this decision is in ADR-NNNN".

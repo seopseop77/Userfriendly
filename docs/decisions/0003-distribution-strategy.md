@@ -1,45 +1,56 @@
-# ADR-0003 · 배포 전략: PyPI(`pipx`) + 원격 룰 동기화
+# ADR-0003 · Distribution strategy: PyPI (`pipx`) + remote rule sync
 
-- **상태**: Proposed (사용자 검토 중)
-- **날짜**: 2026-05-01
-- **작성자**: Claude Cowork
-- **관련**: `docs/distribution.md`
+- **Status**: Proposed (under user review; needs revision after the
+  framework pivot in ADR-0005 to cover separate plugin distribution)
+- **Date**: 2026-05-01
+- **Author**: Claude Cowork
+- **Related**: `docs/distribution.md`
 
-## 맥락
+## Context
 
-본 프로그램은 사용자 머신에서 도는 프록시이므로 무엇인가는 반드시 설치해야 한다.
-그러나 우리가 자주 바꾸고 싶은 것(TaskDefinition, 정책, 메시지 템플릿)과 코드 자체의
-변화 속도는 다르다. 이 차이를 배포 구조로 분리하면 사용자 부담이 작아진다. 옵션 비교는
-`docs/distribution.md` 참조.
+The proxy must run on the user's machine, so something has to be installed
+locally. But the things we want to change frequently (TaskDefinition,
+policies, message templates) move on a different cadence than the code
+itself. Splitting the two cadences in distribution sharply lowers friction.
 
-## 결정
+Option comparison: see `docs/distribution.md`.
 
-**얇은 코어를 PyPI(`pipx`)로 배포 + 정책·룰은 중앙에서 원격 동기화.**
+## Decision
 
-- 코드 배포: `pipx install llm-tracker` (사내 PyPI 미러 가능).
-- 룰/정의 동기화: 프록시 기동 시 + 일정 주기마다 중앙 API에서 받아 로컬 SQLite 캐시.
-- 버전 체크: 기동 시 알림만 기본. 필수 업데이트 플래그가 있을 땐 시작 거부.
-- 자동 다운로드/설치: 안 함(연구 규모에선 마찰 < 신뢰 비용).
+**Distribute a thin core via PyPI/`pipx`. Pull policies/rules from a remote
+service and refresh them on the fly.**
 
-## 결과
+- Code distribution: `pipx install llm-tracker` (private mirror possible).
+- Rule/definition sync: at startup and periodically, the proxy pulls from
+  the central API and caches into the local SQLite.
+- Version check: notify-only by default. When a flag declares a hard
+  upgrade, the proxy refuses to start.
+- No automatic code download or install. (Friction outweighs benefit at
+  research scale; security risk reduced.)
 
-- 사용자가 코드 업데이트를 직접 받는 빈도: 추정 **분기 1회 이하**.
-- TaskDefinition·차단 메시지 변경은 사용자 무개입.
-- 중앙 API에 룰 동기화 엔드포인트(인증·서명) 추가 구축 필요.
-- 사내 PyPI 미러를 둘지(폐쇄망/속도) 공식 PyPI에 사설 패키지로 둘지는 별도 결정.
+## Consequences
 
-### 포기하는 것
+- Estimated user code-update cadence: **once a quarter or less**.
+- TaskDefinition / block-message changes require nothing of the user.
+- The central API needs a rule-sync endpoint with auth + signing.
+- Decision deferred: private PyPI mirror vs. private package on the public
+  PyPI.
 
-- "내려받자마자 바로 동작" 단일 바이너리 사용자 경험.
-- 강제 자동 업데이트(보안 리스크 대비 가치 낮다고 판단).
+### What we give up
 
-### 되돌리기 난이도
+- "Download once and run forever" single-binary UX.
+- Forced auto-update (low value vs. security risk at this scale).
 
-낮음–중간. PyPI 패키지 구조와 룰 동기화 인터페이스만 안정적이면 단일 바이너리
-빌드를 추가하는 것은 별도 트랙으로 가능.
+### Reversibility
 
-## 미해결
+Low to medium. As long as the PyPI package and rule-sync interface stay
+stable, adding a single-binary build later is a separate track.
 
-- 사내 PyPI 미러 vs 공식 PyPI 사설 패키지 선택.
-- 룰 동기화 API의 인증 모델(공유 토큰 vs 사용자별 키).
-- 강제 업그레이드 정책의 발동 조건(어떤 변경에 강제력을 부여할지).
+## Open questions
+
+- Private PyPI mirror vs. private package on public PyPI.
+- Rule sync auth model: shared token vs. per-user keys.
+- Triggers for forced upgrade: which kinds of changes warrant it?
+- **Post-pivot revision needed**: after ADR-0005 split the world into core
+  + plugins, plugin distribution is its own concern (PyPI? Git? Operator's
+  own repo?). This ADR will be revised before Phase 1 starts.

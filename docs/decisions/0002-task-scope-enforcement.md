@@ -1,9 +1,10 @@
 # ADR-0002 · Task-scope enforcement: 입력·판정·차단의 형태
 
-- **상태**: Accepted
+- **상태**: Accepted (reframed by ADR-0005 — 이 결정은 이제 `scope_guard` *플러그인*의
+  스펙이며, 코어가 직접 구현하지 않는다)
 - **날짜**: 2026-05-01
 - **작성자**: Claude Cowork (사용자 승인)
-- **관련**: `docs/design.md §5.4`, `docs/roadmap.md` Phase 2
+- **관련**: `docs/design.md §13.1`, `docs/roadmap.md` Phase 1c, ADR-0005
 
 ## 맥락
 

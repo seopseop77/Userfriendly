@@ -1,59 +1,77 @@
-# 로드맵
+# 로드맵 (framework-first)
 
-각 단계의 **완료 조건(Definition of Done)** 을 명시한다. 단계를 건너뛰지 않는다.
+이 로드맵은 **프레임워크 → 플러그인 SDK → 첫 플러그인 → 확장**의 순서로 짜였다.
+구체 기능(scope guard, drift 추적 등)을 코어에 넣지 않는다 — 모두 플러그인.
 
-## Phase 0 — 뼈대 & 투명 포워더 (MVP of MVP)
+각 단계의 **완료 조건(Definition of Done)** 을 명시한다.
 
-목표: Claude Code가 프록시를 경유해 정상적으로 동작한다. 관측은 최소.
+## Phase 0 — 코어 프레임워크 뼈대
 
-- [ ] `pyproject.toml` 실제 의존성 채우고 `pip install -e .[dev]` 성공.
-- [ ] FastAPI 기반 `/v1/messages` catch-all 라우트.
-- [ ] `httpx`로 업스트림 포워딩. SSE 스트리밍 그대로 전달.
-- [ ] `llm-tracker start` CLI (Typer) — 기본 포트 8787.
-- [ ] 텍스트 로그 파일 하나에 요청/응답 헤더·타이밍 append (스크러빙 아직 없음).
-- [ ] Claude Code로 로컬 end-to-end 세션 통과 확인.
-- [ ] PoC 측정: first-token-latency 직접 호출 대비 +50ms 이내.
+목표: 빈 프록시(투명 포워더)에 plugin host 골격이 붙어서, "아무 일도 하지 않는
+빈 plugin"을 로드해서 hook이 호출되는 것까지 확인.
 
-완료 조건: 연구자가 본 프록시를 켠 채 Claude Code를 평소처럼 쓸 수 있다.
+- [ ] `pyproject.toml` 의존성 채우고 `pip install -e .[dev]` 동작.
+- [ ] FastAPI catch-all 라우트 + httpx SSE 투명 포워딩 (Tee 포함).
+- [ ] 로컬 SQLite 스키마(`exchanges`, `events`, `tool_calls`, `audit_log`) + Alembic.
+- [ ] `llm-tracker` Typer CLI: `init`, `start`, `audit` 골격.
+- [ ] PluginHost 골격: setuptools entry-point 로드, manifest 파싱, hook 디스패처.
+- [ ] 8개 hook 지점 코어에 박기 (Phase 0엔 dispatch만, 실제 plugin 로직 없음).
+- [ ] AuditLog: hook 호출/lifecycle 이벤트 기록.
+- [ ] EgressGuard 골격: 외부 HTTP 단일 진입점. Phase 0엔 default deny + LLM
+  업스트림만 허용.
+- [ ] Mode 설정(L/A/R) — 시작 시 모드 fix.
+- [ ] no-op 샘플 플러그인(`hello_world`)이 로드되어 hook 호출이 audit log에 남는지 검증.
+- [ ] Claude Code로 end-to-end 정상 동작 확인 (no-op plugin 상태에서).
+- [ ] PoC 측정: 직접 호출 대비 first-token-latency +50 ms 이내.
 
-## Phase 1 — 구조화 저장 & 스크러빙 & 업로드
+완료 조건: 사용자가 프록시를 켠 채 Claude Code를 평소처럼 쓸 수 있고, 운영자는
+audit log에서 hook 호출 흐름을 볼 수 있다.
 
-목표: 분석 가능한 구조로 저장되고, 중앙으로 보내진다.
+## Phase 1 — 플러그인 SDK + 첫 플러그인 (`scope_guard`) + 보안 강화
 
-- [ ] SSE Extractor: `message_start`, `content_block_*`, `tool_use`, `message_delta`, `message_stop` 모두 구조화.
-- [ ] SQLite 스키마 v1 적용(`exchanges`, `events`, `tool_calls`).
-- [ ] Scrubber L0/L1 기본, L2 opt-in 플래그.
-- [ ] Uploader 데몬 (배치 + 지수 백오프).
-- [ ] 중앙 Ingest API 스펙 확정 (별도 문서 or 별도 레포).
-- [ ] 시크릿/PII 누수 검증 테스트 통과.
-- [ ] Phase 1 완료 시점의 이벤트 스키마를 ADR로 봉인.
+목표: 외부 협업자가 플러그인을 작성할 수 있는 SDK 완비. 첫 플러그인으로
+ADR-0002의 task-scope guard를 reference 구현.
 
-## Phase 2 — Task-scope guard (1차 개입)
+### 1a. Plugin SDK
+- [ ] `llm_tracker_sdk` 패키지: `BasePlugin`, hook 데코레이터, capability 토큰.
+- [ ] `plugin.toml` schema 검증기 + 서명 도구.
+- [ ] Plugin 테스트 하니스(가짜 hook 컨텍스트, 가짜 SQLite).
+- [ ] `docs/plugins.md` 1차 완성 — 작성 가이드 + 예시.
 
-목표: 사용자가 등록된 작업과 무관한 요청을 하면 자동으로 차단한다.
-설계는 `design.md §5.4`, ADR-0002 참조.
+### 1b. 보안 경계 강화
+- [ ] EgressGuard에 plugin 수준 allowlist 강제 + audit.
+- [ ] Manifest 서명 검증 (plugin install 시 + 시작 시).
+- [ ] Capability 사용 시 audit 로그 강제.
+- [ ] 콘텐츠 레벨(L0–L3) 라우팅: 코어가 plugin에 전달하기 전 강등.
+- [ ] 모드별 capability 정책 강제 테스트.
 
-- [ ] `TaskDefinition` 스키마와 로컬 캐시 테이블(`task_definitions`).
-- [ ] 중앙에서 task definition 가져오기 (시작 시 + 주기 동기화). 서명 검증 포함.
-- [ ] User 메시지 추출기 — `messages` 배열에서 마지막 `role: user`의 text content만 분리.
-- [ ] Stage 1 임베딩 judge — positive/negative examples를 사전 임베딩, 코사인 비교.
-- [ ] Stage 2 LLM judge — 저렴한 모델로 `{verdict, reason}` JSON 응답 강제.
+### 1c. `scope_guard` 플러그인 (별도 패키지)
+- [ ] TaskDefinition 스키마 + 로컬 캐시(`plugin_scope_guard__*`).
+- [ ] Stage 1 임베딩 judge (로컬 sentence-transformers).
+- [ ] Stage 2 LLM judge — manifest의 egress destination에 등록된 외부 모델.
 - [ ] `(task_id, message_hash)` LRU 캐시.
-- [ ] `out_of_scope` 시: 업스트림 호출 스킵 + 합성 SSE 응답으로 사용자에게 차단 통지.
-- [ ] 차단 통지 메시지에 "왜 차단됐는지(요약) + 정상 사용 예시" 포함.
-- [ ] 모든 판정을 `scope_verdicts` 테이블에 기록.
-- [ ] 평가셋: 각 task당 in/out 프롬프트 50개씩 수동 라벨링 → 자동 회귀 테스트.
-- [ ] False positive ≤ 5%, prompt-injection 우회 ≤ 1건/30 (PoC 통과 조건).
+- [ ] `out_of_scope` 시 합성 SSE 응답.
+- [ ] 평가셋 50/50, false positive ≤ 5%.
 
-완료 조건: 연구자/직원이 등록된 작업 외 용도로 Claude Code를 쓰려 시도하면
-프록시가 안정적으로 차단하고, 정상 작업은 5% 이내의 false positive로 통과한다.
+완료 조건: 외부 협업자가 `docs/plugins.md`만 보고 토이 플러그인 하나를 만들 수
+있고, `scope_guard`가 정상 차단·통과한다.
 
-## Phase 3 — 응답 측 정책 & 멀티 프로바이더 & 분석 UI
+## Phase 2 — Reference upload sink + 플러그인 생태계 시작
 
-범위 열릴 경우에만 착수.
+목표: Mode R 운영자가 데이터를 중앙으로 보낼 수 있는 reference 플러그인 + 협업자
+들의 첫 플러그인 받기 시작.
 
-- [ ] 응답 SSE 스트림에 대한 정책 엔진 (이상 패턴 감지 시 abort/notify).
-- [ ] 룰 핫리로드(중앙에서 룰 갱신 받기).
+- [ ] `llm_tracker_plugin_supabase_sink`: `on_persisted`에서 배치 업로드, 지수 백오프.
+- [ ] `src/llm_tracker_server/`: Supabase 연결, ingest API. Fly.io 배포 fly.toml.
+- [ ] 사용자 동의 흐름 (Mode R에서 task별 opt-in).
+- [ ] Plugin 호환성/버전 매트릭스 문서화.
+- [ ] 협업자가 만든 첫 플러그인 (`drift_metrics` 등) 통합 테스트.
+
+## Phase 3 — 격리 강화 + 멀티 프로바이더 + 분석
+
+후순위. 외부 사용 늘어날 때 착수.
+
+- [ ] Plugin subprocess 격리 옵션 (보안 민감 운영자용).
 - [ ] OpenAI/Gemini 어댑터.
-- [ ] Grafana 대시보드 또는 간단한 내부 UI.
-- [ ] 지표 담당자가 정의한 drift 지표 계산 파이프라인과 연결.
+- [ ] 분석 인터페이스(SQL 직접 vs REST) 결정 후 구현.
+- [ ] 응답 측 정책 plugin 카테고리 (이상 행동 감지).

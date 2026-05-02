@@ -1,9 +1,11 @@
 # ADR-0004 · 중앙 서버 스택: Supabase + Fly.io + 동일 레포
 
-- **상태**: Accepted
+- **상태**: **Superseded by ADR-0007** (중앙 서버는 옵션 플러그인으로 재배치).
+  본 ADR의 기술적 결정(Supabase + Fly.io + vendor lock-in 회피)은 reference upload
+  sink 플러그인의 권장 셋업으로 보존.
 - **날짜**: 2026-05-01
 - **작성자**: Claude Cowork (사용자 승인)
-- **관련**: `docs/design.md §11`, `docs/distribution.md`
+- **관련**: `docs/design.md §13.1`, `docs/distribution.md`, ADR-0007
 
 ## 맥락
 

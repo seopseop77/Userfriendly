@@ -21,6 +21,9 @@ No architectural decisions required here — everything is prescribed.
 - Filled in `pyproject.toml` `dependencies` with all 13 runtime packages from design.md §11 (commit b43d82d)
 - Created `.venv` using `/opt/homebrew/bin/python3.12` (system `python3` is 3.9.6, too old)
 - Verified `pip install -e ".[dev]"` succeeds cleanly in `.venv`
+- Created `src/llm_tracker/proxy/app.py` — FastAPI catch-all route (commit 453e590)
+- Created `src/llm_tracker/proxy/forwarder.py` — httpx SSE forwarder + asyncio.Queue tee (commit 453e590)
+- Created `tests/proxy/test_forwarder.py` — 3 tests via respx; all pass (commit 453e590)
 
 ## Decisions
 
@@ -54,9 +57,9 @@ Successfully installed Mako-1.3.12 MarkupSafe-3.0.3 aiosqlite-0.22.1 alembic-1.1
 
 ## Handoff
 
-Checkpoint 1 complete: dependencies declared and install verified. Next step is the
-FastAPI catch-all route + httpx SSE transparent forwarding (Tee) per roadmap.md Phase 0
-checklist item 2.
+Checkpoint 2 complete: FastAPI proxy + httpx SSE forwarder with tee implemented and
+tested. Next step: local SQLite schema (`exchanges`, `events`, `tool_calls`, `audit_log`)
+via Alembic (roadmap.md Phase 0 checklist item 3).
 
 ## Suggestions (untouched)
 

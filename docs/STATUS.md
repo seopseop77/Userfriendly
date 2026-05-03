@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-03 (Claude Code; Phase 0 checkpoint 1 — deps installed)
+**Last updated**: 2026-05-03 (Claude Code; Phase 0 checkpoint 2 — proxy + tee done)
 **Updated by**: Claude Code
 
 ## Current phase
 
 - **Phase**: Phase 0 — core framework skeleton (in progress)
-- **Active task**: FastAPI catch-all route + httpx SSE transparent forwarding (Tee)
+- **Active task**: Local SQLite schema via Alembic
 
 ## Active worklog
 
@@ -21,31 +21,29 @@
 ## Recent commits
 
 ```
+453e590 proxy: add FastAPI catch-all route + httpx SSE forwarder with tee
+d4fb688 docs: record commit hash b43d82d in worklog and STATUS
 b43d82d deps: fill in pyproject.toml runtime dependencies for Phase 0
 1c0bf63 docs: translate to English and integrate engineering principles
 5231e3f docs: add session-resume infrastructure for cutoff resilience
-2202434 docs: pivot to framework-first architecture with plugin model
-9ad6e88 docs: lock central server stack and add git auto-commit convention
 ```
 
 ## Where we paused
 
-Phase 0 checkpoint 1 complete: `pyproject.toml` dependencies filled in,
-`.venv` (Python 3.12) created, `pip install -e ".[dev]"` verified clean.
-No source code written yet beyond empty `__init__.py` stubs.
+Phase 0 checkpoint 2 complete: FastAPI catch-all proxy with httpx SSE
+forwarding + asyncio.Queue tee implemented and tested (3 respx tests pass).
+Next: Alembic + SQLite schema (`exchanges`, `events`, `tool_calls`, `audit_log`).
 
 ## Next single step
 
-Phase 0 checkpoint 1 is done. Next: implement the FastAPI catch-all proxy route
-and httpx SSE transparent forwarding with Tee (roadmap.md Phase 0 checklist item 2).
+Phase 0 checkpoint 2 done. Next: SQLite schema + Alembic migration setup.
 
 Concretely:
-1. Create `src/llm_tracker/proxy/` package.
-2. FastAPI app with a catch-all route that forwards to `api.anthropic.com` via
-   `httpx.AsyncClient.stream()`.
-3. Tee: split the SSE stream — pass-through to client, copy to internal buffer.
-4. Verify end-to-end with a `respx` mock: request in → SSE chunks out → no delay.
-5. Checkpoint: commit + worklog + STATUS update.
+1. `alembic init alembic` in project root; configure `alembic.ini` + `env.py` for async SQLAlchemy.
+2. Create `src/llm_tracker/storage/` package with SQLAlchemy models for `exchanges`,
+   `events`, `tool_calls`, `audit_log` (schemas from design.md §9.1 and §7.4).
+3. Generate initial Alembic migration; verify `alembic upgrade head` runs clean.
+4. Checkpoint: commit + worklog + STATUS update.
 
 ## Blocking / decisions needed
 

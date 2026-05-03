@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-03 (Claude Code; Phase 0 code-complete — manual e2e remains)
+**Last updated**: 2026-05-03 (Claude Code; latency instrumentation done — awaiting user's 10+ prompts)
 **Updated by**: Claude Code
 
 ## Current phase
 
-- **Phase**: Phase 0 — core framework skeleton (code-complete; awaiting manual e2e)
-- **Active task**: Manual verification: `llm-tracker init` → `start` → Claude Code → `audit`
+- **Phase**: Phase 0 — core framework skeleton (e2e verified; latency measurement in progress)
+- **Active task**: User runs 10+ prompts through proxy → run report script → record PASS/FAIL
 
 ## Active worklog
 
@@ -21,36 +21,34 @@
 ## Recent commits
 
 ```
+594ad32 proxy: instrument first-token latency; add report script
+df422d8 proxy: strip Accept-Encoding to prevent ZlibError on client
+f27b0d7 docs: Phase 0 code-complete — worklog + STATUS final update
 e123092 feat: EgressGuard skeleton, BasePlugin interface, hello_world plugin
 e4cda64 docs: checkpoint 4 — CLI + PluginHost done, next EgressGuard + hello_world
-0aaa698 feat: add CLI, PluginHost, AuditLog, config, and hook dispatch
-864e854 docs: checkpoint 3 — SQLite schema done, next CLI + PluginHost
-6ce1267 storage: add SQLAlchemy models + Alembic initial migration
 ```
 
 ## Where we paused
 
-Phase 0 code-complete: all automated checklist items implemented and tested
-(6/6 tests pass). Two manual steps remain before Phase 0 DoD is fully met:
-1. `llm-tracker init && llm-tracker start`, use Claude Code, `llm-tracker audit`
-2. Measure first-token latency overhead (target ≤ 50 ms vs. direct API)
+Latency instrumentation committed (594ad32). Waiting for user to run 10+
+prompts through the proxy, then will execute the report script and record
+PASS/FAIL in the worklog.
 
 ## Next single step
 
-Phase 0 code-complete. Next: manual end-to-end verification, then Phase 1a.
+**User action required**: run the proxy and send 10+ natural prompts through it.
 
-To complete Phase 0 DoD manually:
 ```bash
-.venv/bin/llm-tracker init           # creates var/ + DB tables
-ANTHROPIC_BASE_URL=http://127.0.0.1:8787 .venv/bin/llm-tracker start  # boot proxy
-# In another terminal: use Claude Code normally
-.venv/bin/llm-tracker audit          # confirm hook entries in audit log
+# Terminal 1 — boot proxy
+mkdir -p var
+.venv/bin/llm-tracker start > var/proxy.log 2>&1 &
+
+# Terminal 2 (or normal Claude Code terminal)
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+# Use Claude Code as normal for 10+ prompts, then say "done"
 ```
 
-After manual verification, start Phase 1a:
-- Create `llm_tracker_sdk` package with BasePlugin, hook decorators, capability tokens.
-- Write `plugin.toml` schema validator.
-- Flesh out `docs/plugins.md` authoring guide.
+After user says "done": kill proxy (SIGTERM), run report script, record result.
 
 ## Blocking / decisions needed
 

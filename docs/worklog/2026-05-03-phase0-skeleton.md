@@ -88,15 +88,29 @@ Successfully installed Mako-1.3.12 MarkupSafe-3.0.3 aiosqlite-0.22.1 alembic-1.1
 - Remaining Phase 0 items (FastAPI proxy, SQLite schema, CLI, PluginHost, etc.) follow in
   subsequent sessions.
 
-## Handoff
+## Checkpoint 6 — Latency instrumentation (2026-05-03)
 
-Phase 0 code-complete (checkpoint 5). All automated checklist items done:
-deps, proxy+Tee, SQLite+Alembic, CLI, PluginHost, 8 hooks, AuditLog, EgressGuard,
-Mode config, hello_world plugin. Remaining items require manual verification:
-1. End-to-end: `llm-tracker init && llm-tracker start` + use with Claude Code
-   + `llm-tracker audit` to confirm hook entries appear.
-2. Latency: measure first-token overhead (target ≤ 50 ms vs. direct API call).
-Next phase: Phase 1a — plugin SDK (`llm_tracker_sdk` package).
+- Fixed ZlibError: added `accept-encoding` to `_HOP_BY_HOP` so proxy
+  strips it before forwarding; Anthropic now always returns uncompressed
+  data (commit df422d8).
+- E2E verified manually by user — proxy started, Claude Code used normally,
+  audit entries confirmed. Not reproduced in worklog (user-verified).
+- Added timing columns to `exchanges` table: `t_request_received_ms`,
+  `t_upstream_first_byte_ms`, `t_client_first_byte_ms` (epoch ms, nullable).
+  Chose option (a) — columns on exchanges — over option (b) — rows in events —
+  because timing is 1:1 per exchange, natural fit, and simplest to query.
+- Alembic migration `b1c2d3e4f5a6` applied to existing DB.
+- `storage/exchanges.py`: `record_exchange_timing()` inserts minimal Exchange
+  row after each proxied response completes.
+- `forwarder.py`: instruments `t1` (first upstream byte) and `t2` (first byte
+  yielded to client) via `time.monotonic()`; writes to DB via plugin_host session
+  factory after `on_persisted` hook.
+- `tests/perf/report_first_token_latency.py`: offline SQLite report; prints
+  min/median/p95/max of `proxy_overhead_ms`; PASS criterion ≤ 50 ms.
+- 6/6 tests pass (commit 594ad32).
+
+Awaiting user to run 10+ prompts through proxy, then will run report script
+and record PASS/FAIL below.
 
 ## Suggestions (untouched)
 

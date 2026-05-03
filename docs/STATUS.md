@@ -21,7 +21,7 @@
 ## Recent commits
 
 ```
-<latest> deps: fill in pyproject.toml runtime dependencies for Phase 0
+b43d82d deps: fill in pyproject.toml runtime dependencies for Phase 0
 1c0bf63 docs: translate to English and integrate engineering principles
 5231e3f docs: add session-resume infrastructure for cutoff resilience
 2202434 docs: pivot to framework-first architecture with plugin model

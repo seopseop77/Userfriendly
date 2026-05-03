@@ -18,7 +18,7 @@ No architectural decisions required here — everything is prescribed.
 
 ## What was done
 
-- Filled in `pyproject.toml` `dependencies` with all 13 runtime packages from design.md §11 (commit TBD)
+- Filled in `pyproject.toml` `dependencies` with all 13 runtime packages from design.md §11 (commit b43d82d)
 - Created `.venv` using `/opt/homebrew/bin/python3.12` (system `python3` is 3.9.6, too old)
 - Verified `pip install -e ".[dev]"` succeeds cleanly in `.venv`
 

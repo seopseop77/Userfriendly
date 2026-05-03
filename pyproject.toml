@@ -39,8 +39,11 @@ dev = [
 [project.scripts]
 llm-tracker = "llm_tracker.cli:app"
 
+[project.entry-points."llm_tracker.plugins"]
+hello_world = "llm_tracker_plugin_hello_world:HelloWorldPlugin"
+
 [tool.hatch.build.targets.wheel]
-packages = ["src/llm_tracker"]
+packages = ["src/llm_tracker", "src/llm_tracker_plugin_hello_world"]
 
 [tool.ruff]
 line-length = 100

@@ -12,7 +12,7 @@ from ..plugin_host.hooks import Abort, Block
 from ..plugin_host.host import PluginHost
 
 UPSTREAM_BASE = "https://api.anthropic.com"
-_HOP_BY_HOP = frozenset({"host", "content-length", "transfer-encoding", "connection"})
+_HOP_BY_HOP = frozenset({"host", "content-length", "transfer-encoding", "connection", "accept-encoding"})
 
 _client: httpx.AsyncClient | None = None
 

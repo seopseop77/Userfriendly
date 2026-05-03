@@ -6,52 +6,46 @@
 
 ---
 
-**Last updated**: 2026-05-03 (Cowork; English-only documentation pass
-complete, karpathy guidelines integrated; Phase 0 not yet started)
-**Updated by**: Claude Cowork
+**Last updated**: 2026-05-03 (Claude Code; Phase 0 checkpoint 1 — deps installed)
+**Updated by**: Claude Code
 
 ## Current phase
 
-- **Phase**: Phase 0 — core framework skeleton (not started)
-- **Active task**: none (waiting for first Phase 0 instruction)
+- **Phase**: Phase 0 — core framework skeleton (in progress)
+- **Active task**: FastAPI catch-all route + httpx SSE transparent forwarding (Tee)
 
 ## Active worklog
 
-None. When Phase 0 work begins, Claude Code creates
-`docs/worklog/<YYYY-MM-DD>-phase0-<slug>.md`.
+`docs/worklog/2026-05-03-phase0-skeleton.md`
 
 ## Recent commits
 
 ```
-<latest> docs: translate to English, integrate karpathy guidelines, add language rule
-5231e3f  docs: add session-resume infrastructure for cutoff resilience
-2202434  docs: pivot to framework-first architecture with plugin model
-9ad6e88  docs: lock central server stack and add git auto-commit convention
-c0f67f9  feat: base structure
+<latest> deps: fill in pyproject.toml runtime dependencies for Phase 0
+1c0bf63 docs: translate to English and integrate engineering principles
+5231e3f docs: add session-resume infrastructure for cutoff resilience
+2202434 docs: pivot to framework-first architecture with plugin model
+9ad6e88 docs: lock central server stack and add git auto-commit convention
 ```
 
 ## Where we paused
 
-Design documents, ADRs, the framework pivot, and the English-only
-documentation pass are complete. Zero source code has been written. The next
-move is to start Phase 0 (core framework skeleton) per `docs/roadmap.md`.
+Phase 0 checkpoint 1 complete: `pyproject.toml` dependencies filled in,
+`.venv` (Python 3.12) created, `pip install -e ".[dev]"` verified clean.
+No source code written yet beyond empty `__init__.py` stubs.
 
 ## Next single step
 
-When the next Claude Code session starts, follow this:
+Phase 0 checkpoint 1 is done. Next: implement the FastAPI catch-all proxy route
+and httpx SSE transparent forwarding with Tee (roadmap.md Phase 0 checklist item 2).
 
-1. Read `/CLAUDE.md`, `docs/design.md`, `docs/roadmap.md`, all of
-   `docs/decisions/`, and `docs/plugins.md`. Internalize the framework-first
-   model.
-2. Create `docs/worklog/2026-MM-DD-phase0-skeleton.md` from `TEMPLATE.md`
-   and start logging.
-3. Fill in `pyproject.toml` `dependencies` with the planned set in
-   `docs/design.md §11` (`fastapi`, `uvicorn[standard]`, `httpx[http2]`,
-   `pydantic`, `pydantic-settings`, `structlog`, `typer`,
-   `sqlalchemy[asyncio]`, `aiosqlite`, `alembic`, `python-ulid`, `keyring`,
-   `pynacl`).
-4. Verify `pip install -e ".[dev]"` runs clean.
-5. Stop there and complete the first checkpoint: worklog + STATUS + commit.
+Concretely:
+1. Create `src/llm_tracker/proxy/` package.
+2. FastAPI app with a catch-all route that forwards to `api.anthropic.com` via
+   `httpx.AsyncClient.stream()`.
+3. Tee: split the SSE stream — pass-through to client, copy to internal buffer.
+4. Verify end-to-end with a `respx` mock: request in → SSE chunks out → no delay.
+5. Checkpoint: commit + worklog + STATUS update.
 
 ## Blocking / decisions needed
 

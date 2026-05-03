@@ -11,9 +11,21 @@ requires-python = ">=3.11"
 authors = [{ name = "Userfriendly Team" }]
 license = { text = "Proprietary (internal research use)" }
 
-# Runtime dependencies are intentionally left empty at project bootstrap.
-# Phase 0 work will pin these — see docs/roadmap.md.
-dependencies = []
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx[http2]",
+    "pydantic",
+    "pydantic-settings",
+    "structlog",
+    "typer",
+    "sqlalchemy[asyncio]",
+    "aiosqlite",
+    "alembic",
+    "python-ulid",
+    "keyring",
+    "pynacl",
+]
 
 [project.optional-dependencies]
 dev = [

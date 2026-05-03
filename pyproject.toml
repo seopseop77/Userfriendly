@@ -37,8 +37,7 @@ dev = [
 ]
 
 [project.scripts]
-# Will be wired up in Phase 0 once the CLI module exists.
-# llm-tracker = "llm_tracker.cli:app"
+llm-tracker = "llm_tracker.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/llm_tracker"]

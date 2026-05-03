@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-03 (Claude Code; Phase 0 checkpoint 2 — proxy + tee done)
+**Last updated**: 2026-05-03 (Claude Code; Phase 0 checkpoint 3 — SQLite schema done)
 **Updated by**: Claude Code
 
 ## Current phase
 
 - **Phase**: Phase 0 — core framework skeleton (in progress)
-- **Active task**: Local SQLite schema via Alembic
+- **Active task**: Typer CLI skeletons (init, start, audit) + PluginHost scaffold
 
 ## Active worklog
 
@@ -21,29 +21,32 @@
 ## Recent commits
 
 ```
+6ce1267 storage: add SQLAlchemy models + Alembic initial migration
+cc62568 docs: checkpoint 2 — proxy forwarder done, next is Alembic + SQLite schema
 453e590 proxy: add FastAPI catch-all route + httpx SSE forwarder with tee
 d4fb688 docs: record commit hash b43d82d in worklog and STATUS
 b43d82d deps: fill in pyproject.toml runtime dependencies for Phase 0
-1c0bf63 docs: translate to English and integrate engineering principles
-5231e3f docs: add session-resume infrastructure for cutoff resilience
 ```
 
 ## Where we paused
 
-Phase 0 checkpoint 2 complete: FastAPI catch-all proxy with httpx SSE
-forwarding + asyncio.Queue tee implemented and tested (3 respx tests pass).
-Next: Alembic + SQLite schema (`exchanges`, `events`, `tool_calls`, `audit_log`).
+Phase 0 checkpoint 3 complete: SQLAlchemy ORM models + Alembic migration created
+for all 4 core tables (exchanges, events, tool_calls, audit_log). `alembic upgrade
+head` verified. Next: Typer CLI skeletons + PluginHost scaffold.
 
 ## Next single step
 
-Phase 0 checkpoint 2 done. Next: SQLite schema + Alembic migration setup.
+Phase 0 checkpoint 3 done. Next: Typer CLI skeletons + PluginHost scaffold.
 
 Concretely:
-1. `alembic init alembic` in project root; configure `alembic.ini` + `env.py` for async SQLAlchemy.
-2. Create `src/llm_tracker/storage/` package with SQLAlchemy models for `exchanges`,
-   `events`, `tool_calls`, `audit_log` (schemas from design.md §9.1 and §7.4).
-3. Generate initial Alembic migration; verify `alembic upgrade head` runs clean.
-4. Checkpoint: commit + worklog + STATUS update.
+1. Create `src/llm_tracker/cli/` with Typer app and three stub commands:
+   `init` (create config + run `alembic upgrade head`), `start` (boot uvicorn),
+   `audit` (query audit_log).
+2. Wire `llm-tracker = "llm_tracker.cli:app"` in `pyproject.toml [project.scripts]`.
+3. Create `src/llm_tracker/plugin_host/` skeleton: `PluginHost` class, entry-point
+   loader, hook dispatcher stub (8 hooks invoked in order, no plugin logic yet).
+4. Invoke all 8 hooks at the correct points in `forwarder.py` (empty dispatch only).
+5. Checkpoint: commit + worklog + STATUS update.
 
 ## Blocking / decisions needed
 

@@ -24,6 +24,9 @@ No architectural decisions required here — everything is prescribed.
 - Created `src/llm_tracker/proxy/app.py` — FastAPI catch-all route (commit 453e590)
 - Created `src/llm_tracker/proxy/forwarder.py` — httpx SSE forwarder + asyncio.Queue tee (commit 453e590)
 - Created `tests/proxy/test_forwarder.py` — 3 tests via respx; all pass (commit 453e590)
+- Created `src/llm_tracker/storage/models.py` — ORM models for exchanges, events, tool_calls, audit_log (commit 6ce1267)
+- Configured `alembic/env.py` for async SQLAlchemy + aiosqlite (commit 6ce1267)
+- Generated and applied initial Alembic migration; `alembic upgrade head` verified clean (commit 6ce1267)
 
 ## Decisions
 
@@ -57,9 +60,9 @@ Successfully installed Mako-1.3.12 MarkupSafe-3.0.3 aiosqlite-0.22.1 alembic-1.1
 
 ## Handoff
 
-Checkpoint 2 complete: FastAPI proxy + httpx SSE forwarder with tee implemented and
-tested. Next step: local SQLite schema (`exchanges`, `events`, `tool_calls`, `audit_log`)
-via Alembic (roadmap.md Phase 0 checklist item 3).
+Checkpoint 3 complete: SQLAlchemy models + Alembic migration done, all 4 core tables
+created. Next step: `llm-tracker` Typer CLI skeletons (`init`, `start`, `audit`) and
+PluginHost scaffold (roadmap.md Phase 0 checklist items 4–5).
 
 ## Suggestions (untouched)
 

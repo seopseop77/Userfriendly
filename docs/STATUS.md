@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-03 (Claude Code; Phase 0 checkpoint 4 — CLI + PluginHost done)
+**Last updated**: 2026-05-03 (Claude Code; Phase 0 code-complete — manual e2e remains)
 **Updated by**: Claude Code
 
 ## Current phase
 
-- **Phase**: Phase 0 — core framework skeleton (in progress)
-- **Active task**: EgressGuard skeleton + hello_world plugin + end-to-end test
+- **Phase**: Phase 0 — core framework skeleton (code-complete; awaiting manual e2e)
+- **Active task**: Manual verification: `llm-tracker init` → `start` → Claude Code → `audit`
 
 ## Active worklog
 
@@ -21,31 +21,36 @@
 ## Recent commits
 
 ```
+e123092 feat: EgressGuard skeleton, BasePlugin interface, hello_world plugin
+e4cda64 docs: checkpoint 4 — CLI + PluginHost done, next EgressGuard + hello_world
 0aaa698 feat: add CLI, PluginHost, AuditLog, config, and hook dispatch
 864e854 docs: checkpoint 3 — SQLite schema done, next CLI + PluginHost
 6ce1267 storage: add SQLAlchemy models + Alembic initial migration
-cc62568 docs: checkpoint 2 — proxy forwarder done, next is Alembic + SQLite schema
-453e590 proxy: add FastAPI catch-all route + httpx SSE forwarder with tee
 ```
 
 ## Where we paused
 
-Phase 0 checkpoint 4 complete: CLI (init/start/audit), PluginHost (8 hooks dispatched,
-audit logged), pydantic-settings config, EgressGuard and hello_world plugin remain.
+Phase 0 code-complete: all automated checklist items implemented and tested
+(6/6 tests pass). Two manual steps remain before Phase 0 DoD is fully met:
+1. `llm-tracker init && llm-tracker start`, use Claude Code, `llm-tracker audit`
+2. Measure first-token latency overhead (target ≤ 50 ms vs. direct API)
 
 ## Next single step
 
-Phase 0 checkpoint 4 done. Next: EgressGuard skeleton + hello_world plugin + end-to-end.
+Phase 0 code-complete. Next: manual end-to-end verification, then Phase 1a.
 
-Concretely:
-1. Create `src/llm_tracker/egress_guard/` — `EgressGuard` class that allows only the
-   LLM upstream in Mode L; all attempts logged to audit_log.
-2. Create `src/llm_tracker_plugin_hello_world/` — minimal no-op plugin that registers
-   via entry point, loads via PluginHost, and shows hook calls in audit log.
-3. Wire the hello_world entry point in `pyproject.toml` dev extras.
-4. Verify end-to-end: `llm-tracker init` → `llm-tracker start` → proxy a test request →
-   `llm-tracker audit` shows hook entries.
-5. Checkpoint: commit + worklog + STATUS update.
+To complete Phase 0 DoD manually:
+```bash
+.venv/bin/llm-tracker init           # creates var/ + DB tables
+ANTHROPIC_BASE_URL=http://127.0.0.1:8787 .venv/bin/llm-tracker start  # boot proxy
+# In another terminal: use Claude Code normally
+.venv/bin/llm-tracker audit          # confirm hook entries in audit log
+```
+
+After manual verification, start Phase 1a:
+- Create `llm_tracker_sdk` package with BasePlugin, hook decorators, capability tokens.
+- Write `plugin.toml` schema validator.
+- Flesh out `docs/plugins.md` authoring guide.
 
 ## Blocking / decisions needed
 
@@ -59,7 +64,7 @@ Concretely:
 - [x] Framework pivot v0.2
 - [x] ADRs 0001–0007 sealed (0004 superseded by 0007)
 - [x] English-only documentation pass
-- [ ] Phase 0 — core skeleton
+- [~] Phase 0 — core skeleton (code-complete; manual e2e pending)
 - [ ] Phase 1a — plugin SDK
 - [ ] Phase 1b — security boundary hardening
 - [ ] Phase 1c — `scope_guard` plugin

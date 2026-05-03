@@ -33,6 +33,11 @@ No architectural decisions required here — everything is prescribed.
 - Created `src/llm_tracker/plugin_host/host.py` — PluginHost with 8 hooks + audit writes (commit 0aaa698)
 - Created `src/llm_tracker/storage/audit.py` + `database.py` — write_audit(), session factory (commit 0aaa698)
 - Updated `proxy/app.py` — FastAPI lifespan wires PluginHost; `proxy/forwarder.py` — all 8 hooks dispatched (commit 0aaa698)
+- Created `src/llm_tracker/egress_guard/guard.py` — Phase-0 deny-all skeleton + audit log (commit e123092)
+- Created `src/llm_tracker/plugin_host/base.py` — BasePlugin interface (commit e123092)
+- Updated `plugin_host/host.py` — load_plugins() via entry_points(), dispatches to plugins (commit e123092)
+- Created `src/llm_tracker_plugin_hello_world/__init__.py` — no-op plugin; confirmed loadable (commit e123092)
+- Created `tests/test_plugin_host.py` — 3 integration tests; 6/6 total pass (commit e123092)
 
 ## Decisions
 
@@ -40,6 +45,25 @@ No architectural decisions required here — everything is prescribed.
 
 ## Verification
 
+```
+$ .venv/bin/pytest -v
+tests/proxy/test_forwarder.py::test_basic_forward PASSED
+tests/proxy/test_forwarder.py::test_auth_header_forwarded PASSED
+tests/proxy/test_forwarder.py::test_upstream_status_code_preserved PASSED
+tests/test_plugin_host.py::test_on_init_writes_proxy_started PASSED
+tests/test_plugin_host.py::test_hook_invocations_logged PASSED
+tests/test_plugin_host.py::test_on_shutdown_writes_proxy_stopped PASSED
+6 passed in 0.25s
+
+$ python3.12 -c "from importlib.metadata import entry_points; eps = list(entry_points(group='llm_tracker.plugins')); print([ep.name for ep in eps])"
+['hello_world']
+```
+
+Remaining manual steps (not yet done):
+- End-to-end: `llm-tracker init` → `llm-tracker start` → use with Claude Code → `llm-tracker audit`
+- Latency measurement: first-token overhead ≤ 50 ms vs. direct call
+
+Original install verification:
 ```
 $ .venv/bin/pip install -e ".[dev]"
 ...
@@ -66,9 +90,13 @@ Successfully installed Mako-1.3.12 MarkupSafe-3.0.3 aiosqlite-0.22.1 alembic-1.1
 
 ## Handoff
 
-Checkpoint 4 complete: CLI + PluginHost + AuditLog wired. Remaining Phase 0 items:
-EgressGuard skeleton, Mode configuration enforcement, hello_world sample plugin,
-end-to-end latency test (roadmap.md Phase 0 checklist items 7–11).
+Phase 0 code-complete (checkpoint 5). All automated checklist items done:
+deps, proxy+Tee, SQLite+Alembic, CLI, PluginHost, 8 hooks, AuditLog, EgressGuard,
+Mode config, hello_world plugin. Remaining items require manual verification:
+1. End-to-end: `llm-tracker init && llm-tracker start` + use with Claude Code
+   + `llm-tracker audit` to confirm hook entries appear.
+2. Latency: measure first-token overhead (target ≤ 50 ms vs. direct API call).
+Next phase: Phase 1a — plugin SDK (`llm_tracker_sdk` package).
 
 ## Suggestions (untouched)
 

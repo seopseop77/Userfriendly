@@ -1,6 +1,7 @@
 """Transparent HTTP forwarder with a tee for internal stream processing."""
 
 import asyncio
+import time
 from collections.abc import AsyncGenerator
 
 import httpx
@@ -10,6 +11,7 @@ from ulid import ULID
 
 from ..plugin_host.hooks import Abort, Block
 from ..plugin_host.host import PluginHost
+from ..storage.exchanges import record_exchange_timing
 
 UPSTREAM_BASE = "https://api.anthropic.com"
 _HOP_BY_HOP = frozenset({"host", "content-length", "transfer-encoding", "connection", "accept-encoding"})
@@ -44,6 +46,8 @@ async def forward_request(
     path: str,
     plugin_host: PluginHost | None = None,
 ) -> StreamingResponse:
+    t0_mono = time.monotonic()
+    t0_epoch_ms = int(time.time() * 1000)
     exchange_id = str(ULID())
 
     if plugin_host is not None:
@@ -75,17 +79,24 @@ async def forward_request(
             return _block_response(result.reason)
 
     internal: asyncio.Queue[bytes | None] = asyncio.Queue()
+    timing: dict[str, float] = {}
 
     async def generate() -> AsyncGenerator[bytes, None]:
         drain = asyncio.create_task(_drain(internal))
         completed = False
+        first_byte = True
         try:
             async for chunk in upstream.aiter_bytes():
+                if first_byte:
+                    timing["t1"] = time.monotonic()
                 if plugin_host is not None:
                     chunk_result = await plugin_host.on_response_chunk(exchange_id, chunk)
                     if isinstance(chunk_result, Abort):
                         break
                 await internal.put(chunk)
+                if first_byte:
+                    timing["t2"] = time.monotonic()
+                    first_byte = False
                 yield chunk
             completed = True
         finally:
@@ -93,9 +104,23 @@ async def forward_request(
             await drain
             await upstream.aclose()
 
-        if completed and plugin_host is not None:
-            await plugin_host.on_response_complete(exchange_id)
-            await plugin_host.on_persisted(exchange_id)
+        if completed:
+            if plugin_host is not None:
+                await plugin_host.on_response_complete(exchange_id)
+                await plugin_host.on_persisted(exchange_id)
+            if "t1" in timing and "t2" in timing and plugin_host is not None:
+                t_req = t0_epoch_ms
+                t_up = t0_epoch_ms + int((timing["t1"] - t0_mono) * 1000)
+                t_cli = t0_epoch_ms + int((timing["t2"] - t0_mono) * 1000)
+                async with plugin_host._session_factory() as session:
+                    await record_exchange_timing(
+                        session,
+                        exchange_id=exchange_id,
+                        endpoint=path,
+                        t_request_received_ms=t_req,
+                        t_upstream_first_byte_ms=t_up,
+                        t_client_first_byte_ms=t_cli,
+                    )
 
     response_headers = {
         k: v

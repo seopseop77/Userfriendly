@@ -27,6 +27,12 @@ No architectural decisions required here — everything is prescribed.
 - Created `src/llm_tracker/storage/models.py` — ORM models for exchanges, events, tool_calls, audit_log (commit 6ce1267)
 - Configured `alembic/env.py` for async SQLAlchemy + aiosqlite (commit 6ce1267)
 - Generated and applied initial Alembic migration; `alembic upgrade head` verified clean (commit 6ce1267)
+- Created `src/llm_tracker/config.py` — pydantic-settings, Mode StrEnum (commit 0aaa698)
+- Created `src/llm_tracker/cli/main.py` — Typer CLI: init, start, audit (commit 0aaa698)
+- Created `src/llm_tracker/plugin_host/hooks.py` — Pass/Block/Transform/Abort types (commit 0aaa698)
+- Created `src/llm_tracker/plugin_host/host.py` — PluginHost with 8 hooks + audit writes (commit 0aaa698)
+- Created `src/llm_tracker/storage/audit.py` + `database.py` — write_audit(), session factory (commit 0aaa698)
+- Updated `proxy/app.py` — FastAPI lifespan wires PluginHost; `proxy/forwarder.py` — all 8 hooks dispatched (commit 0aaa698)
 
 ## Decisions
 
@@ -60,9 +66,9 @@ Successfully installed Mako-1.3.12 MarkupSafe-3.0.3 aiosqlite-0.22.1 alembic-1.1
 
 ## Handoff
 
-Checkpoint 3 complete: SQLAlchemy models + Alembic migration done, all 4 core tables
-created. Next step: `llm-tracker` Typer CLI skeletons (`init`, `start`, `audit`) and
-PluginHost scaffold (roadmap.md Phase 0 checklist items 4–5).
+Checkpoint 4 complete: CLI + PluginHost + AuditLog wired. Remaining Phase 0 items:
+EgressGuard skeleton, Mode configuration enforcement, hello_world sample plugin,
+end-to-end latency test (roadmap.md Phase 0 checklist items 7–11).
 
 ## Suggestions (untouched)
 

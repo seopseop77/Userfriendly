@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-03 (Claude Code; Phase 0 checkpoint 3 — SQLite schema done)
+**Last updated**: 2026-05-03 (Claude Code; Phase 0 checkpoint 4 — CLI + PluginHost done)
 **Updated by**: Claude Code
 
 ## Current phase
 
 - **Phase**: Phase 0 — core framework skeleton (in progress)
-- **Active task**: Typer CLI skeletons (init, start, audit) + PluginHost scaffold
+- **Active task**: EgressGuard skeleton + hello_world plugin + end-to-end test
 
 ## Active worklog
 
@@ -21,31 +21,30 @@
 ## Recent commits
 
 ```
+0aaa698 feat: add CLI, PluginHost, AuditLog, config, and hook dispatch
+864e854 docs: checkpoint 3 — SQLite schema done, next CLI + PluginHost
 6ce1267 storage: add SQLAlchemy models + Alembic initial migration
 cc62568 docs: checkpoint 2 — proxy forwarder done, next is Alembic + SQLite schema
 453e590 proxy: add FastAPI catch-all route + httpx SSE forwarder with tee
-d4fb688 docs: record commit hash b43d82d in worklog and STATUS
-b43d82d deps: fill in pyproject.toml runtime dependencies for Phase 0
 ```
 
 ## Where we paused
 
-Phase 0 checkpoint 3 complete: SQLAlchemy ORM models + Alembic migration created
-for all 4 core tables (exchanges, events, tool_calls, audit_log). `alembic upgrade
-head` verified. Next: Typer CLI skeletons + PluginHost scaffold.
+Phase 0 checkpoint 4 complete: CLI (init/start/audit), PluginHost (8 hooks dispatched,
+audit logged), pydantic-settings config, EgressGuard and hello_world plugin remain.
 
 ## Next single step
 
-Phase 0 checkpoint 3 done. Next: Typer CLI skeletons + PluginHost scaffold.
+Phase 0 checkpoint 4 done. Next: EgressGuard skeleton + hello_world plugin + end-to-end.
 
 Concretely:
-1. Create `src/llm_tracker/cli/` with Typer app and three stub commands:
-   `init` (create config + run `alembic upgrade head`), `start` (boot uvicorn),
-   `audit` (query audit_log).
-2. Wire `llm-tracker = "llm_tracker.cli:app"` in `pyproject.toml [project.scripts]`.
-3. Create `src/llm_tracker/plugin_host/` skeleton: `PluginHost` class, entry-point
-   loader, hook dispatcher stub (8 hooks invoked in order, no plugin logic yet).
-4. Invoke all 8 hooks at the correct points in `forwarder.py` (empty dispatch only).
+1. Create `src/llm_tracker/egress_guard/` — `EgressGuard` class that allows only the
+   LLM upstream in Mode L; all attempts logged to audit_log.
+2. Create `src/llm_tracker_plugin_hello_world/` — minimal no-op plugin that registers
+   via entry point, loads via PluginHost, and shows hook calls in audit log.
+3. Wire the hello_world entry point in `pyproject.toml` dev extras.
+4. Verify end-to-end: `llm-tracker init` → `llm-tracker start` → proxy a test request →
+   `llm-tracker audit` shows hook entries.
 5. Checkpoint: commit + worklog + STATUS update.
 
 ## Blocking / decisions needed

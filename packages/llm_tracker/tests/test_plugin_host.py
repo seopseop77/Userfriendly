@@ -1,11 +1,14 @@
 """Integration tests: PluginHost dispatches hooks and writes audit log entries."""
 
-import pytest
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+import asyncio
 
+import llm_tracker.plugin_host.host as host_mod
+import pytest
 from llm_tracker.plugin_host.host import PluginHost
 from llm_tracker.storage.models import AuditLog, Base
+from llm_tracker_sdk import BasePlugin, Block, Pass
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 
 @pytest.fixture
@@ -53,3 +56,77 @@ async def test_on_shutdown_writes_proxy_stopped(session_factory):
     await host.on_shutdown()
     kinds = {r.kind for r in await _audit_rows(session_factory)}
     assert "proxy_stopped" in kinds
+
+
+# -- fault isolation --------------------------------------------------------
+
+
+class _CrashPlugin(BasePlugin):
+    name = "crasher"
+
+    async def on_request_received(self, exchange_id: str) -> Pass | Block:
+        raise RuntimeError("boom")
+
+
+class _SlowPlugin(BasePlugin):
+    name = "slower"
+
+    async def on_request_received(self, exchange_id: str) -> Pass | Block:
+        await asyncio.sleep(999)
+        return Pass()
+
+
+async def test_crashing_plugin_does_not_propagate(session_factory):
+    host = PluginHost(mode="L", session_factory=session_factory)
+    host._plugins = [_CrashPlugin()]
+
+    result = await host.on_request_received("xid-crash")
+
+    assert isinstance(result, Pass)
+    rows = await _audit_rows(session_factory)
+    fault = next((r for r in rows if r.kind == "plugin_fault"), None)
+    assert fault is not None
+    assert fault.plugin == "crasher"
+    assert fault.outcome == "error"
+
+
+async def test_timeout_plugin_does_not_propagate(monkeypatch, session_factory):
+    monkeypatch.setattr(host_mod, "HOOK_TIMEOUT", 0.05)
+    host = PluginHost(mode="L", session_factory=session_factory)
+    host._plugins = [_SlowPlugin()]
+
+    result = await host.on_request_received("xid-slow")
+
+    assert isinstance(result, Pass)
+    rows = await _audit_rows(session_factory)
+    fault = next((r for r in rows if r.kind == "plugin_fault"), None)
+    assert fault is not None
+    assert fault.plugin == "slower"
+    assert fault.outcome == "error"
+
+
+# -- manifest validation ----------------------------------------------------
+
+
+class _NoManifestPlugin(BasePlugin):
+    name = "no_manifest"
+
+
+class _FakeEP:
+    name = "no_manifest"
+
+    def load(self):
+        return _NoManifestPlugin
+
+
+async def test_load_plugins_rejects_missing_manifest(monkeypatch, session_factory):
+    monkeypatch.setattr(host_mod, "entry_points", lambda **_kw: [_FakeEP()])
+    host = PluginHost(mode="L", session_factory=session_factory)
+    await host.load_plugins()
+
+    assert host._plugins == []
+    rows = await _audit_rows(session_factory)
+    rejected = next((r for r in rows if r.kind == "manifest_rejected"), None)
+    assert rejected is not None
+    assert rejected.plugin == "no_manifest"
+    assert rejected.outcome == "denied"

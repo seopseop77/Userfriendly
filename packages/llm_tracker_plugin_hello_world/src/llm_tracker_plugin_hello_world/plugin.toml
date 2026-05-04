@@ -1,0 +1,6 @@
+name = "hello_world"
+version = "0.0.1"
+description = "No-op reference plugin — verifies the plugin entry-point contract."
+hooks = []
+capabilities = []
+allowed_modes = ["L", "A", "R"]

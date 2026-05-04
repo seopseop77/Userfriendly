@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-03 (Claude Code; latency instrumentation done — awaiting user's 10+ prompts)
+**Last updated**: 2026-05-04 (Claude Code; Phase 0 CLOSED — latency PASS, Phase 1a next)
 **Updated by**: Claude Code
 
 ## Current phase
 
-- **Phase**: Phase 0 — core framework skeleton (e2e verified; latency measurement in progress)
-- **Active task**: User runs 10+ prompts through proxy → run report script → record PASS/FAIL
+- **Phase**: Phase 1a — plugin SDK (not yet started)
+- **Active task**: None — Phase 0 fully closed. Ready to start Phase 1a.
 
 ## Active worklog
 
@@ -21,34 +21,36 @@
 ## Recent commits
 
 ```
+dd3686a proxy: strip Content-Encoding from upstream response headers
 594ad32 proxy: instrument first-token latency; add report script
 df422d8 proxy: strip Accept-Encoding to prevent ZlibError on client
+3464490 docs: checkpoint 6 — latency instrumentation done, awaiting user run
 f27b0d7 docs: Phase 0 code-complete — worklog + STATUS final update
-e123092 feat: EgressGuard skeleton, BasePlugin interface, hello_world plugin
-e4cda64 docs: checkpoint 4 — CLI + PluginHost done, next EgressGuard + hello_world
 ```
 
 ## Where we paused
 
-Latency instrumentation committed (594ad32). Waiting for user to run 10+
-prompts through the proxy, then will execute the report script and record
-PASS/FAIL in the worklog.
+Phase 0 fully closed. Latency PASS (median 0.0 ms, n=20). All DoD items met.
 
 ## Next single step
 
-**User action required**: run the proxy and send 10+ natural prompts through it.
+Start Phase 1a — plugin SDK:
+- Create `src/llm_tracker_sdk/` package with `BasePlugin` formalization
+  and `@hook` decorator.
+- Define capability token vocabulary.
+- Add `plugin.toml` schema validator.
+- Flesh out `docs/plugins.md` as an actual SDK reference.
 
-```bash
-# Terminal 1 — boot proxy
-mkdir -p var
-.venv/bin/llm-tracker start > var/proxy.log 2>&1 &
+## Progress
 
-# Terminal 2 (or normal Claude Code terminal)
-export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
-# Use Claude Code as normal for 10+ prompts, then say "done"
-```
-
-After user says "done": kill proxy (SIGTERM), run report script, record result.
+- [x] Design v0.1 written
+- [x] Framework pivot v0.2
+- [x] ADRs 0001–0007 sealed (0004 superseded by 0007)
+- [x] Phase 0 — core skeleton (CLOSED 2026-05-04)
+- [ ] Phase 1a — plugin SDK
+- [ ] Phase 1b — security boundary hardening
+- [ ] Phase 1c — `scope_guard` plugin
+- [ ] Phase 2+ — Mode R sink, third-party plugins
 
 ## Blocking / decisions needed
 

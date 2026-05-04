@@ -112,6 +112,58 @@ Successfully installed Mako-1.3.12 MarkupSafe-3.0.3 aiosqlite-0.22.1 alembic-1.1
 Awaiting user to run 10+ prompts through proxy, then will run report script
 and record PASS/FAIL below.
 
+## Checkpoint 7 — Latency verification + Phase 0 close (2026-05-04)
+
+Also fixed the ZlibError root cause (commit dd3686a): httpx adds its own
+`Accept-Encoding: gzip` when forwarding to Anthropic regardless of what we
+strip from client headers; `aiter_bytes()` decompresses the response, but
+`Content-Encoding: gzip` was still forwarded, causing the client to try
+decompressing already-decompressed data. Fix: drop `content-encoding` from
+the forwarded response headers.
+
+### Latency verification — report output
+
+```
+Exchanges with timing data : 20
+proxy_overhead_ms (t_client_first_byte - t_upstream_first_byte):
+  min    : 0.0 ms
+  median : 0.0 ms
+  p95    : 0.0 ms
+  max    : 0.0 ms
+
+RESULT: PASS  (median 0.0 ms ≤ 50 ms target)
+```
+
+**PASS**. 20 exchanges captured over 10+ natural Claude Code prompts via proxy.
+
+Note on 0.0 ms readings: `t2` is measured immediately before `yield chunk`
+(not after the data reaches the client's socket — that's not observable from
+inside an async generator). At integer-ms resolution, sub-millisecond proxy
+processing rounds to 0. This is expected for a Phase 0 near-pass-through
+proxy on localhost. The PASS criterion (median ≤ 50 ms) is clearly met.
+
+## Handoff — Phase 0 CLOSED
+
+Phase 0 is complete as of 2026-05-04 (commit TBD for this worklog update).
+
+All DoD items satisfied:
+- [x] deps, proxy+Tee, SQLite+Alembic, CLI, PluginHost, 8 hooks, AuditLog,
+      EgressGuard, Mode config, hello_world plugin
+- [x] 6/6 automated tests pass
+- [x] E2E verified manually by user (proxy → Claude Code → audit log entries)
+- [x] First-token latency: PASS (median 0.0 ms, n=20)
+
+Known limits carried into Phase 1:
+- E2E verification not reproduced in CI (user-manual only).
+- ZlibError fix (dd3686a) strips Content-Encoding; a future phase may want
+  to honor streaming compression end-to-end via aiter_raw().
+- Latency measurement captures proxy processing only (pre-yield); TCP write
+  time is not observable from the async generator.
+
+Next: Phase 1a — `llm_tracker_sdk` package (BasePlugin formalization,
+@hook decorator, capability tokens), plugin.toml schema validator,
+docs/plugins.md SDK reference.
+
 ## Suggestions (untouched)
 
 - None at this stage.

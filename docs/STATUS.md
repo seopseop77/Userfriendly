@@ -6,45 +6,69 @@
 
 ---
 
-**Last updated**: 2026-05-04
+**Last updated**: 2026-05-05
 **Updated by**: Claude Code
 
 ## Current phase
 
-- **Phase**: Phase 1a — plugin SDK (hook types + BasePlugin done; capability tokens next)
-- **Active task**: SDK remaining items — capability tokens, plugin.toml schema, test harness, docs.
+- **Phase**: Phase 1b — security boundary hardening (Phase 1a CLOSED)
+- **Active task**: None — Phase 1a complete; Phase 1b ready to start.
 
 ## Active worklog
 
-`docs/worklog/2026-05-04-phase1a-sdk.md`
+Phase 1a worklog closed at `docs/worklog/2026-05-04-phase1a-sdk.md`.
+Phase 1b should open: `docs/worklog/<YYYY-MM-DD>-phase1b-security.md`.
 
 ## Recent commits
 
 ```
+2652863   docs: expand plugins.md from skeleton to Phase 1a SDK reference
+1ac807d   sdk: add PluginHarness test harness + tests
+4e98e0c   sdk: add plugin.toml Pydantic schema + validator + tests
+60b379a   sdk: add capability token vocabulary (design.md §6.3.3)
 c3b417e   sdk: move hook types and BasePlugin into llm_tracker_sdk
-66220fb   infra: migrate to uv workspace monorepo (ADR-0003 Phase 1a layout)
-9f90d50   docs: revise and accept ADR-0003 (distribution + repo layout)
-7e46032   docs: Phase 0 CLOSED — latency PASS, Phase 1a next
-dd3686a   proxy: strip Content-Encoding from upstream response headers
 ```
 
 ## Where we paused
 
-`Pass/Block/Transform/Abort` and `BasePlugin` moved into `llm_tracker_sdk`
-(commit c3b417e). Core (`host.py`, `forwarder.py`) now imports from SDK.
-Old `plugin_host/hooks.py` and `plugin_host/base.py` deleted from core.
-6/6 tests pass; ruff clean.
+Phase 1a fully closed (2026-05-05). `llm_tracker_sdk` now contains:
+`Pass/Block/Transform/Abort`, `BasePlugin`, `capabilities` module,
+`PluginManifest` schema + validator, `PluginHarness` test harness.
+`docs/plugins.md` is a full SDK reference. 19/19 tests pass; ruff clean.
+
+`@hook` decorator deferred (plain method override is sufficient; no runtime
+benefit yet). Egress SDK API deferred to Phase 1b.
 
 ## Next single step
 
-Continue Phase 1a SDK content:
+Begin Phase 1b — security boundary hardening. Per `docs/roadmap.md`:
 
-1. Add capability token vocabulary to SDK as string constants
-   (`packages/llm_tracker_sdk/src/llm_tracker_sdk/capabilities.py`).
-2. Add `plugin.toml` Pydantic schema + validator to SDK.
-3. Add test harness (mock HookContext, mock EgressGuard, mock SQLite session).
-4. Expand `docs/plugins.md` from skeleton to SDK reference.
+1. Open worklog `docs/worklog/<YYYY-MM-DD>-phase1b-security.md`.
+2. Read `docs/design.md §7` (security model) and `docs/decisions/ADR-0006`
+   for the full threat model.
+3. Hook dispatch timeout + exception isolation in `PluginHost` — a plugin
+   fault must not crash the core.
+4. Manifest loading: validate `plugin.toml` via `PluginManifest` at plugin
+   load time; reject plugins with invalid manifests.
 5. Each step = its own checkpoint.
+
+## Blocking / decisions needed
+
+- None. Phase 1b is unblocked.
+- ADR-0005 (plugin signing trust model) is still open; may surface during
+  Phase 1b. Write ADR before implementing signing.
+
+## Progress
+
+- [x] Design v0.1 written
+- [x] Framework pivot v0.2
+- [x] English-only documentation pass
+- [x] ADRs 0001–0007 sealed
+- [x] Phase 0 — core skeleton (CLOSED 2026-05-04)
+- [x] Phase 1a — plugin SDK (CLOSED 2026-05-05)
+- [ ] Phase 1b — security boundary hardening
+- [ ] Phase 1c — `scope_guard` plugin
+- [ ] Phase 2+ — Mode R sink, third-party plugins
 
 ## Blocking / decisions needed
 

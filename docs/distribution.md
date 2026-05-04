@@ -1,9 +1,12 @@
 # Distribution and update strategy (analysis)
 
-**Status**: analysis document. After the framework pivot (ADR-0005), this
-document needs to be reinterpreted around *core + plugins distributed
-separately*. Update before Phase 1 starts. ADR-0003 will be revised to
-match.
+**Status**: analysis document, preserved for historical context. The
+distribution decision is now sealed in **ADR-0003** (Accepted, 2026-05-03):
+monorepo with per-package `pyproject.toml` (uv workspace), per-package
+hatchling build, git URL install for the demo phase, PyPI deferred.
+
+The analysis below predates the framework pivot and the multi-package
+decision — read ADR-0003 first.
 
 ## The problem
 

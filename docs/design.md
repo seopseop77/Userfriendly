@@ -460,8 +460,6 @@ deliberately narrow.
 - When to move plugin isolation from in-process to subprocess/seccomp
   (Phase 3 candidate).
 - Plugin signing trust model (operator's own key vs. our central key).
-- ADR-0003 (distribution): needs an update for the framework + plugin
-  separated-distribution model.
 
 ## 13. Appendices
 

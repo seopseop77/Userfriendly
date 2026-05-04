@@ -1,4 +1,4 @@
-"""Hook return types shared by the core and the plugin SDK."""
+"""Hook return types: every plugin hook must return one of these."""
 
 from dataclasses import dataclass
 

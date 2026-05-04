@@ -5,7 +5,8 @@ Plugin authors import from this package only; never from llm_tracker.*.
 
 from . import capabilities
 from .hooks import Abort, Block, Pass, Transform
+from .manifest import PluginManifest
 from .plugin import BasePlugin
 
 __version__ = "0.0.1"
-__all__ = ["Abort", "BasePlugin", "Block", "Pass", "Transform", "capabilities"]
+__all__ = ["Abort", "BasePlugin", "Block", "Pass", "PluginManifest", "Transform", "capabilities"]

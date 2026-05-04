@@ -125,7 +125,7 @@ async def forward_request(
     response_headers = {
         k: v
         for k, v in upstream.headers.items()
-        if k.lower() not in {"transfer-encoding", "connection"}
+        if k.lower() not in {"transfer-encoding", "connection", "content-encoding"}
     }
 
     return StreamingResponse(

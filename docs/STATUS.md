@@ -11,8 +11,8 @@
 
 ## Current phase
 
-- **Phase**: Phase 1a — plugin SDK (layout migration done; SDK content next)
-- **Active task**: Fill `packages/llm_tracker_sdk/` with SDK content.
+- **Phase**: Phase 1a — plugin SDK (hook types + BasePlugin done; capability tokens next)
+- **Active task**: SDK remaining items — capability tokens, plugin.toml schema, test harness, docs.
 
 ## Active worklog
 
@@ -21,35 +21,30 @@
 ## Recent commits
 
 ```
+c3b417e   sdk: move hook types and BasePlugin into llm_tracker_sdk
 66220fb   infra: migrate to uv workspace monorepo (ADR-0003 Phase 1a layout)
 9f90d50   docs: revise and accept ADR-0003 (distribution + repo layout)
 7e46032   docs: Phase 0 CLOSED — latency PASS, Phase 1a next
 dd3686a   proxy: strip Content-Encoding from upstream response headers
-594ad32   proxy: instrument first-token latency; add report script
 ```
 
 ## Where we paused
 
-Phase 1a layout migration complete (commit 66220fb). Repo is now a uv
-workspace monorepo under `packages/`. `uv sync` installs all packages
-editable; 6/6 tests pass; `hello_world` entry_point is discoverable.
-`packages/llm_tracker_sdk/` exists as a skeleton only (`__init__.py` stub).
+`Pass/Block/Transform/Abort` and `BasePlugin` moved into `llm_tracker_sdk`
+(commit c3b417e). Core (`host.py`, `forwarder.py`) now imports from SDK.
+Old `plugin_host/hooks.py` and `plugin_host/base.py` deleted from core.
+6/6 tests pass; ruff clean.
 
 ## Next single step
 
-Begin Phase 1a SDK content — fill `packages/llm_tracker_sdk/`:
+Continue Phase 1a SDK content:
 
-1. Move `Pass/Block/Transform/Abort` hook return types from
-   `packages/llm_tracker/src/llm_tracker/plugin_host/hooks.py` into
-   `packages/llm_tracker_sdk/src/llm_tracker_sdk/`.
-2. Move `BasePlugin` from `plugin_host/base.py` into SDK; have core import
-   from SDK (not define it).
-3. Add `@hook("name")` decorator (or plain abstract methods — decide first).
-4. Add capability token vocabulary as SDK constants.
-5. Add `plugin.toml` Pydantic schema + validator to SDK.
-6. Add test harness (mock HookContext, mock EgressGuard, mock SQLite session).
-7. Expand `docs/plugins.md` from skeleton to SDK reference.
-8. Each step = its own checkpoint.
+1. Add capability token vocabulary to SDK as string constants
+   (`packages/llm_tracker_sdk/src/llm_tracker_sdk/capabilities.py`).
+2. Add `plugin.toml` Pydantic schema + validator to SDK.
+3. Add test harness (mock HookContext, mock EgressGuard, mock SQLite session).
+4. Expand `docs/plugins.md` from skeleton to SDK reference.
+5. Each step = its own checkpoint.
 
 ## Blocking / decisions needed
 

@@ -4,140 +4,195 @@ All *features* in this framework live in plugins. This document defines the
 contract a plugin author can rely on. Core design is in `design.md`; the
 security policy is in ADR-0006.
 
-> **Status**: skeleton. The SDK lands in Phase 1a; this document will fill
-> out then. For now, it's enough for a collaborator considering writing a
-> plugin to know what they will get and what they must declare.
-
 ## 1. What a plugin is
 
-- A Python package, distributed normally.
+- A Python package, installed alongside the core.
 - It registers itself via the `llm_tracker.plugins` setuptools entry point.
 - It carries a `plugin.toml` manifest at the package root.
-- It binds to one or more hooks.
+- It subclasses `BasePlugin` and overrides whichever hooks it needs.
 - Outside of its declared capabilities, it cannot do anything (enforced).
 
 ## 2. `plugin.toml` schema
 
+All fields are validated by `llm_tracker_sdk.manifest.PluginManifest` at
+load time. Unknown fields are rejected.
+
 ```toml
-name = "<plugin-name>"             # alphanumeric + hyphen/underscore; becomes the namespace
-version = "0.1.0"
-description = "..."
-author = "..."
+name = "my_plugin"          # required; becomes the DB namespace
+version = "0.1.0"           # required
+description = "..."         # optional
 
-# Compatible core versions
-core_version_constraint = ">=0.1.0,<0.2.0"
-
-# Hooks to bind
+# Hooks the plugin binds to (subset of the 8 hooks below)
 hooks = ["before_forward", "on_persisted"]
 
-# Capabilities required (operator must approve)
+# Capabilities required (operator must approve each one)
 capabilities = ["read_request_content", "block_request"]
 
-# Egress allowlist for outbound HTTP (exact match; no wildcards)
-egress_destinations = []          # empty = no outbound
+# Egress allowlist (exact match; no wildcards). Requires egress_http capability.
+egress_destinations = []
 
-# Modes in which the plugin is allowed to run
+# Deployment modes in which this plugin runs ("L", "A", "R")
 allowed_modes = ["A", "R"]
 
-# DB table prefix for plugin-owned tables
-db_namespace = "<plugin-name>"
-
-# Minimum content level the core must pass to this plugin
-required_content_level = "L2"
-
-# (optional) operator-supplied configuration schema
-[config_schema]
-my_field = "string"
+# SQLite table prefix (defaults to empty; use name if you own tables)
+db_namespace = "my_plugin"
 ```
+
+Use `PluginManifest.from_path(Path("plugin.toml"))` to validate programmatically.
 
 ## 3. Hook lifecycle
 
-| Hook | When | Return |
+| Hook | When | Allowed returns |
 |---|---|---|
-| `on_init` | once at proxy boot | (none) |
-| `on_request_received` | right after intake | `Pass` / `Block(reason)` / `Transform(req)` |
-| `before_forward` | just before upstream call | `Pass` / `Block(reason)` / `Transform(req)` |
-| `on_upstream_response_start` | response headers arrive | `Pass` / `Abort(reason)` |
-| `on_response_chunk` | per chunk | `Pass` / `Abort(reason)` |
-| `on_response_complete` | `message_stop` | (observe only) |
-| `on_persisted` | after local DB persistence (async OK) | (observe only) |
-| `on_shutdown` | at process shutdown | (none) |
+| `on_init` | Once at proxy boot | (none) |
+| `on_request_received` | Right after intake, before validation | `Pass` / `Block(reason)` |
+| `before_forward` | After validation, before upstream | `Pass` / `Block(reason)` / `Transform(headers, body)` |
+| `on_upstream_response_start` | Upstream response headers arrive | `Pass` / `Abort(reason)` |
+| `on_response_chunk` | Each streamed chunk | `Pass` / `Abort(reason)` |
+| `on_response_complete` | `message_stop` event | (observe only) |
+| `on_persisted` | After local DB write (async OK) | (observe only) |
+| `on_shutdown` | At process shutdown | (none) |
 
-`Block` / `Abort` results in a synthetic SSE response that explains the
-block to the user.
+`Block` / `Abort` results in a synthetic response delivered to the client.
 
 ## 4. Capability vocabulary
 
-| Capability | Meaning |
-|---|---|
-| `read_request_metadata` | model name, token counts, scrubbed headers |
-| `read_request_content` | user prompts and tool_result bodies |
-| `read_response_metadata` | response usage, stop_reason |
-| `read_response_content` | response body (incl. streamed chunks) |
-| `modify_request` | mutate the upstream request before forward |
-| `block_request` | issue a synthetic block response |
-| `abort_response` | terminate an in-progress response stream |
-| `read_persisted_data` | read the local DB |
-| `write_plugin_tables` | write to your own namespace |
-| `egress_http` | outbound HTTP through EgressGuard |
+Declare required capabilities in `plugin.toml`. The operator approves each
+at install time; changing the manifest requires re-approval.
 
-## 5. Plugin code skeleton (planned SDK shape)
+| Constant (`llm_tracker_sdk.capabilities.*`) | Token string | Meaning |
+|---|---|---|
+| `READ_REQUEST_METADATA` | `read_request_metadata` | Model name, token counts, scrubbed headers, timing |
+| `READ_REQUEST_CONTENT` | `read_request_content` | User prompts and tool_result bodies |
+| `READ_RESPONSE_METADATA` | `read_response_metadata` | Response usage, stop_reason |
+| `READ_RESPONSE_CONTENT` | `read_response_content` | Response body (incl. streamed chunks) |
+| `MODIFY_REQUEST` | `modify_request` | Mutate the upstream request before forward |
+| `BLOCK_REQUEST` | `block_request` | Issue a synthetic block response |
+| `ABORT_RESPONSE` | `abort_response` | Terminate an in-progress response stream |
+| `READ_PERSISTED_DATA` | `read_persisted_data` | Read the local SQLite DB |
+| `WRITE_PLUGIN_TABLES` | `write_plugin_tables` | Write to your own DB namespace |
+| `EGRESS_HTTP` | `egress_http` | Outbound HTTP through EgressGuard (requires allowlist) |
+
+## 5. Writing a plugin
+
+### Install
+
+```
+pip install "git+https://github.com/<owner>/Userfriendly.git#subdirectory=packages/llm_tracker_sdk"
+```
+
+### Minimal plugin
 
 ```python
 # src/my_plugin/__init__.py
-from llm_tracker_sdk import BasePlugin, hook, Pass, Block
+from llm_tracker_sdk import BasePlugin, Block, Pass
+
 
 class MyPlugin(BasePlugin):
+    name = "my_plugin"
 
-    @hook("before_forward")
-    async def check_scope(self, ctx):
-        user_msg = ctx.last_user_message_text   # masked per capability
-        if "..." in user_msg:
-            return Block(reason="...")
+    async def before_forward(self, exchange_id: str) -> Pass | Block:
+        # exchange_id identifies this request in the local DB
         return Pass()
-
-    @hook("on_persisted")
-    async def maybe_export(self, ctx, exchange_id):
-        # Use ctx.egress.fetch(...) only. Raw httpx is forbidden.
-        ...
 ```
 
-## 6. DB tables
+Register via `pyproject.toml`:
 
-A plugin creates tables only inside its `db_namespace`. Naming:
+```toml
+[project.entry-points."llm_tracker.plugins"]
+my_plugin = "my_plugin:MyPlugin"
+```
+
+### Overriding hooks
+
+Override only the hooks your plugin needs. Unoverridden hooks default to
+`Pass()` (or no-op for observe-only hooks). `BasePlugin` is a concrete
+class — no abstract methods to satisfy.
+
+```python
+from llm_tracker_sdk import Abort, BasePlugin, Block, Pass, Transform
+from llm_tracker_sdk import capabilities
+
+
+class MyPlugin(BasePlugin):
+    name = "my_plugin"
+
+    async def on_request_received(self, exchange_id: str) -> Pass | Block:
+        return Pass()
+
+    async def before_forward(self, exchange_id: str) -> Pass | Block | Transform:
+        return Transform(headers={"x-custom": "1"})
+
+    async def on_response_chunk(self, exchange_id: str, chunk: bytes) -> Pass | Abort:
+        return Pass()
+```
+
+## 6. Testing your plugin
+
+Use `llm_tracker_sdk.testing.PluginHarness`:
+
+```python
+from llm_tracker_sdk.testing import PluginHarness
+from my_plugin import MyPlugin
+
+
+async def test_passes_normal_request():
+    harness = PluginHarness(MyPlugin())
+    await harness.init()
+    result = await harness.on_request_received()
+    harness.assert_pass(result)
+
+
+async def test_blocks_flagged_request():
+    harness = PluginHarness(MyPlugin())
+    result = await harness.on_request_received("special-exchange-id")
+    harness.assert_block(result, reason_contains="out of scope")
+```
+
+Assertion helpers: `assert_pass`, `assert_block(reason_contains=...)`,
+`assert_transform`, `assert_abort(reason_contains=...)`.
+
+## 7. DB tables
+
+A plugin owns tables inside its `db_namespace`. Naming convention:
 `plugin_<namespace>__<table>`. Schema migrations live in the plugin's
 own Alembic version directory; the core applies them at install time.
 
-## 7. Outbound HTTP
+## 8. Outbound HTTP (Phase 1b)
 
-Direct use of `requests` / `urllib` / `httpx` is **forbidden** — caught by
-static lint and code review. All outbound HTTP goes through the SDK-provided
-`ctx.egress.fetch(url, ...)`. EgressGuard enforces (a) exact-match against
-the manifest's `egress_destinations`, (b) operator approval, (c) mode
-permission.
+Direct use of `requests` / `urllib` / `httpx` from plugin code is
+**forbidden** — blocked by lint rule and code review. A safe egress API
+(`ctx.egress.fetch(url, ...)` routed through EgressGuard) arrives in Phase
+1b. For now, plugins that need egress must wait for that phase. EgressGuard
+enforces: (a) exact-match against `egress_destinations`, (b) operator
+approval, (c) mode permission.
 
-## 8. Mode-aware behavior
+## 9. Mode-aware behavior
 
-The manifest's `allowed_modes` decides where the plugin can run:
+The manifest's `allowed_modes` decides where the plugin loads:
 
 - `["L", "A", "R"]` — works anywhere.
-- `["A", "R"]` — needs outbound, so disabled in Mode L.
+- `["A", "R"]` — needs outbound capability; disabled in Mode L.
 - `["R"]` — data upload sink; only Mode R.
 
-## 9. Isolation and trust
+## 10. Isolation and trust
 
-Through Phase 1, plugins run in-process. A determined plugin can in
-principle bypass EgressGuard with raw sockets — policy forbids it, but
-strict isolation is Phase 3 (subprocess). Therefore: *do not install
-plugins you don't trust*. Manifest signature verification, code review,
-and explicit capability approval are the first defense.
+Through Phase 1, plugins run in-process. A determined plugin can bypass
+EgressGuard with raw sockets — policy forbids it, but strict sandboxing is
+Phase 3 (subprocess). Therefore: *do not install plugins you don't trust*.
+Manifest signature verification, code review, and explicit capability
+approval are the primary defense.
 
-## 10. Reference plugins
+## 11. Reference plugins
 
-- `scope_guard` — task-scope enforcement (ADR-0002 spec).
-- `supabase_sink` — Mode R central upload (ADR-0007).
-- `hello_world` — Phase 0 verification no-op.
+| Package | Location | Purpose |
+|---|---|---|
+| `llm-tracker-plugin-hello-world` | `packages/llm_tracker_plugin_hello_world/` | Phase 0 verification no-op |
+| `llm-tracker-plugin-scope-guard` | `packages/llm_tracker_plugin_scope_guard/` | Task-scope enforcement (Phase 1c) |
+| `llm-tracker-plugin-supabase-sink` | `packages/llm_tracker_plugin_supabase_sink/` | Mode R upload sink (Phase 2) |
 
-Each reference plugin is a separate package, but lives in this repository
-tree under `src/llm_tracker_plugin_<name>/` for now. Splitting to dedicated
-repos is deferred.
+Install from git URL:
+
+```
+pip install "git+https://github.com/<owner>/Userfriendly.git#subdirectory=packages/llm_tracker_plugin_hello_world"
+```

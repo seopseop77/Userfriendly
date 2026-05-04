@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llm-tracker-server"
+version = "0.0.1"
+description = "Reference receiver app for llm-tracker Mode R deployments (pairs with supabase_sink plugin)."
+requires-python = ">=3.11"
+authors = [{ name = "Userfriendly Team" }]
+license = { text = "Proprietary (internal research use)" }
+
+dependencies = [
+    "pydantic",
+    "pynacl",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/llm_tracker_server"]

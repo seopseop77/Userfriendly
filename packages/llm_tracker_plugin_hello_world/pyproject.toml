@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llm-tracker-plugin-hello-world"
+version = "0.0.1"
+description = "No-op reference plugin for llm-tracker — demonstrates the plugin entry-point contract."
+requires-python = ">=3.11"
+authors = [{ name = "Userfriendly Team" }]
+license = { text = "Proprietary (internal research use)" }
+
+dependencies = [
+    "llm-tracker-sdk",
+]
+
+[project.entry-points."llm_tracker.plugins"]
+hello_world = "llm_tracker_plugin_hello_world:HelloWorldPlugin"
+
+[tool.uv.sources]
+llm-tracker-sdk = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/llm_tracker_plugin_hello_world"]

@@ -11,46 +11,40 @@
 
 ## Current phase
 
-- **Phase**: Phase 1b — security boundary hardening (Phase 1a CLOSED)
-- **Active task**: None — Phase 1a complete; Phase 1b ready to start.
+- **Phase**: Phase 1b — security boundary hardening (in progress)
+- **Active task**: Checkpoint 1 done; EgressGuard allowlist enforcement next.
 
 ## Active worklog
 
-Phase 1a worklog closed at `docs/worklog/2026-05-04-phase1a-sdk.md`.
-Phase 1b should open: `docs/worklog/<YYYY-MM-DD>-phase1b-security.md`.
+`docs/worklog/2026-05-05-phase1b-security.md`
 
 ## Recent commits
 
 ```
+04aa85f   security: hook timeout/exception isolation + manifest validation at load
+b906f8d   docs: Phase 1a CLOSED — SDK complete, Phase 1b next
 2652863   docs: expand plugins.md from skeleton to Phase 1a SDK reference
 1ac807d   sdk: add PluginHarness test harness + tests
 4e98e0c   sdk: add plugin.toml Pydantic schema + validator + tests
-60b379a   sdk: add capability token vocabulary (design.md §6.3.3)
-c3b417e   sdk: move hook types and BasePlugin into llm_tracker_sdk
 ```
 
 ## Where we paused
 
-Phase 1a fully closed (2026-05-05). `llm_tracker_sdk` now contains:
-`Pass/Block/Transform/Abort`, `BasePlugin`, `capabilities` module,
-`PluginManifest` schema + validator, `PluginHarness` test harness.
-`docs/plugins.md` is a full SDK reference. 19/19 tests pass; ruff clean.
-
-`@hook` decorator deferred (plain method override is sufficient; no runtime
-benefit yet). Egress SDK API deferred to Phase 1b.
+Phase 1b checkpoint 1 complete (2026-05-05, commit 04aa85f). PluginHost now:
+- Wraps every plugin hook in `asyncio.wait_for(5s)` — crash or timeout
+  audits `plugin_fault` and returns the safe default; core never crashes.
+- Validates `plugin.toml` at load time via `PluginManifest`; invalid or
+  missing manifest → `manifest_rejected` audit entry, plugin skipped.
+- `hello_world` plugin fixed: now imports `BasePlugin` from `llm_tracker_sdk`
+  and ships a valid `plugin.toml`.
+22/22 tests pass; ruff clean.
 
 ## Next single step
 
-Begin Phase 1b — security boundary hardening. Per `docs/roadmap.md`:
-
-1. Open worklog `docs/worklog/<YYYY-MM-DD>-phase1b-security.md`.
-2. Read `docs/design.md §7` (security model) and `docs/decisions/ADR-0006`
-   for the full threat model.
-3. Hook dispatch timeout + exception isolation in `PluginHost` — a plugin
-   fault must not crash the core.
-4. Manifest loading: validate `plugin.toml` via `PluginManifest` at plugin
-   load time; reject plugins with invalid manifests.
-5. Each step = its own checkpoint.
+EgressGuard plugin-level allowlist enforcement (`packages/llm_tracker/src/llm_tracker/egress_guard/guard.py`):
+- Accept a per-plugin `PluginManifest` in `check()`; enforce `egress_destinations` exact-match allowlist.
+- Enforce mode policy: Mode L denies all plugin egress; Mode A/R allow per manifest.
+- Write tests; each passing test = its own checkpoint per §5.3.
 
 ## Blocking / decisions needed
 
@@ -66,27 +60,7 @@ Begin Phase 1b — security boundary hardening. Per `docs/roadmap.md`:
 - [x] ADRs 0001–0007 sealed
 - [x] Phase 0 — core skeleton (CLOSED 2026-05-04)
 - [x] Phase 1a — plugin SDK (CLOSED 2026-05-05)
-- [ ] Phase 1b — security boundary hardening
-- [ ] Phase 1c — `scope_guard` plugin
-- [ ] Phase 2+ — Mode R sink, third-party plugins
-
-## Blocking / decisions needed
-
-- None. ADR-0003 was the last blocker; it is now Accepted.
-- Two decisions deferred to mid-Phase-1: plugin signing trust model
-  (ADR-0005 open), Stage 2 LLM judge model (ADR-0002 open). Neither blocks
-  Phase 1a.
-
-## Progress
-
-- [x] Design v0.1 written
-- [x] Framework pivot v0.2
-- [x] English-only documentation pass
-- [x] ADRs 0001–0007 sealed (0004 superseded by 0007; 0003 revised &
-      Accepted on 2026-05-03)
-- [x] Phase 0 — core skeleton (CLOSED 2026-05-04)
-- [ ] Phase 1a — plugin SDK
-- [ ] Phase 1b — security boundary hardening
+- [ ] Phase 1b — security boundary hardening (in progress)
 - [ ] Phase 1c — `scope_guard` plugin
 - [ ] Phase 2+ — Mode R sink, third-party plugins
 

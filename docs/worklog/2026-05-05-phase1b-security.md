@@ -14,7 +14,7 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## What was done
 
-### Checkpoint 1 — PluginHost: exception isolation + manifest validation
+### Checkpoint 1 — PluginHost: exception isolation + manifest validation (commit 04aa85f)
 
 - Modified `packages/llm_tracker/src/llm_tracker/plugin_host/host.py`:
   - Added `HOOK_TIMEOUT = 5.0` constant.
@@ -61,7 +61,11 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ```
 $ .venv/bin/python3.12 -m pytest packages/llm_tracker/tests/ -q
-(results appended at each checkpoint)
+......................                                                    [100%]
+22 passed in 0.48s
+
+$ .venv/bin/ruff check packages/llm_tracker/src packages/llm_tracker/tests packages/llm_tracker_plugin_hello_world/src
+All checks passed!
 ```
 
 ## What's left / known limits

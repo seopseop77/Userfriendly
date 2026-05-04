@@ -6,68 +6,50 @@
 
 ---
 
-**Last updated**: 2026-05-03 (Cowork; ADR-0003 sealed, Phase 1a unblocked)
-**Updated by**: Claude Cowork
+**Last updated**: 2026-05-04
+**Updated by**: Claude Code
 
 ## Current phase
 
-- **Phase**: Phase 1a — plugin SDK (not yet started)
-- **Active task**: None — ADR-0003 sealed; Phase 1a ready to start.
+- **Phase**: Phase 1a — plugin SDK (layout migration done; SDK content next)
+- **Active task**: Fill `packages/llm_tracker_sdk/` with SDK content.
 
 ## Active worklog
 
-None active. Phase 0 worklog is closed at
-`docs/worklog/2026-05-03-phase0-skeleton.md`. Phase 1a should start a new
-worklog: `docs/worklog/<YYYY-MM-DD>-phase1a-sdk.md`.
+`docs/worklog/2026-05-04-phase1a-sdk.md`
 
 ## Recent commits
 
 ```
-<latest>  docs: revise and accept ADR-0003 (distribution + repo layout)
+66220fb   infra: migrate to uv workspace monorepo (ADR-0003 Phase 1a layout)
+9f90d50   docs: revise and accept ADR-0003 (distribution + repo layout)
 7e46032   docs: Phase 0 CLOSED — latency PASS, Phase 1a next
 dd3686a   proxy: strip Content-Encoding from upstream response headers
 594ad32   proxy: instrument first-token latency; add report script
-df422d8   proxy: strip Accept-Encoding to prevent ZlibError on client
 ```
 
 ## Where we paused
 
-Phase 0 fully closed (latency PASS; median 0.0 ms, n=20). ADR-0003 is now
-sealed (Accepted, 2026-05-03) with the framework + plugin distribution
-model: monorepo with per-package `pyproject.toml` (uv workspace), per-
-package hatchling build, git URL install during demo phase, PyPI deferred.
-Phase 1a is unblocked.
+Phase 1a layout migration complete (commit 66220fb). Repo is now a uv
+workspace monorepo under `packages/`. `uv sync` installs all packages
+editable; 6/6 tests pass; `hello_world` entry_point is discoverable.
+`packages/llm_tracker_sdk/` exists as a skeleton only (`__init__.py` stub).
 
 ## Next single step
 
-Begin Phase 1a. The first sub-task is the **repository layout migration**
-mandated by ADR-0003, before any new SDK code is written:
+Begin Phase 1a SDK content — fill `packages/llm_tracker_sdk/`:
 
-1. Open a new worklog `docs/worklog/<YYYY-MM-DD>-phase1a-sdk.md`.
-2. Migrate the repo to the layout described in ADR-0003 §Decision (1):
-   - Create `packages/llm_tracker/` and move existing core into it.
-   - Create `packages/llm_tracker_plugin_hello_world/` and move that plugin
-     into it.
-   - Create `packages/llm_tracker_server/` and move the server stub into
-     it.
-   - Add a workspace-root `pyproject.toml` with
-     `[tool.uv.workspace.members]` listing all `packages/*`.
-   - Each package gets its own `pyproject.toml` (hatchling).
-3. Verify `uv sync` produces a clean editable install of all packages and
-   the existing test suite still passes.
-4. Checkpoint: commit + worklog + STATUS update (CLAUDE.md §5.3).
-
-Then the SDK content itself (Phase 1a proper):
-
-5. Create `packages/llm_tracker_sdk/` with `BasePlugin`, `@hook` decorator,
-   capability token vocabulary, hook return types (`Pass`, `Block`,
-   `Transform`, `Abort`), `plugin.toml` Pydantic schema + validator, test
-   harness (mock HookContext, mock EgressGuard, mock SQLite session).
-6. Refactor core (`packages/llm_tracker/`) to depend on
-   `llm_tracker_sdk` for these interface types — *not the other way
-   around* — and ensure plugins do not import `llm_tracker.*` directly.
-7. Expand `docs/plugins.md` from skeleton to actual SDK reference.
-8. Each step is its own checkpoint.
+1. Move `Pass/Block/Transform/Abort` hook return types from
+   `packages/llm_tracker/src/llm_tracker/plugin_host/hooks.py` into
+   `packages/llm_tracker_sdk/src/llm_tracker_sdk/`.
+2. Move `BasePlugin` from `plugin_host/base.py` into SDK; have core import
+   from SDK (not define it).
+3. Add `@hook("name")` decorator (or plain abstract methods — decide first).
+4. Add capability token vocabulary as SDK constants.
+5. Add `plugin.toml` Pydantic schema + validator to SDK.
+6. Add test harness (mock HookContext, mock EgressGuard, mock SQLite session).
+7. Expand `docs/plugins.md` from skeleton to SDK reference.
+8. Each step = its own checkpoint.
 
 ## Blocking / decisions needed
 

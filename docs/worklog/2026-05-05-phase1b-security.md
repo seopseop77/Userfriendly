@@ -76,12 +76,18 @@ Remaining Phase 1b items (per roadmap.md):
 - [ ] Capability use audit-logged on every EgressGuard call.
 - [ ] Content-level routing (L0–L3): core degrades data before handing to plugins.
 - [ ] Mode-by-mode capability policy enforcement with tests.
-- [ ] Manifest signature verification (ADR-0005 still open; implement basic
-      check or defer with explicit note).
+- [ ] Manifest signature verification (now unblocked — see ADR-0008).
+
+## Out-of-band updates (Cowork)
+
+- 2026-05-05: ADR-0008 (plugin signing trust model) sealed by Cowork — commit
+  d39c487. Per-developer ed25519 keys, bundled public-key registry, verify at
+  install AND boot, hard reject on failure. Manifest signature verification
+  can now be implemented in Phase 1b without additional design work.
 
 ## Handoff
 
-Checkpoint 1 complete. Next: EgressGuard plugin-level allowlist enforcement —
-update `guard.py` to accept a manifest allowlist per plugin and check mode policy.
-Open `docs/decisions/ADR-0005` before implementing signature verification to
-decide the trust model.
+Checkpoint 1 complete. ADR-0008 (signing trust model) sealed by Cowork in
+commit d39c487, so signature verification is no longer blocked. Next:
+EgressGuard plugin-level allowlist enforcement — update `guard.py` to
+accept a manifest allowlist per plugin and check mode policy.

@@ -81,8 +81,10 @@ those changes.
 
 ## Open questions
 
-- Plugin signature trust model — operator's own key vs. our project key
-  vs. marketplace. Demo starts with operator's own key.
-- Plugin distribution channel (PyPI / private mirror / direct git). ADR-0003
-  needs revision.
+- ~~Plugin signature trust model — operator's own key vs. our project key
+  vs. marketplace.~~ **Resolved by ADR-0008** (per-developer ed25519 keys
+  + bundled registry, hard reject on failure).
+- ~~Plugin distribution channel (PyPI / private mirror / direct git).~~
+  **Resolved by ADR-0003 (revised, Accepted 2026-05-03)** — monorepo +
+  per-package pyproject + git URL install for demo, PyPI deferred.
 - Timing of the in-process → subprocess migration.

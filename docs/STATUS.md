@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-06 (Phase 1b checkpoint 12 complete)
+**Last updated**: 2026-05-06 (Phase 1b cleanup pass complete — paused at stop gates)
 **Updated by**: Claude Code
 
 ## Current phase
 
-- **Phase**: Phase 1b — security boundary hardening (cleanup pass in progress)
-- **Active task**: ADR-0008 housekeeping landed; small polish + ADR-0009 next (Checkpoint G).
+- **Phase**: Phase 1b — security boundary hardening (cleanup pass complete; awaiting user input on stop gates)
+- **Active task**: Cleanup-pass checkpoints A–G all landed. Paused for user input on Gate 1 (Transform handling policy) and Gate 2 (content-level → hook payload routing).
 
 ## Active worklog
 
@@ -21,48 +21,59 @@
 ## Recent commits
 
 ```
+96305e1   core: layering polish + manifest allowed_modes tightening
+6a08c9c   docs: Phase 1b checkpoint 12 — ADR-0008 housekeeping
 6a76ea5   docs: Phase 1b checkpoint 11 — audit_log append-only triggers
 2891e8f   storage: audit_log append-only DB triggers (ADR-0006)
 b06623a   docs: Phase 1b checkpoint 10 — synthetic SSE block response
-b1724fa   proxy: synthetic SSE block response per ADR-0002 §3
-ebb581a   docs: Phase 1b checkpoint 9 — on_persisted ordering fix
 ```
 
 ## Where we paused
 
-Phase 1b cleanup-pass checkpoint F complete (docs only). ADR-0008
-now distinguishes Phase-1b-resolved sub-decisions (canonicalization
-= byte-exact, sibling `plugin.toml.sig`, signer+signature blob,
-`[[key]]` registry, `generate-key`/`sign-plugin` CLI,
-developer-signed reference plugin) from items that remain deferred
-(boot-time verification cache, key rotation policy, revocation
-mechanism).
+Phase 1b cleanup-pass checkpoint G complete (commit 96305e1).
+The seven auto-decidable cleanup-pass checkpoints (A–G) are all
+closed:
 
-Cleanup pass progress: A, B, C, D, E, F closed. Remaining: G
-(`session_factory` read-only property on PluginHost + ADR-0009
-for `allowed_modes` default tightening + manifest validator
-update). Then Gates 1/2 with user input.
+- A: EgressGuard wired into proxy lifespan (e2ee4f0)
+- B: signature verifier + signing CLI (3010aae)
+- C: on_persisted ordering fix (a2bc3d4)
+- D: synthetic SSE block response (b1724fa)
+- E: audit_log append-only DB triggers (2891e8f)
+- F: ADR-0008 housekeeping (6a08c9c)
+- G: session_factory property + ADR-0009 (96305e1)
+
+114/114 tests pass; touched files lint clean across all
+checkpoints.
+
+The remaining cleanup-pass items are **stop gates** that need
+user input before Claude Code can land code:
+
+- **Gate 1 — Transform handling policy.** `forwarder.py`
+  currently ignores `Transform` returns from `before_forward`.
+  Three sub-decisions: header policy (merge / overwrite /
+  replace-all-headers), body policy (replace whole / not allowed
+  / patch), multi-plugin chaining (chain in order / first-wins).
+  Resolution needs an ADR before code (next slot is ADR-0010
+  since 0009 was taken by Checkpoint G).
+- **Gate 2 — content-level → hook payload routing.** Hooks today
+  receive only `exchange_id`; Phase 1c's `scope_guard` needs
+  user-message text. Three options on the table: (a) extend hook
+  signatures with payloads, (b) `HookContext.request_text(level=...)`,
+  (c) plugins query the DB. Once user picks, write ADR (next
+  number after Gate 1's) and implement.
 
 ## Next single step
 
-**Checkpoint G — small polish (one commit).**
-
-1. `PluginHost.session_factory` exposed as a read-only property;
-   `forwarder.py` reaches in via the property instead of the
-   underscore name.
-2. ADR-0009 "Plugin manifest `allowed_modes` becomes
-   required-non-empty" (short, single-decision ADR).
-3. `llm_tracker_sdk/manifest.py`: drop the `list(VALID_MODES)`
-   default, mark required (`Field(...)`), add a validator
-   rejecting an empty list. `hello_world`'s manifest already
-   declares the full mode set, so neither it nor its `.sig` need
-   to change.
+**STOP — Korean ping to user.** Surface both gates' decision
+matrices and wait for the user's call. Resume with whichever
+gate the user answers first; that gate becomes its own
+ADR + checkpoint.
 
 ## Blocking / decisions needed
 
-- None for Checkpoint G.
-- Gates 1 (Transform handling) and 2 (hook payload routing)
-  require user input when reached.
+- **Gate 1**: Transform handling — header / body / multi-plugin
+  policies.
+- **Gate 2**: hook payload routing — option (a) / (b) / (c).
 
 ## Progress
 

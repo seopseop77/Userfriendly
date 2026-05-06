@@ -14,6 +14,37 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## What was done
 
+### Checkpoint 13 — layering polish + ADR-0009 (commit 96305e1)
+
+- `plugin_host/host.py`: new read-only `session_factory` property
+  on `PluginHost` returning the underlying
+  `async_sessionmaker[AsyncSession]`. Lets callers (currently the
+  forwarder; later, plugin-side helpers) reach the factory
+  without touching `_session_factory`.
+- `proxy/forwarder.py`: both call sites that previously used
+  `plugin_host._session_factory()` now use
+  `plugin_host.session_factory()` (the timing-write block and
+  the `_persist_block` helper). Layering fix only — no
+  behaviour change.
+- New ADR: `docs/decisions/0009-allowed-modes-required-non-empty.md`.
+  Justifies tightening the manifest contract (option (a) per the
+  user) over keeping the `list(VALID_MODES)` default or
+  defaulting to `["L"]`. Security-first defaults are the core
+  argument — silent enrolment of any plugin into Mode L violates
+  ADR-0006's threat model.
+- `llm_tracker_sdk/manifest.py`: `allowed_modes` is now
+  `Field(..., min_length=1)` — required and non-empty. Existing
+  `_validate_modes` validator continues to reject unknown mode
+  strings; the new constraint just removes the silent default.
+- `tests/test_manifest.py`: `_minimal()` now declares
+  `allowed_modes`. New `test_missing_allowed_modes_rejected` and
+  `test_empty_allowed_modes_rejected` pin the
+  `ValidationError`s. (Side effect: ruff auto-fix on a now-stale
+  import block also applied — harmless.)
+- `hello_world` reference plugin: no manifest change needed
+  (already declares `["L", "A", "R"]`); existing
+  `plugin.toml.sig` stays valid; no re-signing.
+
 ### Checkpoint 12 — ADR-0008 housekeeping (docs only)
 
 - `docs/decisions/0008-plugin-signing-trust-model.md`:
@@ -727,6 +758,22 @@ land with the host-wiring checkpoint.
 
 ## Verification
 
+### After checkpoint 13
+
+```
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker/tests/ -q
+........................................................................ [ 63%]
+..........................................                               [100%]
+114 passed in 0.71s
+
+$ .venv/bin/ruff check \
+    packages/llm_tracker_sdk/src/llm_tracker_sdk/manifest.py \
+    packages/llm_tracker/src/llm_tracker/plugin_host/host.py \
+    packages/llm_tracker/src/llm_tracker/proxy/forwarder.py \
+    packages/llm_tracker/tests/test_manifest.py
+All checks passed!
+```
+
 ### After checkpoint 11
 
 ```
@@ -969,24 +1016,37 @@ Remaining Phase 1b items (per roadmap.md):
 
 ## Handoff
 
-Checkpoint 12 complete (docs-only). ADR-0008's "What is deferred"
-list is now split into "Resolved in Phase 1b" (six items, with
-worklog/commit pointers) and "What remains deferred" (three
-items: boot-time cache, key rotation policy, revocation
-mechanism). Canonicalization moved out of "deferred" and is
-pinned in the body as byte-exact.
+Checkpoint 13 complete (commit 96305e1). The cleanup pass's
+auto-decidable checkpoints (A–G) are now all closed:
 
-Phase 1b cleanup-pass progress: A, B, C, D, E, F closed.
+- A: EgressGuard wired into proxy lifespan (commit e2ee4f0)
+- B: signature verifier wired + signing CLI (commit 3010aae)
+- C: on_persisted ordering fix (commit a2bc3d4)
+- D: synthetic SSE block response (commit b1724fa)
+- E: audit_log append-only triggers (commit 2891e8f)
+- F: ADR-0008 housekeeping (commit 6a08c9c)
+- G: session_factory property + ADR-0009 (commit 96305e1)
 
-Remaining cleanup-pass checkpoints in order:
+The remaining cleanup-pass items are the **stop gates** that
+cannot proceed without user input:
 
-- **G**: small polish: `PluginHost.session_factory` read-only
-  property; ADR-0009 (small) for `allowed_modes` default →
-  required-non-empty. User picked option (a) — write a small
-  ADR, not skip the change.
-- **Gate 1** (Transform handling policy) and **Gate 2** (hook
-  payload routing) require user input first; stop and ping when
-  reached.
+- **Gate 1 — Transform handling policy.** `forwarder.py` ignores
+  `Transform` returns from `before_forward`. Decisions needed
+  from the user: header policy (merge / overwrite /
+  replace-all-headers), body policy (replace whole body / not
+  allowed / patch), multi-plugin chaining (chain in order /
+  first-wins). Once answered, write ADR-0009 — wait, ADR-0009 is
+  taken; this becomes ADR-0010 — and implement.
+- **Gate 2 — content-level → hook payload routing.** Hooks
+  receive only `exchange_id`; Phase 1c (`scope_guard`) needs the
+  user-message text. Three options on the table per Cowork's
+  brief: (a) extend hook signatures with payloads, (b)
+  `HookContext` with `ctx.request_text(level=...)`, (c) plugins
+  query the DB. Once answered, write the next ADR after Gate 1
+  and implement the routing path that calls
+  `effective_ceiling(mode, user_opted_in=...)` per hook.
+
+Both gates need a Korean ping; pause here.
 
 ### Open architectural questions (still Cowork → ADR)
 
@@ -1002,23 +1062,13 @@ Until both are answered, content-level integration cannot land.
 
 ### Next single step
 
-**Checkpoint G — small polish (one commit).**
+**STOP — Gates 1 and 2 require user input.** No more
+auto-decidable work in this cleanup pass. Korean ping summarising:
 
-1. `PluginHost`: expose `session_factory` as a read-only property
-   so callers stop reaching into `_session_factory`. Update
-   `forwarder.py:117` to use `plugin_host.session_factory()`.
-2. Write **ADR-0009** "Plugin manifest `allowed_modes` becomes
-   required-non-empty" — short rationale, picked option (a) per
-   user.
-3. Implement: in `llm_tracker_sdk/manifest.py`, change
-   `allowed_modes: list[str] = list(VALID_MODES)` to
-   `Field(...)` (required) plus a validator that rejects an
-   empty list.
-4. `hello_world`'s manifest already declares `["L", "A", "R"]`,
-   so the runtime stays green; the `.sig` reflects the manifest
-   bytes which haven't changed, so no re-signing.
+- the seven cleanup-pass checkpoints landed (A–G);
+- Gate 1's three sub-decisions to make (Transform header /
+  body / multi-plugin policies);
+- Gate 2's three options for content-level → hook payload
+  routing.
 
-After Checkpoint G, the cleanup pass enters the **stop gates**
-(Gate 1: Transform handling policy; Gate 2: hook payload
-routing). Both require user input; stop and ping in Korean
-when reached.
+Resume with whichever gate the user answers first.

@@ -9,7 +9,7 @@ from llm_tracker.egress_guard.guard import EgressGuard
 from llm_tracker.plugin_host.host import PluginHost
 from llm_tracker.plugin_host.signing import VerifyResult
 from llm_tracker.storage.models import AuditLog, Base
-from llm_tracker_sdk import BasePlugin, Block, Pass
+from llm_tracker_sdk import BasePlugin, Block, HookContext, Pass
 from llm_tracker_sdk.manifest import PluginManifest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -83,14 +83,18 @@ async def test_on_shutdown_writes_proxy_stopped(session_factory):
 class _CrashPlugin(BasePlugin):
     name = "crasher"
 
-    async def on_request_received(self, exchange_id: str) -> Pass | Block:
+    async def on_request_received(
+        self, exchange_id: str, ctx: HookContext
+    ) -> Pass | Block:
         raise RuntimeError("boom")
 
 
 class _SlowPlugin(BasePlugin):
     name = "slower"
 
-    async def on_request_received(self, exchange_id: str) -> Pass | Block:
+    async def on_request_received(
+        self, exchange_id: str, ctx: HookContext
+    ) -> Pass | Block:
         await asyncio.sleep(999)
         return Pass()
 
@@ -420,3 +424,113 @@ async def test_load_plugins_records_signer_when_key_not_in_registry(
         "reason": "signing_key_not_in_registry",
         "signer": "stranger",
     }
+
+
+# -- HookContext propagation (ADR-0012) -----------------------------------
+
+
+class _CtxCapturePlugin(BasePlugin):
+    """Records the HookContext instance handed to each hook for assertions."""
+
+    name = "ctx_capture"
+
+    def __init__(self) -> None:
+        self.received: list[HookContext] = []
+
+    async def on_request_received(
+        self, exchange_id: str, ctx: HookContext
+    ) -> Pass | Block:
+        self.received.append(ctx)
+        return Pass()
+
+    async def before_forward(
+        self, exchange_id: str, ctx: HookContext
+    ) -> Pass | Block:
+        self.received.append(ctx)
+        return Pass()
+
+    async def on_persisted(self, exchange_id: str, ctx: HookContext) -> None:
+        self.received.append(ctx)
+
+
+async def test_begin_exchange_passes_ctx_to_each_hook(session_factory):
+    """ADR-0012: begin_exchange + every per-exchange hook hands the same ctx."""
+    plugin = _CtxCapturePlugin()
+    host = PluginHost(mode="L", session_factory=session_factory)
+    host._plugins = [plugin]
+
+    host.begin_exchange("ex-101", request_body=b"user message body")
+
+    await host.on_request_received("ex-101")
+    await host.before_forward("ex-101")
+    await host.on_persisted("ex-101")
+
+    assert len(plugin.received) == 3
+    # Same instance reused across hooks for the same exchange.
+    assert plugin.received[0] is plugin.received[1]
+    assert plugin.received[1] is plugin.received[2]
+
+    ctx = plugin.received[0]
+    assert ctx.exchange_id == "ex-101"
+    assert ctx.mode == "L"
+    assert ctx.session_id == "local"
+    assert ctx.user_opted_in is False
+    # Mode L: ceiling L1; L1 request returns the body text.
+    from llm_tracker_sdk import ContentLevel
+
+    assert ctx.request_text(ContentLevel.L1) == "user message body"
+
+
+async def test_dispatcher_falls_back_to_default_ctx_when_no_begin_exchange(
+    session_factory,
+):
+    """Direct dispatcher calls without begin_exchange still work.
+
+    Production callers (the forwarder) always call `begin_exchange`, but
+    unit-test callers that just dispatch a single hook should not have
+    to. The host's `_ctx_for` builds a default `HookContext` on the fly.
+    """
+    plugin = _CtxCapturePlugin()
+    host = PluginHost(mode="R", session_factory=session_factory)
+    host._plugins = [plugin]
+
+    # No begin_exchange.
+    await host.on_request_received("ex-202")
+
+    assert len(plugin.received) == 1
+    fallback = plugin.received[0]
+    assert fallback.exchange_id == "ex-202"
+    assert fallback.mode == "R"
+    # No body was provided, so request_text returns None at any level.
+    from llm_tracker_sdk import ContentLevel
+
+    assert fallback.request_text(ContentLevel.L3) is None
+
+
+async def test_user_opt_in_lifts_ceiling_in_mode_r(session_factory):
+    """begin_exchange with user_opted_in=True lifts the Mode R ceiling to L3."""
+    plugin = _CtxCapturePlugin()
+    host = PluginHost(mode="R", session_factory=session_factory)
+    host._plugins = [plugin]
+
+    host.begin_exchange("ex-303", request_body=b"deep raw text", user_opted_in=True)
+    await host.on_request_received("ex-303")
+
+    ctx = plugin.received[0]
+    from llm_tracker_sdk import ContentLevel
+
+    # Mode R + opt-in: ceiling lifts to L3, so L3 request returns full text.
+    assert ctx.request_text(ContentLevel.L3) == "deep raw text"
+    # Default Mode R (no opt-in) would have capped at L1; this test pins
+    # that the begin_exchange-supplied flag actually propagates.
+    assert ctx.user_opted_in is True
+
+
+async def test_end_exchange_drops_ctx(session_factory):
+    """end_exchange removes the ctx from the host's per-exchange map."""
+    host = PluginHost(mode="L", session_factory=session_factory)
+    host.begin_exchange("ex-404", request_body=b"x")
+    assert "ex-404" in host._exchange_contexts
+
+    host.end_exchange("ex-404")
+    assert "ex-404" not in host._exchange_contexts

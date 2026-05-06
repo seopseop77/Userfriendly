@@ -7,7 +7,7 @@ import tomllib
 from importlib.metadata import entry_points
 from typing import Any
 
-from llm_tracker_sdk import Abort, BasePlugin, Block, Pass, Transform
+from llm_tracker_sdk import Abort, BasePlugin, Block, HookContext, Pass, Transform
 from llm_tracker_sdk.manifest import PluginManifest
 from nacl.signing import VerifyKey
 from pydantic import ValidationError
@@ -39,6 +39,12 @@ class PluginHost:
         # block them.
         self._registry = registry if registry is not None else load_bundled_registry()
         self._plugins: list[BasePlugin] = []
+        # Per-exchange HookContext (ADR-0012). Created by `begin_exchange`,
+        # reused across all per-exchange hook dispatches for that exchange,
+        # and cleared by `end_exchange`. Dispatchers fall back to a fresh
+        # context if no exchange has been begun (so unit tests calling
+        # `host.on_request_received("xid")` directly keep working).
+        self._exchange_contexts: dict[str, HookContext] = {}
 
     @property
     def session_factory(self) -> async_sessionmaker[AsyncSession]:
@@ -50,6 +56,53 @@ class PluginHost:
         writes.
         """
         return self._session_factory
+
+    # -- HookContext lifecycle (ADR-0012) ----------------------------------
+
+    def begin_exchange(
+        self,
+        exchange_id: str,
+        *,
+        request_body: bytes | None = None,
+        user_opted_in: bool = False,
+    ) -> HookContext:
+        """Open a per-exchange `HookContext` and stash it for hook dispatch.
+
+        The forwarder calls this once per request, after reading the
+        body, so that every subsequent hook dispatcher can hand the
+        same `HookContext` to plugins. `user_opted_in` is wired by
+        Phase 1c's user-consent flow; for now it defaults to False.
+        """
+        ctx = HookContext(
+            session_id="local",
+            exchange_id=exchange_id,
+            mode=self.mode,
+            user_opted_in=user_opted_in,
+            _raw_request_body=request_body,
+        )
+        self._exchange_contexts[exchange_id] = ctx
+        return ctx
+
+    def end_exchange(self, exchange_id: str) -> None:
+        """Drop the stashed `HookContext` for `exchange_id`."""
+        self._exchange_contexts.pop(exchange_id, None)
+
+    def _ctx_for(self, exchange_id: str) -> HookContext:
+        """Return the active context, building a default one on the fly.
+
+        The fallback keeps direct unit-test calls like
+        `host.on_request_received("xid")` working without forcing the
+        caller to remember `begin_exchange`. Production callers
+        (the forwarder) always call `begin_exchange` first.
+        """
+        ctx = self._exchange_contexts.get(exchange_id)
+        if ctx is None:
+            ctx = HookContext(
+                session_id="local",
+                exchange_id=exchange_id,
+                mode=self.mode,
+            )
+        return ctx
 
     # -- audit helpers -------------------------------------------------------
 
@@ -217,11 +270,12 @@ class PluginHost:
 
     async def on_request_received(self, exchange_id: str) -> Pass | Block:
         await self._audit("on_request_received", exchange_id)
+        ctx = self._ctx_for(exchange_id)
         for plugin in self._plugins:
             result = await self._call(
                 plugin,
                 "on_request_received",
-                plugin.on_request_received(exchange_id),
+                plugin.on_request_received(exchange_id, ctx),
                 Pass(),
             )
             if isinstance(result, Block):
@@ -231,11 +285,12 @@ class PluginHost:
 
     async def before_forward(self, exchange_id: str) -> Pass | Block | Transform:
         await self._audit("before_forward", exchange_id)
+        ctx = self._ctx_for(exchange_id)
         for plugin in self._plugins:
             result = await self._call(
                 plugin,
                 "before_forward",
-                plugin.before_forward(exchange_id),
+                plugin.before_forward(exchange_id, ctx),
                 Pass(),
             )
             if isinstance(result, Block):
@@ -247,11 +302,12 @@ class PluginHost:
 
     async def on_upstream_response_start(self, exchange_id: str) -> Pass | Abort:
         await self._audit("on_upstream_response_start", exchange_id)
+        ctx = self._ctx_for(exchange_id)
         for plugin in self._plugins:
             result = await self._call(
                 plugin,
                 "on_upstream_response_start",
-                plugin.on_upstream_response_start(exchange_id),
+                plugin.on_upstream_response_start(exchange_id, ctx),
                 Pass(),
             )
             if isinstance(result, Abort):
@@ -260,11 +316,12 @@ class PluginHost:
         return Pass()
 
     async def on_response_chunk(self, exchange_id: str, chunk: bytes) -> Pass | Abort:
+        ctx = self._ctx_for(exchange_id)
         for plugin in self._plugins:
             result = await self._call(
                 plugin,
                 "on_response_chunk",
-                plugin.on_response_chunk(exchange_id, chunk),
+                plugin.on_response_chunk(exchange_id, chunk, ctx),
                 Pass(),
             )
             if isinstance(result, Abort):
@@ -274,20 +331,22 @@ class PluginHost:
 
     async def on_response_complete(self, exchange_id: str) -> None:
         await self._audit("on_response_complete", exchange_id)
+        ctx = self._ctx_for(exchange_id)
         for plugin in self._plugins:
             await self._call(
                 plugin,
                 "on_response_complete",
-                plugin.on_response_complete(exchange_id),
+                plugin.on_response_complete(exchange_id, ctx),
                 None,
             )
 
     async def on_persisted(self, exchange_id: str) -> None:
         await self._audit("on_persisted", exchange_id)
+        ctx = self._ctx_for(exchange_id)
         for plugin in self._plugins:
             await self._call(
                 plugin,
                 "on_persisted",
-                plugin.on_persisted(exchange_id),
+                plugin.on_persisted(exchange_id, ctx),
                 None,
             )

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import uuid
 
+from .hook_context import HookContext
 from .hooks import Abort, Block, Pass, Transform
 from .plugin import BasePlugin
 
@@ -24,8 +25,29 @@ def make_exchange_id() -> str:
     return f"test-{uuid.uuid4()}"
 
 
+def _default_ctx(
+    exchange_id: str,
+    *,
+    mode: str = "L",
+    request_body: bytes | None = None,
+) -> HookContext:
+    """Build a HookContext with sensible defaults for harness tests."""
+    return HookContext(
+        session_id="test",
+        exchange_id=exchange_id,
+        mode=mode,
+        _raw_request_body=request_body,
+    )
+
+
 class PluginHarness:
-    """Wraps a BasePlugin and provides helpers for testing hook invocations."""
+    """Wraps a BasePlugin and provides helpers for testing hook invocations.
+
+    Each invocation builds a default `HookContext` (mode="L", no request
+    body). Callers that need to exercise content-level degradation can
+    pass an explicit `ctx=` kwarg or construct their own `HookContext`
+    via `llm_tracker_sdk.HookContext`.
+    """
 
     def __init__(self, plugin: BasePlugin) -> None:
         self.plugin = plugin
@@ -36,27 +58,60 @@ class PluginHarness:
     async def shutdown(self) -> None:
         await self.plugin.on_shutdown()
 
-    async def on_request_received(self, exchange_id: str | None = None) -> Pass | Block:
-        return await self.plugin.on_request_received(exchange_id or make_exchange_id())
+    async def on_request_received(
+        self,
+        exchange_id: str | None = None,
+        *,
+        ctx: HookContext | None = None,
+    ) -> Pass | Block:
+        eid = exchange_id or make_exchange_id()
+        return await self.plugin.on_request_received(eid, ctx or _default_ctx(eid))
 
-    async def before_forward(self, exchange_id: str | None = None) -> Pass | Block | Transform:
-        return await self.plugin.before_forward(exchange_id or make_exchange_id())
+    async def before_forward(
+        self,
+        exchange_id: str | None = None,
+        *,
+        ctx: HookContext | None = None,
+    ) -> Pass | Block | Transform:
+        eid = exchange_id or make_exchange_id()
+        return await self.plugin.before_forward(eid, ctx or _default_ctx(eid))
 
-    async def on_upstream_response_start(self, exchange_id: str | None = None) -> Pass | Abort:
-        return await self.plugin.on_upstream_response_start(exchange_id or make_exchange_id())
+    async def on_upstream_response_start(
+        self,
+        exchange_id: str | None = None,
+        *,
+        ctx: HookContext | None = None,
+    ) -> Pass | Abort:
+        eid = exchange_id or make_exchange_id()
+        return await self.plugin.on_upstream_response_start(eid, ctx or _default_ctx(eid))
 
     async def on_response_chunk(
         self,
         chunk: bytes = b"",
         exchange_id: str | None = None,
+        *,
+        ctx: HookContext | None = None,
     ) -> Pass | Abort:
-        return await self.plugin.on_response_chunk(exchange_id or make_exchange_id(), chunk)
+        eid = exchange_id or make_exchange_id()
+        return await self.plugin.on_response_chunk(eid, chunk, ctx or _default_ctx(eid))
 
-    async def on_response_complete(self, exchange_id: str | None = None) -> None:
-        await self.plugin.on_response_complete(exchange_id or make_exchange_id())
+    async def on_response_complete(
+        self,
+        exchange_id: str | None = None,
+        *,
+        ctx: HookContext | None = None,
+    ) -> None:
+        eid = exchange_id or make_exchange_id()
+        await self.plugin.on_response_complete(eid, ctx or _default_ctx(eid))
 
-    async def on_persisted(self, exchange_id: str | None = None) -> None:
-        await self.plugin.on_persisted(exchange_id or make_exchange_id())
+    async def on_persisted(
+        self,
+        exchange_id: str | None = None,
+        *,
+        ctx: HookContext | None = None,
+    ) -> None:
+        eid = exchange_id or make_exchange_id()
+        await self.plugin.on_persisted(eid, ctx or _default_ctx(eid))
 
     # -- assertion helpers --------------------------------------------------
 

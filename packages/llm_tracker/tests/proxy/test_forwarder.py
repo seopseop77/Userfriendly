@@ -11,7 +11,7 @@ from llm_tracker.plugin_host.host import PluginHost
 from llm_tracker.proxy.app import app
 from llm_tracker.proxy.forwarder import forward_request
 from llm_tracker.storage.models import Base, Exchange
-from llm_tracker_sdk import BasePlugin, Block, Pass, Transform
+from llm_tracker_sdk import BasePlugin, Block, HookContext, Pass, Transform
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.requests import Request
@@ -102,7 +102,7 @@ async def test_on_persisted_sees_exchange_row():
     class _ReaderPlugin(BasePlugin):
         name = "reader"
 
-        async def on_persisted(self, exchange_id: str) -> None:
+        async def on_persisted(self, exchange_id: str, ctx: HookContext) -> None:
             async with factory() as session:
                 row = await session.execute(
                     select(Exchange).where(Exchange.id == exchange_id)
@@ -194,7 +194,9 @@ async def test_block_emits_synthetic_anthropic_sse():
     class _Blocker(BasePlugin):
         name = "blocker"
 
-        async def on_request_received(self, exchange_id: str) -> Pass | Block:
+        async def on_request_received(
+            self, exchange_id: str, ctx: HookContext
+        ) -> Pass | Block:
             return Block(reason="out of scope")
 
     host = PluginHost(mode="L", session_factory=factory)
@@ -310,7 +312,9 @@ async def test_transform_merges_new_header_into_request():
     class _Tagger(BasePlugin):
         name = "tagger"
 
-        async def before_forward(self, exchange_id: str) -> Pass | Transform:
+        async def before_forward(
+            self, exchange_id: str, ctx: HookContext
+        ) -> Pass | Transform:
             return Transform(headers={"x-llm-tracker-task": "research"})
 
     host = PluginHost(mode="L", session_factory=factory)
@@ -343,7 +347,9 @@ async def test_transform_plugin_header_wins_on_conflict():
     class _Rewriter(BasePlugin):
         name = "rewriter"
 
-        async def before_forward(self, exchange_id: str) -> Pass | Transform:
+        async def before_forward(
+            self, exchange_id: str, ctx: HookContext
+        ) -> Pass | Transform:
             return Transform(headers={"x-api-key": "sk-rewritten"})
 
     host = PluginHost(mode="L", session_factory=factory)
@@ -374,7 +380,9 @@ async def test_transform_replaces_whole_body_when_body_is_set():
     class _BodySwapper(BasePlugin):
         name = "swapper"
 
-        async def before_forward(self, exchange_id: str) -> Pass | Transform:
+        async def before_forward(
+            self, exchange_id: str, ctx: HookContext
+        ) -> Pass | Transform:
             return Transform(body=b'{"plugin_rewrote": true}')
 
     host = PluginHost(mode="L", session_factory=factory)
@@ -412,13 +420,17 @@ async def test_transform_multi_plugin_first_wins():
     class _First(BasePlugin):
         name = "first"
 
-        async def before_forward(self, exchange_id: str) -> Pass | Transform:
+        async def before_forward(
+            self, exchange_id: str, ctx: HookContext
+        ) -> Pass | Transform:
             return Transform(headers={"x-from-first": "yes"})
 
     class _Second(BasePlugin):
         name = "second"
 
-        async def before_forward(self, exchange_id: str) -> Pass | Transform:
+        async def before_forward(
+            self, exchange_id: str, ctx: HookContext
+        ) -> Pass | Transform:
             second_was_called.append(True)
             return Transform(headers={"x-from-second": "yes"})
 

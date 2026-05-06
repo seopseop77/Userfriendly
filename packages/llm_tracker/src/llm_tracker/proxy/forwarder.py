@@ -142,7 +142,16 @@ async def forward_request(
     t0_epoch_ms = int(time.time() * 1000)
     exchange_id = str(ULID())
 
+    # Read the request body once, up-front, so plugins running in
+    # `on_request_received` can see it through `HookContext.request_text()`.
+    # `Request.body()` is idempotent and cached on the Starlette Request,
+    # so subsequent reads are free.
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP}
+    body = await request.body()
+
     if plugin_host is not None:
+        plugin_host.begin_exchange(exchange_id, request_body=body)
+
         result = await plugin_host.on_request_received(exchange_id)
         if isinstance(result, Block):
             await _persist_block(
@@ -157,9 +166,6 @@ async def forward_request(
     url = f"{UPSTREAM_BASE}/{path}"
     if query := request.url.query:
         url = f"{url}?{query}"
-
-    headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP}
-    body = await request.body()
 
     if plugin_host is not None:
         result = await plugin_host.before_forward(exchange_id)

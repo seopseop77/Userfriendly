@@ -14,6 +14,77 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## What was done
 
+### Checkpoint 18 — HookContext implementation + tests (commit 75ff46a)
+
+- SDK additions:
+  - `llm_tracker_sdk/levels.py` — `ContentLevel` enum +
+    `effective_ceiling` + `degrade` moved out of the core into
+    the SDK so plugins can import them without crossing the
+    `llm_tracker.*` boundary. `llm_tracker.content_levels.levels`
+    is now a re-export shim for any internal caller.
+  - `llm_tracker_sdk/hook_context.py` — `HookContext` dataclass
+    with `effective_ceiling()` and `request_text(level=...)`.
+    `request_text` returns `None` when the effective level
+    degrades to L0, when no body has been provided, or when
+    bytes aren't valid UTF-8.
+  - `llm_tracker_sdk.__init__` re-exports `ContentLevel`,
+    `HookContext`, `effective_ceiling`, `degrade`.
+  - `BasePlugin`: six per-exchange hooks now take
+    `ctx: HookContext`. `on_init` and `on_shutdown` (lifecycle
+    hooks not tied to a specific exchange) are unchanged.
+  - `PluginHarness`: every per-exchange helper builds a default
+    `HookContext` (mode="L", no body) and threads it through.
+    Callers can override with a `ctx=` kwarg for content-level
+    degradation tests.
+- Host:
+  - `PluginHost.__init__` now stashes a per-exchange context map.
+  - New `begin_exchange(exchange_id, *, request_body=None,
+    user_opted_in=False)` constructs a `HookContext` and
+    registers it; `end_exchange` drops it; `_ctx_for` resolves
+    the active context, falling back to a fresh default when
+    no exchange has been begun (so direct unit-test calls keep
+    working).
+  - All six per-exchange dispatchers resolve `ctx` once per
+    invocation and pass it as the trailing arg to each plugin
+    hook call.
+- Forwarder:
+  - `proxy/forwarder.py` reads `body = await request.body()`
+    up-front (Starlette's `Request.body()` is idempotent and
+    cached, so the move is free) and calls
+    `plugin_host.begin_exchange(exchange_id, request_body=body)`
+    before any hook fires. Plugins running in
+    `on_request_received` now see the request body via
+    `ctx.request_text()`.
+  - `end_exchange` cleanup is deferred — Phase 1b leaves the
+    per-exchange dict to grow until the host is torn down. A
+    follow-up checkpoint can add cleanup in `generate()`'s
+    finally block and at every Block/Abort early return.
+- Tests:
+  - New `tests/test_hook_context.py` (10 tests): SDK-level pure
+    tests for `HookContext.request_text(level)` degradation
+    across modes (L / A / R), Mode-R-only opt-in elevation,
+    missing-body and bad-UTF-8 edge cases, default level=L3.
+  - Extended `tests/test_plugin_host.py` (+4 tests): a
+    `_CtxCapturePlugin` records the ctx it receives;
+    `begin_exchange` + every hook hands the *same instance*;
+    direct dispatch without `begin_exchange` falls back to a
+    default ctx; `user_opted_in=True` lifts the Mode R
+    ceiling to L3 in the visible context;
+    `end_exchange` drops the ctx from the per-exchange map.
+  - All existing test plugin overrides (in `test_harness.py`,
+    `test_plugin_host.py`, `test_forwarder.py`) now declare
+    `ctx: HookContext` — mechanical signature update.
+
+### Checkpoint 17 — ADR-0012 hook payload routing (commit 4606ed0, docs only)
+
+- New `docs/decisions/0012-hook-context.md`. Documents the
+  user's choice of option (b) `HookContext` for content-level →
+  hook payload routing. Three options enumerated (typed
+  payload, HookContext, plugin-side DB query); option (b) wins
+  on smallest-contract-change, lazy-degradation matches the
+  security model, and no manifest schema change today.
+  `min_content_level` manifest field stays deferred to Phase 1c.
+
 ### Checkpoint 16 — Transform handling impl + tests (commit bbb33e7)
 
 - `proxy/forwarder.py`: in the `before_forward` branch, after
@@ -484,6 +555,49 @@ No code or tests change in this checkpoint.
 
 ## Decisions
 
+### Checkpoint 18
+
+The substantive policy choices for HookContext live in ADR-0012;
+this section captures only the implementation calls made while
+landing the SDK refactor + host plumbing:
+
+- **Move `ContentLevel` to the SDK, not duplicate it.** The
+  primitive needed to be importable by plugins without crossing
+  into `llm_tracker.*`; duplicating would be the wrong move
+  because the host and SDK must agree on the enum values
+  bit-for-bit. Core's `content_levels.levels` becomes a
+  one-line re-export shim so existing internal call sites
+  (and the prior worklog references) keep working without
+  edits.
+- **`begin_exchange` / `end_exchange` API on the host, not a
+  context manager**. The forwarder doesn't have a single
+  natural `with` block — the streaming `generate()` outlives
+  `forward_request`'s body — so an explicit pair of
+  begin/end calls is simpler than wrestling with async
+  context managers and StreamingResponse lifecycles.
+- **`_ctx_for` falls back to a default ctx**. Without the
+  fallback, every existing unit test that calls
+  `host.on_request_received("xid")` directly would have to
+  call `begin_exchange` first; that's churn for no
+  product-side benefit. The fallback is harmless because
+  production callers (the forwarder) always begin first, and
+  the default ctx exposes a `None`-returning
+  `request_text()` so a plugin under a fallback ctx sees the
+  same "no data available" semantic it would see in any
+  pre-body hook.
+- **Defer `end_exchange` plumbing in the forwarder**. The
+  cleanup hooks need to run at every Block/Abort early
+  return *and* in the streaming `generate()`'s finally block;
+  bundling that with this checkpoint risked a bigger diff
+  with subtle ordering bugs. The TODO is documented in the
+  worklog Handoff so a follow-up checkpoint can land it
+  cleanly.
+- **`PluginHarness` builds a default ctx, doesn't require
+  callers to pass one**. The harness exists to let plugin
+  authors write tests without scaffolding; forcing every
+  test to construct a ctx would defeat that. Callers that
+  want to test degradation pass `ctx=` explicitly.
+
 ### Checkpoint 16
 
 The substantive policy choices for Transform live in ADR-0011;
@@ -845,6 +959,28 @@ land with the host-wiring checkpoint.
 
 ## Verification
 
+### After checkpoint 18
+
+```
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker/tests/ -q
+........................................................................ [ 54%]
+............................................................             [100%]
+132 passed in 0.85s
+
+$ .venv/bin/ruff check \
+    packages/llm_tracker_sdk/src/llm_tracker_sdk/ \
+    packages/llm_tracker/src/llm_tracker/plugin_host/host.py \
+    packages/llm_tracker/src/llm_tracker/proxy/forwarder.py \
+    packages/llm_tracker/src/llm_tracker/content_levels/levels.py \
+    packages/llm_tracker/tests/test_hook_context.py \
+    packages/llm_tracker/tests/test_plugin_host.py \
+    packages/llm_tracker/tests/proxy/test_forwarder.py \
+    packages/llm_tracker/tests/test_harness.py
+All checks passed!
+```
+
+(Checkpoint 17 was docs-only — ADR-0012; no test run needed.)
+
 ### After checkpoint 16
 
 ```
@@ -1119,41 +1255,63 @@ Remaining Phase 1b items (per roadmap.md):
 
 ## Handoff
 
-Checkpoint 16 complete (commit bbb33e7). Gate 1 (Transform
-handling) is now fully landed: ADR-0011 documents the policy
-(checkpoint 15, commit cfbbb8e), the forwarder honours
-`Transform` returns from `before_forward` per the policy, and
-four respx-driven tests pin the four behaviours (header merge,
-header conflict, body replacement, multi-plugin first-wins).
+Checkpoint 18 complete (commit 75ff46a). Gate 2 (HookContext)
+is now fully landed: ADR-0012 documents the policy (checkpoint
+17, commit 4606ed0), the SDK ships `HookContext` + the moved
+`ContentLevel` primitive, every per-exchange hook on
+`BasePlugin` carries `ctx: HookContext`, `PluginHost` builds and
+threads the context per request, the forwarder calls
+`begin_exchange` with the request body before any hook fires,
+and 14 new tests (10 SDK-level + 4 host-level) pin the
+propagation + degradation contract.
 
-Phase 1b cleanup-pass progress: A–G closed; ADR-0010 (retroactive)
-closed; ADR-0011 + Gate 1 implementation closed.
+**Phase 1b cleanup pass is complete.** Every cleanup-pass
+checkpoint A–G plus both stop gates are closed; the security
+boundary primitives plus their wiring + the
+content-level routing path are all production-shaped.
 
 Closed-checkpoint roll-up:
 
-- A: EgressGuard wired into proxy lifespan (e2ee4f0)
-- B: signature verifier wired + signing CLI (3010aae)
-- C: on_persisted ordering fix (a2bc3d4)
-- D: synthetic SSE block response (b1724fa)
-- E: audit_log append-only triggers (2891e8f)
-- F: ADR-0008 housekeeping (6a08c9c)
-- G: session_factory property + ADR-0009 (96305e1)
-- 14: ADR-0010 retroactive (654fbfb)
-- 15: ADR-0011 Transform policy (cfbbb8e)
-- 16: Transform impl + tests (bbb33e7)
+- A (commit e2ee4f0): EgressGuard wired into proxy lifespan
+- B (3010aae): signature verifier wired + signing CLI
+- C (a2bc3d4): on_persisted ordering fix
+- D (b1724fa): synthetic SSE block response
+- E (2891e8f): audit_log append-only triggers
+- F (6a08c9c): ADR-0008 housekeeping
+- G (96305e1): session_factory property + ADR-0009
+- 14 (654fbfb): ADR-0010 retroactive (Block/Abort.plugin)
+- 15 (cfbbb8e): ADR-0011 Transform policy
+- 16 (bbb33e7): Transform impl + 4 tests
+- 17 (4606ed0): ADR-0012 hook payload routing
+- 18 (75ff46a): HookContext impl + 14 tests
 
-Remaining: **Gate 2 — Hook payload routing (ADR-0012, option (b)).**
-Add `HookContext` to the SDK; every hook signature gains
-`ctx: HookContext`. `ctx` holds `session_id` + `exchange_id`
-and exposes lazy accessors (`ctx.request_text(level=...)`)
-that degrade per `effective_ceiling(mode, user_opted_in=...)`
-at access time. `min_content_level` manifest field stays
-deferred to Phase 1c. Sequence: write ADR-0012 (commit),
-define `HookContext`, update `BasePlugin` and `PluginHost`
-hook signatures, update `hello_world` (it can ignore `ctx`),
-add tests (ctx is passed correctly, lazy accessors return
-degraded data per mode). Each passing test group is its own
-checkpoint.
+Test count progression: 22 (post checkpoint 1) → 132 (after
+checkpoint 18). Cleanup-pass-touched files lint clean
+throughout; pre-existing ruff items in `cli/main.py:17` and
+`tests/perf/report_first_token_latency.py` remain in the
+Suggestions list, deliberately untouched per CLAUDE.md §9.
+
+### Phase 1b loose ends
+
+These remain known-deferred and would each be their own
+checkpoint when the time comes:
+
+- **`end_exchange` cleanup in the forwarder.** `begin_exchange`
+  is called per request, but the matching `end_exchange` is not
+  wired through the streaming `generate()` finally block or the
+  Block/Abort early returns. The per-exchange dict therefore
+  grows for the lifetime of the host. Bounded leak only; no
+  correctness impact.
+- **Hooks of payload at L1 / L2.** `ctx.request_text()` returns
+  the raw text whenever the effective level is L1 or higher.
+  Phase 1c will refine the per-level shape (L1 = hash + length,
+  L2 = scrubbed body) when `scope_guard` lands and the
+  scrubbers module is wired.
+- **Manifest `min_content_level` field.** Still deferred to
+  Phase 1c per ADR-0012; introduce when scope_guard demands it.
+- **Response-side ctx accessors** (`ctx.response_text()`, etc.).
+  Wait until the Extractor lands and structured response data
+  is available.
 
 ### Open architectural questions (still Cowork → ADR)
 
@@ -1169,22 +1327,18 @@ Until both are answered, content-level integration cannot land.
 
 ### Next single step
 
-**Write ADR-0012 (Gate 2 — Hook payload routing).** Path
-`docs/decisions/0012-hook-context.md`. Document the user's
-choice of option (b) `HookContext`:
+**Phase 1b is feature-complete.** The next session opens Phase
+1c — the `scope_guard` plugin. That work has its own worklog
+file; close this one out by:
 
-- Hooks gain one extra parameter `ctx: HookContext`.
-- `ctx` holds `session_id` and `exchange_id`.
-- Lazy accessors (e.g. `ctx.request_text(level=...)`) degrade
-  data at access time based on
-  `effective_ceiling(mode, user_opted_in=...)`. Already-built
-  primitives (`content_levels.effective_ceiling`,
-  `content_levels.degrade`) supply the math.
-- `min_content_level` manifest field is deferred to Phase 1c.
+1. Confirming 132/132 tests pass on the latest commit (`75ff46a`).
+2. Reading `docs/roadmap.md` for Phase 1c's entry conditions.
+3. Optionally landing the deferred `end_exchange` cleanup as a
+   small follow-up checkpoint here before flipping to a new
+   worklog.
 
-Commit ADR with scope `docs`. After the ADR commits, define
-`HookContext` in the SDK, add the `ctx` parameter to all 8
-hooks on `BasePlugin` (and the matching `PluginHost`
-dispatchers), update `hello_world` to accept (and ignore)
-`ctx`, and write tests pinning ctx propagation and degradation.
+If you intend to continue Phase 1b (e.g. wiring `end_exchange`
+or a small hello-world manual e2e), do it here. If you intend
+to start Phase 1c, open `docs/worklog/<YYYY-MM-DD>-phase1c-scope-guard.md`
+and update STATUS.md to point at it.
 Each passing test group is its own checkpoint.

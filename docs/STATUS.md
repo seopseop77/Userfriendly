@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-06 (Phase 1b checkpoint 16 — Gate 1 closed)
+**Last updated**: 2026-05-06 (Phase 1b complete — checkpoint 18)
 **Updated by**: Claude Code
 
 ## Current phase
 
-- **Phase**: Phase 1b — security boundary hardening (cleanup pass A–G + ADR-0010 + Gate 1 closed; Gate 2 next)
-- **Active task**: Gate 1 (Transform handling) fully landed (ADR-0011 + impl + 4 tests). Next is Gate 2 — ADR-0012 + HookContext implementation.
+- **Phase**: Phase 1b — security boundary hardening (**feature-complete**; deferred items listed below)
+- **Active task**: Cleanup pass A–G + both stop gates closed. Phase 1c (`scope_guard`) is the next phase; opens with its own worklog.
 
 ## Active worklog
 
@@ -21,62 +21,67 @@
 ## Recent commits
 
 ```
+75ff46a   core: HookContext for hook payload routing (ADR-0012)
+4606ed0   docs: ADR-0012 — HookContext for hook payload routing (Gate 2)
 bbb33e7   proxy: honour Transform from before_forward (ADR-0011)
 cfbbb8e   docs: ADR-0011 — Transform handling policy (Gate 1)
 654fbfb   docs: ADR-0010 — retroactive ratification of Block/Abort plugin field
-bda318c   docs: Phase 1b checkpoint 13 — cleanup pass complete; gates open
-96305e1   core: layering polish + manifest allowed_modes tightening
 ```
 
 ## Where we paused
 
-Phase 1b cleanup-pass checkpoint 16 complete (Gate 1 fully
-landed). The forwarder now honours `Transform` returns from
-`before_forward` per ADR-0011: plugin headers merge into the
-request (plugin wins on conflict), `Transform.body` replaces
-the upstream body wholesale when not None, and the dispatcher
-short-circuits at the first plugin returning a non-`Pass`
-result (first-wins). Four respx-driven tests pin each axis
-end-to-end against a mocked Anthropic upstream.
+**Phase 1b is feature-complete.** Checkpoint 18 (commit
+75ff46a) landed `HookContext` end-to-end: ADR-0012 is the
+policy doc (commit 4606ed0); the SDK now ships `HookContext`
+plus the moved `ContentLevel` primitive; every per-exchange
+hook on `BasePlugin` carries `ctx: HookContext`; `PluginHost`
+builds and threads the context per request via
+`begin_exchange` / `_ctx_for`; the forwarder reads the request
+body up-front and calls `begin_exchange` so plugins can read
+the body lazily through `ctx.request_text(level=...)`; 14 new
+tests pin propagation + per-mode degradation.
 
-118/118 tests pass; touched files lint clean.
+132/132 tests pass; touched files lint clean.
 
-Closed-checkpoint roll-up:
+Closed-checkpoint roll-up (cleanup pass A–G + both stop gates):
 
-- A: EgressGuard wired into proxy lifespan (e2ee4f0)
-- B: signature verifier + signing CLI (3010aae)
-- C: on_persisted ordering fix (a2bc3d4)
-- D: synthetic SSE block response (b1724fa)
-- E: audit_log append-only triggers (2891e8f)
-- F: ADR-0008 housekeeping (6a08c9c)
-- G: session_factory property + ADR-0009 (96305e1)
-- 14: ADR-0010 retroactive (654fbfb)
-- 15: ADR-0011 Transform policy (cfbbb8e)
-- 16: Transform impl + 4 tests (bbb33e7)
+- A (e2ee4f0): EgressGuard wired into proxy lifespan
+- B (3010aae): signature verifier wired + signing CLI
+- C (a2bc3d4): on_persisted ordering fix
+- D (b1724fa): synthetic SSE block response
+- E (2891e8f): audit_log append-only triggers
+- F (6a08c9c): ADR-0008 housekeeping
+- G (96305e1): session_factory property + ADR-0009
+- 14 (654fbfb): ADR-0010 retroactive (Block/Abort.plugin)
+- 15 (cfbbb8e): ADR-0011 Transform policy
+- 16 (bbb33e7): Transform impl + 4 tests
+- 17 (4606ed0): ADR-0012 hook payload routing
+- 18 (75ff46a): HookContext impl + 14 tests
 
-Remaining: **Gate 2 — Hook payload routing (ADR-0012, option (b)
-HookContext).**
+### Phase 1b loose ends
+
+Known-deferred; each would be its own checkpoint when picked up:
+
+- `end_exchange` cleanup in the forwarder (Block/Abort early
+  returns + `generate()` finally). Bounded leak only.
+- Per-level shape refinement of `ctx.request_text()` (L1 hash,
+  L2 scrubbed) — wired in Phase 1c alongside scrubbers.
+- Manifest `min_content_level` field — Phase 1c when scope_guard
+  needs it.
+- Response-side ctx accessors — wait for Extractor / structured
+  response data.
 
 ## Next single step
 
-**Write ADR-0012 — Hook payload routing.** Path
-`docs/decisions/0012-hook-context.md`. Document option (b):
-add a `HookContext` to the SDK; every hook signature gains
-`ctx: HookContext`. `ctx` holds `session_id` and `exchange_id`
-and exposes lazy accessors (e.g. `ctx.request_text(level=...)`)
-that degrade at access time per
-`effective_ceiling(mode, user_opted_in=...)`. The
-`min_content_level` manifest field stays deferred to Phase 1c.
-Commit with scope `docs`. After the ADR commits, define
-`HookContext` in the SDK, add the `ctx` parameter to all 8 hook
-signatures (BasePlugin + PluginHost dispatchers), update
-`hello_world` to accept (and ignore) `ctx`, write tests pinning
-ctx propagation and lazy degradation. Each passing test group
-is its own checkpoint.
+**Phase 1b is closed.** Next session opens Phase 1c —
+`scope_guard` plugin. Open
+`docs/worklog/<YYYY-MM-DD>-phase1c-scope-guard.md` and update
+this STATUS.md to point at it; or land any of the loose ends
+above first.
 
 ## Blocking / decisions needed
 
-- None. Gate 2 is unblocked; implementation can begin.
+- None.
 
 ## Progress
 
@@ -86,7 +91,7 @@ is its own checkpoint.
 - [x] ADRs 0001–0008 sealed (0004 superseded by 0007)
 - [x] Phase 0 — core skeleton (CLOSED 2026-05-04)
 - [x] Phase 1a — plugin SDK (CLOSED 2026-05-05)
-- [ ] Phase 1b — security boundary hardening (in progress)
+- [x] Phase 1b — security boundary hardening (CLOSED 2026-05-06)
 - [ ] Phase 1c — `scope_guard` plugin
 - [ ] Phase 2+ — Mode R sink, third-party plugins
 

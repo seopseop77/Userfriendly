@@ -11,7 +11,7 @@ from llm_tracker.plugin_host.host import PluginHost
 from llm_tracker.proxy.app import app
 from llm_tracker.proxy.forwarder import forward_request
 from llm_tracker.storage.models import Base, Exchange
-from llm_tracker_sdk import BasePlugin, Block, Pass
+from llm_tracker_sdk import BasePlugin, Block, Pass, Transform
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.requests import Request
@@ -257,5 +257,188 @@ async def test_block_emits_synthetic_anthropic_sse():
     assert len(rows) == 1
     assert rows[0].blocked_by == "blocker"
     assert rows[0].endpoint == "v1/messages"
+
+    await engine.dispose()
+
+
+# -- ADR-0011 Transform handling -----------------------------------------
+
+
+def _build_request_scope() -> tuple[dict, callable]:
+    """Build a minimal Starlette Request scope + receive() callable.
+
+    Shared shape across the Transform tests below: POST /v1/messages
+    with one client-set header (`x-api-key`) and a small JSON body.
+    Tests can override pieces by editing the returned scope dict
+    before constructing the Request.
+    """
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/messages",
+        "raw_path": b"/v1/messages",
+        "query_string": b"",
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"x-api-key", b"sk-client"),
+        ],
+        "scheme": "http",
+        "server": ("test", 80),
+        "client": ("test", 0),
+        "root_path": "",
+    }
+
+    async def receive() -> dict:
+        return {"type": "http.request", "body": b'{"client": true}', "more_body": False}
+
+    return scope, receive
+
+
+async def _empty_factory():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    return engine, factory
+
+
+@pytest.mark.asyncio
+async def test_transform_merges_new_header_into_request():
+    """ADR-0011 §1: plugin headers are merged; new keys are added."""
+    engine, factory = await _empty_factory()
+
+    class _Tagger(BasePlugin):
+        name = "tagger"
+
+        async def before_forward(self, exchange_id: str) -> Pass | Transform:
+            return Transform(headers={"x-llm-tracker-task": "research"})
+
+    host = PluginHost(mode="L", session_factory=factory)
+    host._plugins = [_Tagger()]
+
+    scope, receive = _build_request_scope()
+    request = Request(scope, receive=receive)
+
+    with respx.mock:
+        route = respx.post(_MESSAGES_URL).mock(
+            return_value=httpx.Response(200, content=_SSE_BODY)
+        )
+        response = await forward_request(request, "v1/messages", host)
+        async for _chunk in response.body_iterator:
+            pass
+
+    sent = route.calls[0].request
+    assert sent.headers.get("x-llm-tracker-task") == "research"
+    # Original client header survives the merge.
+    assert sent.headers.get("x-api-key") == "sk-client"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_transform_plugin_header_wins_on_conflict():
+    """ADR-0011 §1: plugin value wins when its key collides with the request's."""
+    engine, factory = await _empty_factory()
+
+    class _Rewriter(BasePlugin):
+        name = "rewriter"
+
+        async def before_forward(self, exchange_id: str) -> Pass | Transform:
+            return Transform(headers={"x-api-key": "sk-rewritten"})
+
+    host = PluginHost(mode="L", session_factory=factory)
+    host._plugins = [_Rewriter()]
+
+    scope, receive = _build_request_scope()
+    request = Request(scope, receive=receive)
+
+    with respx.mock:
+        route = respx.post(_MESSAGES_URL).mock(
+            return_value=httpx.Response(200, content=_SSE_BODY)
+        )
+        response = await forward_request(request, "v1/messages", host)
+        async for _chunk in response.body_iterator:
+            pass
+
+    sent = route.calls[0].request
+    assert sent.headers.get("x-api-key") == "sk-rewritten"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_transform_replaces_whole_body_when_body_is_set():
+    """ADR-0011 §2: Transform.body, when not None, replaces the upstream body."""
+    engine, factory = await _empty_factory()
+
+    class _BodySwapper(BasePlugin):
+        name = "swapper"
+
+        async def before_forward(self, exchange_id: str) -> Pass | Transform:
+            return Transform(body=b'{"plugin_rewrote": true}')
+
+    host = PluginHost(mode="L", session_factory=factory)
+    host._plugins = [_BodySwapper()]
+
+    scope, receive = _build_request_scope()
+    request = Request(scope, receive=receive)
+
+    with respx.mock:
+        route = respx.post(_MESSAGES_URL).mock(
+            return_value=httpx.Response(200, content=_SSE_BODY)
+        )
+        response = await forward_request(request, "v1/messages", host)
+        async for _chunk in response.body_iterator:
+            pass
+
+    sent = route.calls[0].request
+    assert sent.content == b'{"plugin_rewrote": true}'
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_transform_multi_plugin_first_wins():
+    """ADR-0011 §3: first plugin returning Transform applies; later plugins skipped.
+
+    Inject two plugins. Only the first should run; the second's hook is
+    never called (asserted by an explicit counter), and the first's
+    headers reach upstream — the second's do not.
+    """
+    engine, factory = await _empty_factory()
+
+    second_was_called = []
+
+    class _First(BasePlugin):
+        name = "first"
+
+        async def before_forward(self, exchange_id: str) -> Pass | Transform:
+            return Transform(headers={"x-from-first": "yes"})
+
+    class _Second(BasePlugin):
+        name = "second"
+
+        async def before_forward(self, exchange_id: str) -> Pass | Transform:
+            second_was_called.append(True)
+            return Transform(headers={"x-from-second": "yes"})
+
+    host = PluginHost(mode="L", session_factory=factory)
+    host._plugins = [_First(), _Second()]
+
+    scope, receive = _build_request_scope()
+    request = Request(scope, receive=receive)
+
+    with respx.mock:
+        route = respx.post(_MESSAGES_URL).mock(
+            return_value=httpx.Response(200, content=_SSE_BODY)
+        )
+        response = await forward_request(request, "v1/messages", host)
+        async for _chunk in response.body_iterator:
+            pass
+
+    sent = route.calls[0].request
+    assert sent.headers.get("x-from-first") == "yes"
+    assert sent.headers.get("x-from-second") is None
+    assert second_was_called == []
 
     await engine.dispose()

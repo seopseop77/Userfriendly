@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator
 import httpx
 from fastapi import Request
 from fastapi.responses import StreamingResponse
-from llm_tracker_sdk import Abort, Block
+from llm_tracker_sdk import Abort, Block, Transform
 from ulid import ULID
 
 from ..plugin_host.host import PluginHost
@@ -172,6 +172,13 @@ async def forward_request(
                 started_at_ms=t0_epoch_ms,
             )
             return _block_response(result.reason, exchange_id)
+        if isinstance(result, Transform):
+            # ADR-0011: merge plugin headers into the request, plugin wins
+            # on conflict. Body replace is whole-body when set.
+            if result.headers is not None:
+                headers.update(result.headers)
+            if result.body is not None:
+                body = result.body
 
     upstream = await get_client().send(
         get_client().build_request(request.method, url, headers=headers, content=body),

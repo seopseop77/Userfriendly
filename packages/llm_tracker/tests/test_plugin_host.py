@@ -174,6 +174,46 @@ async def test_load_plugins_registers_manifest_with_egress_guard(
     assert await guard.check(plugin="allowed", url="https://api.example.com") is True
 
 
+async def test_load_plugins_populates_egress_manifests_and_audits_attempt(
+    monkeypatch, session_factory
+):
+    """After load_plugins(), the manifest is in `_manifests` and check() audits.
+
+    Pins the proxy-boot wiring contract: PluginHost(..., egress_guard=guard)
+    pushes every accepted manifest into the guard, and a subsequent
+    EgressGuard.check() writes an `egress_attempt` row to audit_log.
+    """
+    fake_manifest = PluginManifest(
+        name="allowed",
+        version="0.1.0",
+        capabilities=["egress_http"],
+        egress_destinations=["https://api.example.com"],
+        allowed_modes=["L", "A", "R"],
+    )
+    monkeypatch.setattr(host_mod, "entry_points", lambda **_kw: [_AllowedEP()])
+    monkeypatch.setattr(
+        PluginHost,
+        "_find_manifest",
+        staticmethod(lambda _cls: (fake_manifest, "")),
+    )
+
+    guard = EgressGuard(mode="R", session_factory=session_factory)
+    host = PluginHost(mode="R", session_factory=session_factory, egress_guard=guard)
+    await host.load_plugins()
+
+    assert "allowed" in guard._manifests
+    assert guard._manifests["allowed"] is fake_manifest
+
+    allowed = await guard.check(plugin="allowed", url="https://api.example.com")
+    assert allowed is True
+    rows = await _audit_rows(session_factory)
+    attempt = next((r for r in rows if r.kind == "egress_attempt"), None)
+    assert attempt is not None
+    assert attempt.plugin == "allowed"
+    assert attempt.destination == "https://api.example.com"
+    assert attempt.outcome == "ok"
+
+
 async def test_load_plugins_skips_egress_register_when_manifest_invalid(
     monkeypatch, session_factory
 ):

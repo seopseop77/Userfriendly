@@ -6,6 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 
 from ..config import Settings
+from ..egress_guard.guard import EgressGuard
 from ..plugin_host.host import PluginHost
 from ..storage.database import make_session_factory
 from .forwarder import forward_request
@@ -15,9 +16,15 @@ from .forwarder import forward_request
 async def lifespan(app: FastAPI):
     settings = Settings()
     factory = make_session_factory(settings.db_url)
-    host = PluginHost(mode=settings.mode, session_factory=factory)
+    egress_guard = EgressGuard(mode=settings.mode, session_factory=factory)
+    host = PluginHost(
+        mode=settings.mode,
+        session_factory=factory,
+        egress_guard=egress_guard,
+    )
     await host.on_init()
     app.state.plugin_host = host
+    app.state.egress_guard = egress_guard
     yield
     await host.on_shutdown()
 

@@ -14,6 +14,27 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## What was done
 
+### Checkpoint 9 — `on_persisted` ordering fix in forwarder (commit a2bc3d4)
+
+- Modified `packages/llm_tracker/src/llm_tracker/proxy/forwarder.py`:
+  hoisted `record_exchange_timing(...)` ahead of
+  `plugin_host.on_persisted(...)`. design.md §6.3.2 says
+  `on_persisted` runs *after* the local DB write so plugins can
+  read the exchange row back; the prior order
+  (`on_response_complete → on_persisted → record_exchange_timing`)
+  left the row invisible to any plugin opening a session in the
+  hook. Also collapsed the now-redundant nested
+  `plugin_host is not None` check into one outer guard.
+
+- Added `test_on_persisted_sees_exchange_row` in
+  `packages/llm_tracker/tests/proxy/test_forwarder.py`:
+  drives `forward_request` directly with a constructed Starlette
+  `Request` + respx-mocked upstream (so it bypasses the FastAPI
+  lifespan and doesn't depend on `Settings()` / a real database
+  configuration). A `_ReaderPlugin` whose `on_persisted` opens a
+  session and selects the exchange row asserts the row is
+  non-empty after the body is drained.
+
 ### Checkpoint 8 — manifest signature verifier wired into the loader (commit 3010aae)
 
 - Added `packages/llm_tracker/src/llm_tracker/trust/__init__.py` and
@@ -285,6 +306,33 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## Decisions
 
+### Checkpoint 9
+
+- **Direct `forward_request` test, not the existing ASGITransport
+  pattern**. The other forwarder tests go through `app` and
+  exercise the lifespan-built host, which under the cleanup pass
+  loads the real `hello_world` and uses the real settings DB.
+  Driving `forward_request` directly with a constructed Starlette
+  `Request` and an explicit `PluginHost` is the smallest setup that
+  exercises the post-stream code path with a known plugin and a
+  known in-memory database. Mirrors `tests/test_plugin_host.py`'s
+  fixture style for the engine + factory + Base.metadata.create_all.
+- **Collapsing the nested `plugin_host is not None` check** is a
+  minor cleanup that became natural once both timing-write and
+  `on_persisted` sit under the same outer guard. Without that
+  collapse the new ordering would have re-introduced a stray
+  un-guarded `await` if `plugin_host` were `None` in the timing
+  branch — flat structure makes the invariant readable in one pass.
+- **Drained the `body_iterator` explicitly in the test** so that
+  the post-stream block (timing write + `on_persisted` dispatch)
+  actually runs. `StreamingResponse` is lazy; just constructing it
+  inside `forward_request` is not enough.
+- **Did NOT add a separate audit-trail check**. `on_persisted`
+  already audits via `_audit("on_persisted", ...)`; that audit
+  row's mere existence doesn't pin the ordering — only a row read
+  inside the hook does. One assertion is enough; the hook-invoked
+  audit case is already covered by `test_hook_invocations_logged`.
+
 ### Checkpoint 8
 
 ADR-0008's two remaining deferred sub-decisions land here.
@@ -514,6 +562,26 @@ land with the host-wiring checkpoint.
 
 ## Verification
 
+### After checkpoint 9
+
+```
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker/tests/ -q
+........................................................................ [ 66%]
+....................................                                     [100%]
+108 passed in 0.70s
+
+$ .venv/bin/ruff check \
+    packages/llm_tracker/src/llm_tracker/proxy/forwarder.py \
+    packages/llm_tracker/tests/proxy/test_forwarder.py
+All checks passed!
+```
+
+Side effect: ruff's auto-fix on `tests/proxy/test_forwarder.py`
+incidentally cleaned up the pre-existing import-sort issue from
+the Suggestions list (the new imports made the block messy enough
+that `ruff check --fix` emitted a one-shot reorder which closed
+the original I001 too). One down from the five pre-existing items.
+
 ### After checkpoint 8
 
 ```
@@ -686,11 +754,14 @@ Remaining Phase 1b items (per roadmap.md):
 
 ## Suggestions (observed, not acted on)
 
-- `ruff check` over the whole tree surfaces 5 pre-existing errors:
-  unsorted imports in `cli/main.py` and `tests/proxy/test_forwarder.py`,
+- `ruff check` over the whole tree surfaces 4 pre-existing errors
+  (was 5 — `tests/proxy/test_forwarder.py`'s I001 was incidentally
+  cleaned up in checkpoint 9 when ruff's auto-fix touched the file
+  to integrate the new imports): unsorted imports in `cli/main.py`,
   an `f`-string without placeholders plus a 102-char line in
-  `tests/perf/report_first_token_latency.py`. Cheap one-shot cleanup,
-  but out of scope for this checkpoint per CLAUDE.md §9.
+  `tests/perf/report_first_token_latency.py`, plus the fifth in the
+  same file. Cheap one-shot cleanup, but out of scope per CLAUDE.md
+  §9.
 
 ## Out-of-band updates (Cowork)
 
@@ -701,25 +772,17 @@ Remaining Phase 1b items (per roadmap.md):
 
 ## Handoff
 
-Checkpoint 8 complete (commit 3010aae). Manifest signature
-verification now runs at plugin load time: bundled `keys.toml` →
-`load_bundled_registry()` → `_verify_manifest()` (byte-exact
-manifest + sibling `.sig`) → `manifest_rejected` audit row on
-any non-`VERIFIED` outcome. `hello_world` is signed by
-`minseop` and verifies cleanly under the real registry+sig
-pipeline (integration test + two loader-level reject-path tests).
-ADR-0008's `sign-plugin` deliverable shipped, plus the companion
-`generate-key` for keychain-stored private halves.
+Checkpoint 9 complete (commit a2bc3d4). The forwarder now writes
+the `exchanges` row before dispatching `on_persisted`, so plugins
+can read it back in the hook (design.md §6.3.2). Regression test
+in `tests/proxy/test_forwarder.py` pins this by injecting a
+`_ReaderPlugin` whose `on_persisted` opens a session and asserts
+the row exists.
 
-Phase 1b checklist status: six lines fully closed (proxy-boot
-wiring + manifest signature verification both [x]); content-level
-routing still [~] blocked on the same Cowork ADRs.
+Phase 1b cleanup-pass progress: A, B, C closed.
 
 Remaining cleanup-pass checkpoints in order:
 
-- **C**: `forwarder.py` reorders `record_exchange_timing` ahead of
-  `plugin_host.on_persisted` (design.md §6.3.2 says `on_persisted`
-  runs *after* the DB write).
 - **D**: replace `_block_response` (HTTP 503 plain text) with the
   ADR-0002 §3 synthetic SSE 200 OK stream and persist an
   `Exchange` row with `blocked_by`.
@@ -751,11 +814,24 @@ Until both are answered, content-level integration cannot land.
 
 ### Next single step
 
-**Checkpoint C — fix `on_persisted` ordering in the forwarder.**
-`packages/llm_tracker/src/llm_tracker/proxy/forwarder.py:109–125`
-currently calls `on_response_complete → on_persisted →
-record_exchange_timing`. Per design.md §6.3.2, `on_persisted`
-runs *after* the DB write. Move `record_exchange_timing(...)`
-ahead of `plugin_host.on_persisted(...)`. Add a regression test:
-a fake plugin whose `on_persisted` opens a session and reads back
-the `exchanges` row; assert the row is non-empty.
+**Checkpoint D — synthetic SSE block response (ADR-0002 §3).**
+`forwarder.py::_block_response` currently returns HTTP 503 plain
+text — exactly the option ADR-0002 said NOT to use. Replace with
+a synthetic Anthropic SSE 200 OK stream, sequence per design.md
+§5.4:
+
+`message_start → content_block_start → content_block_delta`
+(single `text_delta` carrying the `[llm-tracker]` prefix + reason)
+`→ content_block_stop → message_delta` (`stop_reason="end_turn"`)
+`→ message_stop`
+
+Status 200, `content-type: text/event-stream`. **Never** emit
+`tool_use`. The block path must also persist an `Exchange` row
+with `blocked_by=<plugin>` populated (the column already exists on
+the model; a small `record_exchange_blocked` helper alongside
+`record_exchange_timing` is the natural shape).
+
+Tests: drive a Block stream through an httpx client and parse it
+cleanly as an Anthropic SSE message — assert each expected event
+appears in order, `tool_use` is absent, and the persisted
+`Exchange` row carries `blocked_by`.

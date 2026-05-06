@@ -6,42 +6,46 @@
 
 ---
 
-**Last updated**: 2026-05-06 (Phase 1b complete — checkpoint 18)
+**Last updated**: 2026-05-06 (Phase-1b verification — test plugins green)
 **Updated by**: Claude Code
 
 ## Current phase
 
-- **Phase**: Phase 1b — security boundary hardening (**feature-complete**; deferred items listed below)
-- **Active task**: Cleanup pass A–G + both stop gates closed. Phase 1c (`scope_guard`) is the next phase; opens with its own worklog.
+- **Phase**: Pre-Phase-1c verification side-quest (TEST-ONLY plugins). Phase 1b sealed at commit 75ff46a; Phase 1c (`scope_guard`) still on deck.
+- **Active task**: Two TEST-ONLY plugins (`token_counter`, `keyword_block`) landed and verified end-to-end against the existing hook chain.
 
 ## Active worklog
 
-`docs/worklog/2026-05-05-phase1b-security.md`
+`docs/worklog/2026-05-06-test-plugins.md`
 
 ## Recent commits
 
 ```
+2c28f68   plugins: TEST-ONLY token_counter + keyword_block
+102e69b   docs: Phase 1b checkpoints 17+18 — Gate 2 closed; phase complete
 75ff46a   core: HookContext for hook payload routing (ADR-0012)
 4606ed0   docs: ADR-0012 — HookContext for hook payload routing (Gate 2)
 bbb33e7   proxy: honour Transform from before_forward (ADR-0011)
-cfbbb8e   docs: ADR-0011 — Transform handling policy (Gate 1)
-654fbfb   docs: ADR-0010 — retroactive ratification of Block/Abort plugin field
 ```
 
 ## Where we paused
 
-**Phase 1b is feature-complete.** Checkpoint 18 (commit
-75ff46a) landed `HookContext` end-to-end: ADR-0012 is the
-policy doc (commit 4606ed0); the SDK now ships `HookContext`
-plus the moved `ContentLevel` primitive; every per-exchange
-hook on `BasePlugin` carries `ctx: HookContext`; `PluginHost`
-builds and threads the context per request via
-`begin_exchange` / `_ctx_for`; the forwarder reads the request
-body up-front and calls `begin_exchange` so plugins can read
-the body lazily through `ctx.request_text(level=...)`; 14 new
-tests pin propagation + per-mode degradation.
+**Verification side-quest landed before Phase 1c.** Two TEST-ONLY
+plugins under `packages/` exercise the hook chain end-to-end:
 
-132/132 tests pass; touched files lint clean.
+- `token_counter` (commit 2c28f68): `on_response_chunk` →
+  `on_response_complete`. Buffers Anthropic SSE and writes
+  per-exchange usage rows to a sidecar SQLite at
+  `var/plugin_token_counter.db`.
+- `keyword_block` (commit 2c28f68): `on_request_received`. Returns
+  `Block(...)` when the request body matches a forbidden keyword
+  (env-configurable via `LLMTRACK_KEYWORDS_BLOCK_LIST`).
+
+Both manifests are signed by the bundled `minseop` trust key and
+loaded successfully by `PluginHost.load_plugins()` alongside
+`hello_world` (smoke-tested). 150/150 tests pass; ruff clean.
+
+**Phase 1b remains feature-complete** (commit 75ff46a closed it).
 
 Closed-checkpoint roll-up (cleanup pass A–G + both stop gates):
 
@@ -73,11 +77,22 @@ Known-deferred; each would be its own checkpoint when picked up:
 
 ## Next single step
 
-**Phase 1b is closed.** Next session opens Phase 1c —
-`scope_guard` plugin. Open
-`docs/worklog/<YYYY-MM-DD>-phase1c-scope-guard.md` and update
-this STATUS.md to point at it; or land any of the loose ends
-above first.
+Two paths, pick one:
+
+1. **Manual real-traffic e2e** with both test plugins loaded — start
+   `llm-tracker start --mode L`, point `ANTHROPIC_BASE_URL` at it,
+   send one real Claude Code request, and inspect both
+   `var/llm_tracker.db` (core) and `var/plugin_token_counter.db`
+   (sidecar). This is the highest-confidence verification of
+   everything Phase 1a/1b shipped.
+2. **Open Phase 1c — `scope_guard` plugin.** Create
+   `docs/worklog/<YYYY-MM-DD>-phase1c-scope-guard.md`, point this
+   STATUS.md at it, and schedule removal of the now-redundant
+   `keyword_block` test plugin in that worklog.
+
+Both `keyword_block` (Phase 1c overlap) and `token_counter` (Phase 2
+Extractor overlap) are explicit throwaways — track their removal
+when the proper replacement lands.
 
 ## Blocking / decisions needed
 
@@ -92,6 +107,7 @@ above first.
 - [x] Phase 0 — core skeleton (CLOSED 2026-05-04)
 - [x] Phase 1a — plugin SDK (CLOSED 2026-05-05)
 - [x] Phase 1b — security boundary hardening (CLOSED 2026-05-06)
+- [x] Pre-Phase-1c verification — TEST-ONLY plugins (token_counter, keyword_block) (2026-05-06, commit 2c28f68)
 - [ ] Phase 1c — `scope_guard` plugin
 - [ ] Phase 2+ — Mode R sink, third-party plugins
 

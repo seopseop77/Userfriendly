@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..egress_guard.guard import EgressGuard
 from ..storage.audit import write_audit
+from .policy import denied_capabilities
 
 HOOK_TIMEOUT = 5.0  # seconds; a plugin exceeding this is treated as a fault
 
@@ -117,6 +118,20 @@ class PluginHost:
                         plugin=ep.name,
                         outcome="denied",
                         detail_json=json.dumps({"reason": err}),
+                    )
+                continue
+
+            denied = denied_capabilities(self.mode, manifest.capabilities)
+            if denied:
+                async with self._session_factory() as session:
+                    await write_audit(
+                        session,
+                        kind="capability_denied",
+                        plugin=manifest.name,
+                        outcome="denied",
+                        detail_json=json.dumps(
+                            {"mode": self.mode, "denied": sorted(denied)}
+                        ),
                     )
                 continue
 

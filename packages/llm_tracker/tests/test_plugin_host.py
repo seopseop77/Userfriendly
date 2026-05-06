@@ -1,6 +1,7 @@
 """Integration tests: PluginHost dispatches hooks and writes audit log entries."""
 
 import asyncio
+import json
 
 import llm_tracker.plugin_host.host as host_mod
 import pytest
@@ -183,3 +184,61 @@ async def test_load_plugins_skips_egress_register_when_manifest_invalid(
 
     assert host._plugins == []
     assert await guard.check(plugin="no_manifest", url="https://x") is False
+
+
+# -- mode x capability policy at load time --------------------------------
+
+
+async def test_load_plugins_rejects_egress_http_in_mode_L(monkeypatch, session_factory):
+    """Mode L denies the egress_http capability at declaration time (design.md §8)."""
+    fake_manifest = PluginManifest(
+        name="allowed",
+        version="0.1.0",
+        capabilities=["egress_http"],
+        egress_destinations=["https://api.example.com"],
+        allowed_modes=["L", "A", "R"],
+    )
+    monkeypatch.setattr(host_mod, "entry_points", lambda **_kw: [_AllowedEP()])
+    monkeypatch.setattr(
+        PluginHost,
+        "_find_manifest",
+        staticmethod(lambda _cls: (fake_manifest, "")),
+    )
+
+    guard = EgressGuard(mode="L", session_factory=session_factory)
+    host = PluginHost(mode="L", session_factory=session_factory, egress_guard=guard)
+    await host.load_plugins()
+
+    assert host._plugins == []
+    rows = await _audit_rows(session_factory)
+    denied = next((r for r in rows if r.kind == "capability_denied"), None)
+    assert denied is not None
+    assert denied.plugin == "allowed"
+    assert denied.outcome == "denied"
+    assert json.loads(denied.detail_json) == {"mode": "L", "denied": ["egress_http"]}
+    # Egress register must not have been called for a rejected plugin.
+    assert "allowed" not in guard._manifests
+
+
+async def test_load_plugins_accepts_egress_http_in_mode_R(monkeypatch, session_factory):
+    """Same manifest that Mode L rejects loads cleanly under Mode R."""
+    fake_manifest = PluginManifest(
+        name="allowed",
+        version="0.1.0",
+        capabilities=["egress_http"],
+        egress_destinations=["https://api.example.com"],
+        allowed_modes=["L", "A", "R"],
+    )
+    monkeypatch.setattr(host_mod, "entry_points", lambda **_kw: [_AllowedEP()])
+    monkeypatch.setattr(
+        PluginHost,
+        "_find_manifest",
+        staticmethod(lambda _cls: (fake_manifest, "")),
+    )
+
+    host = PluginHost(mode="R", session_factory=session_factory)
+    await host.load_plugins()
+
+    assert len(host._plugins) == 1
+    rows = await _audit_rows(session_factory)
+    assert not any(r.kind == "capability_denied" for r in rows)

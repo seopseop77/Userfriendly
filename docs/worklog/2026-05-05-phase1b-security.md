@@ -14,6 +14,31 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## What was done
 
+### Checkpoint 11 — `audit_log` append-only DB triggers (commit 2891e8f)
+
+- `storage/models.py`: replace the "deferred to Phase 1b" comment
+  on `AuditLog` with a pointer to two new module-level DDL
+  constants — `AUDIT_LOG_NO_UPDATE_DDL` and
+  `AUDIT_LOG_NO_DELETE_DDL`. Each contains a `CREATE TRIGGER IF
+  NOT EXISTS … BEFORE {UPDATE,DELETE} … RAISE(ABORT,
+  'audit_log is append-only')` statement. SQLAlchemy
+  `event.listen(AuditLog.__table__, "after_create", DDL(...))`
+  attaches them so any code path that runs
+  `Base.metadata.create_all` (production startup, all test
+  fixtures) installs them automatically.
+- New Alembic migration
+  `alembic/versions/c2d3e4f5a6b7_audit_log_append_only_triggers.py`:
+  imports the same DDL constants and `op.execute()`s them on
+  upgrade. Downgrade drops both triggers. Single source of truth —
+  the migration cannot drift from the listener-driven path.
+- `tests/test_audit_triggers.py` (3 tests): `test_insert_succeeds`
+  pins that audit writes still work. `test_update_raises` and
+  `test_delete_raises` issue raw `UPDATE` / `DELETE` SQL through
+  SQLAlchemy and assert `IntegrityError` matching `"append-only"`.
+  Triggers fire at SQLite level, surfacing as `sqlite3.IntegrityError`
+  via `aiosqlite` (not `OperationalError` — initial guess was
+  wrong, corrected after the first run).
+
 ### Checkpoint 10 — synthetic SSE block response per ADR-0002 §3 (commit b1724fa)
 
 - `forwarder.py`:
@@ -349,6 +374,34 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## Decisions
 
+### Checkpoint 11
+
+- **Single source of truth in `storage/models.py`, not duplicated
+  SQL in the migration**. The constants `AUDIT_LOG_NO_UPDATE_DDL`
+  and `AUDIT_LOG_NO_DELETE_DDL` are defined alongside the model;
+  the Alembic migration imports them. If we tweak the trigger
+  message later (or add a new one), one edit covers both prod and
+  test paths.
+- **`event.listen("after_create", DDL(...))` for the test path**.
+  Tests use `Base.metadata.create_all`, which doesn't run Alembic
+  migrations. Without the listener, the triggers would only exist
+  in production DBs and the test suite would silently *not* be
+  exercising them. The listener guarantees parity.
+- **`CREATE TRIGGER IF NOT EXISTS`**, not `CREATE TRIGGER`. Both
+  paths (listener fires per `create_all`; migration runs once)
+  end up issuing the statement; idempotency means a re-run never
+  fails.
+- **`SELECT RAISE(ABORT, '...')` body, not `RAISE`. SQLite's
+  trigger language requires `RAISE` inside a `SELECT` — bare
+  `RAISE(ABORT, ...)` parses as a function call without a
+  context. Standard SQLite idiom.
+- **`IntegrityError`, not `OperationalError`**. SQLite's
+  `RAISE(ABORT, ...)` surfaces as `sqlite3.IntegrityError` via
+  `aiosqlite`, which SQLAlchemy maps to its own `IntegrityError`.
+  First test draft asserted on `OperationalError` and failed; the
+  test fix took precedence over a code change because the trigger
+  itself is correct.
+
 ### Checkpoint 10
 
 - **`plugin: str = ""` field on `Block` and `Abort`, not a
@@ -657,6 +710,21 @@ land with the host-wiring checkpoint.
 
 ## Verification
 
+### After checkpoint 11
+
+```
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker/tests/ -q
+........................................................................ [ 64%]
+........................................                                 [100%]
+112 passed in 0.72s
+
+$ .venv/bin/ruff check \
+    packages/llm_tracker/src/llm_tracker/storage/models.py \
+    packages/llm_tracker/alembic/versions/c2d3e4f5a6b7_audit_log_append_only_triggers.py \
+    packages/llm_tracker/tests/test_audit_triggers.py
+All checks passed!
+```
+
 ### After checkpoint 10
 
 ```
@@ -884,20 +952,16 @@ Remaining Phase 1b items (per roadmap.md):
 
 ## Handoff
 
-Checkpoint 10 complete (commit b1724fa). Block / Abort responses
-now go through a synthetic Anthropic SSE 200 stream (ADR-0002
-§3) instead of HTTP 503 plain text, and the block path persists
-an `Exchange` row with `blocked_by` set. SDK additive change:
-`Block` and `Abort` carry an optional `plugin: str = ""` field
-that the host sets to the blocking plugin's name.
+Checkpoint 11 complete (commit 2891e8f). `audit_log` is now
+DB-enforced append-only via SQLite triggers; ADR-0006's open
+question is closed. Single source of truth lives next to the
+ORM model and is consumed by both the Alembic migration and the
+`Base.metadata.create_all` test path.
 
-Phase 1b cleanup-pass progress: A, B, C, D closed.
+Phase 1b cleanup-pass progress: A, B, C, D, E closed.
 
 Remaining cleanup-pass checkpoints in order:
 
-- **E**: Alembic migration installing `audit_log_no_update` /
-  `audit_log_no_delete` SQLite triggers; remove the "deferred to
-  Phase 1b" comment in `storage/models.py`.
 - **F**: ADR-0008 housekeeping (mark four resolved items —
   signature storage location, sig blob format, registry file
   format, signing CLI).
@@ -923,18 +987,22 @@ Until both are answered, content-level integration cannot land.
 
 ### Next single step
 
-**Checkpoint E — `audit_log` append-only DB enforcement (ADR-0006
-open).** Add an Alembic migration installing two SQLite triggers,
-`audit_log_no_update` (BEFORE UPDATE) and `audit_log_no_delete`
-(BEFORE DELETE), each calling `RAISE(ABORT, '...append-only...')`
-so any UPDATE / DELETE on `audit_log` rows fails fast.
+**Checkpoint F — ADR-0008 housekeeping (docs only).** In
+`docs/decisions/0008-plugin-signing-trust-model.md`, mark these
+three "What is deferred" items RESOLVED with the values
+`signing.py` already encodes:
 
-Remove the "Append-only by convention; DB-level enforcement via
-triggers is deferred to Phase 1b." comment in
-`storage/models.py::AuditLog`.
+- Canonicalization → byte-exact contents of `plugin.toml`.
+- Signature blob format → sibling TOML, `signer` + hex
+  `signature`.
+- Registry file format → TOML `[[key]]` array, `name` + hex
+  `public_key`.
 
-Test: insert an audit row, then assert that both UPDATE and
-DELETE statements raise an exception (matching the message
-prefix). Run the new migration in the test fixture (or apply it
-via `Base.metadata.create_all` plus a manual trigger creation,
-matching whichever path the existing test fixtures use).
+Add as resolved: signing CLI (`llm-tracker generate-key` /
+`sign-plugin`, checkpoint 8) and reference-plugin signing
+(developer-signed under `minseop` for now).
+
+Leave deferred: boot-time verification cache, key rotation
+policy, revocation mechanism.
+
+This is a docs-only commit; no code or tests change.

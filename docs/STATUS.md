@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-06 (Phase 1b checkpoint 10 complete)
+**Last updated**: 2026-05-06 (Phase 1b checkpoint 11 complete)
 **Updated by**: Claude Code
 
 ## Current phase
 
 - **Phase**: Phase 1b — security boundary hardening (cleanup pass in progress)
-- **Active task**: Synthetic SSE block response landed; audit_log append-only triggers next (Checkpoint E).
+- **Active task**: audit_log append-only triggers landed; ADR-0008 housekeeping next (Checkpoint F, docs only).
 
 ## Active worklog
 
@@ -21,57 +21,59 @@
 ## Recent commits
 
 ```
+2891e8f   storage: audit_log append-only DB triggers (ADR-0006)
+b06623a   docs: Phase 1b checkpoint 10 — synthetic SSE block response
 b1724fa   proxy: synthetic SSE block response per ADR-0002 §3
 ebb581a   docs: Phase 1b checkpoint 9 — on_persisted ordering fix
 a2bc3d4   proxy: fix on_persisted ordering relative to DB write
-5fd58f0   docs: Phase 1b checkpoint 8 — manifest signature verifier wired
-3010aae   security: wire manifest signature verifier into loader
 ```
 
 ## Where we paused
 
-Phase 1b cleanup-pass checkpoint D complete (2026-05-06, commit
-b1724fa). The forwarder no longer returns HTTP 503 plain text on
-Block / Abort. Instead it emits the documented six-event Anthropic
-SSE 200 stream (`message_start → content_block_start →
-content_block_delta` carrying `"[llm-tracker] <reason>"` →
-`content_block_stop → message_delta` with
-`stop_reason="end_turn"` → `message_stop`). `tool_use` is never
-emitted. The block path also persists an `Exchange` row with
-`blocked_by=<plugin>` via the new `record_exchange_blocked`
-helper.
+Phase 1b cleanup-pass checkpoint E complete (2026-05-06, commit
+2891e8f). The `audit_log` table is now DB-enforced append-only
+via two SQLite triggers — `audit_log_no_update` and
+`audit_log_no_delete` — each `RAISE(ABORT, 'audit_log is
+append-only')`. The DDL constants live in `storage/models.py`
+alongside the ORM model and are attached to
+`AuditLog.__table__`'s `after_create` event so test fixtures
+using `Base.metadata.create_all` install them automatically. The
+new Alembic migration imports the same constants, keeping prod
+and test paths in lockstep. ADR-0006's "audit-log integrity"
+open question is closed.
 
-SDK side: `Block` and `Abort` gain an additive optional
-`plugin: str = ""` field that the host sets to the blocking
-plugin's name. Backward compatible — plugin code that builds
-`Block(reason="…")` is unaffected.
+112/112 tests pass; touched files lint clean.
 
-109/109 tests pass; touched files lint clean. The new test parses
-the synthetic SSE bytes back into events, asserts the order, the
-`[llm-tracker]` text payload, the absence of `tool_use`, and the
-persisted `blocked_by`.
-
-Cleanup pass progress: A, B, C, D closed (proxy-boot wiring,
-manifest signing, `on_persisted` ordering, synthetic SSE block).
-Remaining: E (audit_log triggers), F (ADR-0008 housekeeping),
-G (session_factory property + ADR-0009 for `allowed_modes`
-default). Then Gates 1/2 with user input.
+Cleanup pass progress: A, B, C, D, E closed. Remaining: F
+(ADR-0008 housekeeping, docs only), G (session_factory property
++ ADR-0009 for `allowed_modes` default tightening). Then Gates
+1/2 with user input.
 
 ## Next single step
 
-**Checkpoint E — `audit_log` append-only DB enforcement.** Add
-an Alembic migration installing two SQLite triggers,
-`audit_log_no_update` (BEFORE UPDATE) and `audit_log_no_delete`
-(BEFORE DELETE), each `RAISE(ABORT, '...append-only...')`. Remove
-the "deferred to Phase 1b" comment in `storage/models.py`. Test:
-insert an audit row, then assert that UPDATE and DELETE both
-raise.
+**Checkpoint F — ADR-0008 housekeeping.** Edit
+`docs/decisions/0008-plugin-signing-trust-model.md` to mark four
+"What is deferred" items RESOLVED with the values already shipped:
+
+- Canonicalization → byte-exact contents of `plugin.toml`.
+- Signature blob format → sibling TOML, `signer` + hex
+  `signature`.
+- Registry file format → TOML `[[key]]` array, `name` + hex
+  `public_key`.
+- Signing CLI → `llm-tracker generate-key` / `sign-plugin`
+  (checkpoint 8) + reference-plugin signing flow (developer
+  signs `hello_world` for now).
+
+Leave deferred: boot-time verification cache, key rotation
+policy, revocation mechanism.
+
+Docs-only checkpoint; no code or tests change.
 
 ## Blocking / decisions needed
 
-- None for Checkpoint E.
+- None for Checkpoint F.
 - Gates 1 (Transform handling) and 2 (hook payload routing)
-  remain deferred to their respective checkpoints.
+  remain deferred.
 
 ## Progress
 

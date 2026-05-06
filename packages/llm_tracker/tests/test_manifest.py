@@ -1,13 +1,12 @@
 """Tests for llm_tracker_sdk.manifest (PluginManifest schema + validator)."""
 
 import pytest
-from pydantic import ValidationError
-
 from llm_tracker_sdk.manifest import PluginManifest
+from pydantic import ValidationError
 
 
 def _minimal() -> dict:
-    return {"name": "test_plugin", "version": "0.1.0"}
+    return {"name": "test_plugin", "version": "0.1.0", "allowed_modes": ["L"]}
 
 
 def test_minimal_manifest_valid():
@@ -17,7 +16,7 @@ def test_minimal_manifest_valid():
     assert m.hooks == []
     assert m.capabilities == []
     assert m.egress_destinations == []
-    assert set(m.allowed_modes) == {"L", "A", "R"}
+    assert m.allowed_modes == ["L"]
 
 
 def test_full_manifest_valid():
@@ -59,4 +58,18 @@ def test_egress_destinations_requires_capability():
 
 def test_missing_name_rejected():
     with pytest.raises(ValidationError):
-        PluginManifest.model_validate({"version": "0.1.0"})
+        PluginManifest.model_validate({"version": "0.1.0", "allowed_modes": ["L"]})
+
+
+def test_missing_allowed_modes_rejected():
+    """ADR-0009: allowed_modes is required (no implicit any-mode default)."""
+    with pytest.raises(ValidationError):
+        PluginManifest.model_validate({"name": "test_plugin", "version": "0.1.0"})
+
+
+def test_empty_allowed_modes_rejected():
+    """ADR-0009: allowed_modes must be non-empty."""
+    with pytest.raises(ValidationError):
+        PluginManifest.model_validate(
+            {"name": "test_plugin", "version": "0.1.0", "allowed_modes": []}
+        )

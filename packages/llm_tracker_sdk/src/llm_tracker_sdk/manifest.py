@@ -6,7 +6,7 @@ import tomllib
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .capabilities import ALL_CAPABILITIES
 
@@ -33,7 +33,7 @@ class PluginManifest(BaseModel):
     hooks: list[str] = []
     capabilities: list[str] = []
     egress_destinations: list[Annotated[str, ...]] = []
-    allowed_modes: list[str] = list(VALID_MODES)
+    allowed_modes: list[str] = Field(..., min_length=1)
     db_namespace: str = ""
 
     @field_validator("hooks")

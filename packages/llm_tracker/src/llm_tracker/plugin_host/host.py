@@ -40,6 +40,17 @@ class PluginHost:
         self._registry = registry if registry is not None else load_bundled_registry()
         self._plugins: list[BasePlugin] = []
 
+    @property
+    def session_factory(self) -> async_sessionmaker[AsyncSession]:
+        """Read-only handle to the host's session factory.
+
+        Lets the forwarder open a session for `record_exchange_timing` /
+        `record_exchange_blocked` without reaching into a private
+        attribute. Same factory the host uses internally for audit
+        writes.
+        """
+        return self._session_factory
+
     # -- audit helpers -------------------------------------------------------
 
     async def _audit(self, hook: str, exchange_id: str | None = None) -> None:

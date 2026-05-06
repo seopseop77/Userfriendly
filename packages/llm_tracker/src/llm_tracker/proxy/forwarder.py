@@ -123,7 +123,7 @@ async def _persist_block(
     blocked_by: str,
     started_at_ms: int,
 ) -> None:
-    async with plugin_host._session_factory() as session:
+    async with plugin_host.session_factory() as session:
         await record_exchange_blocked(
             session,
             exchange_id=exchange_id,
@@ -223,7 +223,7 @@ async def forward_request(
                 t_req = t0_epoch_ms
                 t_up = t0_epoch_ms + int((timing["t1"] - t0_mono) * 1000)
                 t_cli = t0_epoch_ms + int((timing["t2"] - t0_mono) * 1000)
-                async with plugin_host._session_factory() as session:
+                async with plugin_host.session_factory() as session:
                     await record_exchange_timing(
                         session,
                         exchange_id=exchange_id,

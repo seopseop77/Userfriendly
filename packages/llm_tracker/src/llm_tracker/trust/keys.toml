@@ -1,0 +1,19 @@
+# Bundled trust registry per ADR-0008.
+#
+# Each entry authorises one developer to sign plugin manifests. Adding or
+# removing an entry is a *core release* operation, not a runtime config
+# change.
+#
+# Format:
+#
+#     [[key]]
+#     name        = "alice"
+#     public_key  = "<64-hex-char ed25519 public key>"
+#
+# Generate a new keypair with `llm-tracker generate-key <name>` (private
+# key is stored in the OS keychain via `keyring`; public key is printed
+# for pasting here).
+
+[[key]]
+name        = "minseop"
+public_key  = "fea581bb716aa51fc0c68b32601479a9fa6a633753b9ffacd0ee561127c03ac2"

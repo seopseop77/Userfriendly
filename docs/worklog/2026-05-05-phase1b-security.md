@@ -14,6 +14,21 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## What was done
 
+### Checkpoint 14 — ADR-0010 retroactive ratification (docs only)
+
+- New `docs/decisions/0010-block-abort-plugin-field.md`
+  retroactively documents the SDK change made in checkpoint 10
+  (commit b1724fa): `Block` and `Abort` carry an optional
+  `plugin: str = ""` field, set by the host so the forwarder
+  can populate `exchanges.blocked_by`.
+- ADR enumerates the three implementation routes considered
+  (per-host transient state; tuple return; optional dataclass
+  field) and explains why option 3 won (no concurrency hazard,
+  no breaking change for plugin authors, no cascade through
+  dispatcher signatures).
+- No code or tests change. CLAUDE.md §10 is now satisfied for
+  this contract extension.
+
 ### Checkpoint 13 — layering polish + ADR-0009 (commit 96305e1)
 
 - `plugin_host/host.py`: new read-only `session_factory` property
@@ -1016,8 +1031,10 @@ Remaining Phase 1b items (per roadmap.md):
 
 ## Handoff
 
-Checkpoint 13 complete (commit 96305e1). The cleanup pass's
-auto-decidable checkpoints (A–G) are now all closed:
+Checkpoint 14 complete (docs-only). ADR-0010 retroactively
+documents the `Block` / `Abort` `plugin` field added in checkpoint
+10. The cleanup pass's auto-decidable checkpoints (A–G) plus the
+retroactive SDK ADR are now closed:
 
 - A: EgressGuard wired into proxy lifespan (commit e2ee4f0)
 - B: signature verifier wired + signing CLI (commit 3010aae)
@@ -1027,26 +1044,28 @@ auto-decidable checkpoints (A–G) are now all closed:
 - F: ADR-0008 housekeeping (commit 6a08c9c)
 - G: session_factory property + ADR-0009 (commit 96305e1)
 
-The remaining cleanup-pass items are the **stop gates** that
-cannot proceed without user input:
+User has now answered both stop gates and ratified the SDK
+field addition (ADR-0010). Remaining work in strict order:
 
-- **Gate 1 — Transform handling policy.** `forwarder.py` ignores
-  `Transform` returns from `before_forward`. Decisions needed
-  from the user: header policy (merge / overwrite /
-  replace-all-headers), body policy (replace whole body / not
-  allowed / patch), multi-plugin chaining (chain in order /
-  first-wins). Once answered, write ADR-0009 — wait, ADR-0009 is
-  taken; this becomes ADR-0010 — and implement.
-- **Gate 2 — content-level → hook payload routing.** Hooks
-  receive only `exchange_id`; Phase 1c (`scope_guard`) needs the
-  user-message text. Three options on the table per Cowork's
-  brief: (a) extend hook signatures with payloads, (b)
-  `HookContext` with `ctx.request_text(level=...)`, (c) plugins
-  query the DB. Once answered, write the next ADR after Gate 1
-  and implement the routing path that calls
-  `effective_ceiling(mode, user_opted_in=...)` per hook.
-
-Both gates need a Korean ping; pause here.
+- **Gate 1 — Transform handling (ADR-0011).** Header policy:
+  **merge** (plugin headers merged into request; conflicts let
+  plugin win). Body policy: **replace whole body** if
+  `Transform.body is not None`. Multi-plugin: **first-wins**
+  (consistent with Block first-wins). Sequence: write
+  ADR-0011 (commit), implement in `forwarder.py`, add tests
+  (header merge, header conflict, body replacement, multi-plugin
+  first-wins). Each passing test group is its own checkpoint.
+- **Gate 2 — Hook payload routing (ADR-0012, option (b)).**
+  Add `HookContext` to the SDK; every hook signature gains
+  `ctx: HookContext`. `ctx` holds `session_id` + `exchange_id`
+  and exposes lazy accessors (`ctx.request_text(level=...)`)
+  that degrade per `effective_ceiling(mode, user_opted_in=...)`
+  at access time. `min_content_level` manifest field stays
+  deferred to Phase 1c. Sequence: write ADR-0012 (commit),
+  define `HookContext`, update `BasePlugin` and `PluginHost`
+  hooks, update `hello_world` (it can ignore `ctx`), add tests.
+  **Do not start Gate 2 until Gate 1 is fully committed and
+  tested.**
 
 ### Open architectural questions (still Cowork → ADR)
 
@@ -1062,13 +1081,13 @@ Until both are answered, content-level integration cannot land.
 
 ### Next single step
 
-**STOP — Gates 1 and 2 require user input.** No more
-auto-decidable work in this cleanup pass. Korean ping summarising:
-
-- the seven cleanup-pass checkpoints landed (A–G);
-- Gate 1's three sub-decisions to make (Transform header /
-  body / multi-plugin policies);
-- Gate 2's three options for content-level → hook payload
-  routing.
-
-Resume with whichever gate the user answers first.
+**Write ADR-0011 (Gate 1 — Transform handling policy).** Path
+`docs/decisions/0011-transform-policy.md`. Document the user's
+three decisions: header merge, body replace whole, multi-plugin
+first-wins. Commit with scope `docs`. After the ADR commits,
+the immediate next step is implementing Transform handling in
+`forwarder.py` (header merge + body replacement), then
+extending `PluginHost.before_forward` to honour first-wins for
+Transforms (already iterates plugins; just stop on first
+non-Pass result and skip subsequent plugins). Each passing
+test group becomes its own checkpoint.

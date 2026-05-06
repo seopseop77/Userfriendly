@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-06 (Phase 1b cleanup pass complete — paused at stop gates)
+**Last updated**: 2026-05-06 (Phase 1b checkpoint 14 — ADR-0010 retroactive)
 **Updated by**: Claude Code
 
 ## Current phase
 
-- **Phase**: Phase 1b — security boundary hardening (cleanup pass complete; awaiting user input on stop gates)
-- **Active task**: Cleanup-pass checkpoints A–G all landed. Paused for user input on Gate 1 (Transform handling policy) and Gate 2 (content-level → hook payload routing).
+- **Phase**: Phase 1b — security boundary hardening (cleanup pass A–G + retroactive SDK ADR closed; gates decided, implementation pending)
+- **Active task**: ADR-0010 (Block/Abort plugin field) ratified retroactively. Next is ADR-0011 (Gate 1 — Transform handling) followed by implementation, then Gate 2 (ADR-0012 — HookContext).
 
 ## Active worklog
 
@@ -21,18 +21,33 @@
 ## Recent commits
 
 ```
+bda318c   docs: Phase 1b checkpoint 13 — cleanup pass complete; gates open
 96305e1   core: layering polish + manifest allowed_modes tightening
 6a08c9c   docs: Phase 1b checkpoint 12 — ADR-0008 housekeeping
 6a76ea5   docs: Phase 1b checkpoint 11 — audit_log append-only triggers
 2891e8f   storage: audit_log append-only DB triggers (ADR-0006)
-b06623a   docs: Phase 1b checkpoint 10 — synthetic SSE block response
 ```
 
 ## Where we paused
 
-Phase 1b cleanup-pass checkpoint G complete (commit 96305e1).
-The seven auto-decidable cleanup-pass checkpoints (A–G) are all
-closed:
+User has answered both stop gates and ratified the SDK
+field-addition retroactively as ADR-0010.
+
+- **ADR-0010 (retroactive, this checkpoint, docs only)**: Block /
+  Abort `plugin: str = ""` field is the chosen contract for
+  conveying the blocking plugin's name from the dispatcher to
+  the forwarder.
+- **Gate 1 → ADR-0011 next**: Transform handling policy. Header
+  merge (plugin wins on conflict), body replace whole, multi-plugin
+  first-wins.
+- **Gate 2 → ADR-0012 after Gate 1 lands**: Hook payload routing
+  via option (b) `HookContext`. Lazy accessors with mode × opt-in
+  degradation at access time. `min_content_level` manifest field
+  deferred to Phase 1c.
+
+The auto-decidable cleanup-pass checkpoints (A–G) plus the
+retroactive ADR-0010 are all closed (114/114 tests pass; touched
+files lint clean):
 
 - A: EgressGuard wired into proxy lifespan (e2ee4f0)
 - B: signature verifier + signing CLI (3010aae)
@@ -41,39 +56,28 @@ closed:
 - E: audit_log append-only DB triggers (2891e8f)
 - F: ADR-0008 housekeeping (6a08c9c)
 - G: session_factory property + ADR-0009 (96305e1)
-
-114/114 tests pass; touched files lint clean across all
-checkpoints.
-
-The remaining cleanup-pass items are **stop gates** that need
-user input before Claude Code can land code:
-
-- **Gate 1 — Transform handling policy.** `forwarder.py`
-  currently ignores `Transform` returns from `before_forward`.
-  Three sub-decisions: header policy (merge / overwrite /
-  replace-all-headers), body policy (replace whole / not allowed
-  / patch), multi-plugin chaining (chain in order / first-wins).
-  Resolution needs an ADR before code (next slot is ADR-0010
-  since 0009 was taken by Checkpoint G).
-- **Gate 2 — content-level → hook payload routing.** Hooks today
-  receive only `exchange_id`; Phase 1c's `scope_guard` needs
-  user-message text. Three options on the table: (a) extend hook
-  signatures with payloads, (b) `HookContext.request_text(level=...)`,
-  (c) plugins query the DB. Once user picks, write ADR (next
-  number after Gate 1's) and implement.
+- 14: ADR-0010 retroactive (this commit)
 
 ## Next single step
 
-**STOP — Korean ping to user.** Surface both gates' decision
-matrices and wait for the user's call. Resume with whichever
-gate the user answers first; that gate becomes its own
-ADR + checkpoint.
+**Write ADR-0011 — Transform handling policy.** Path
+`docs/decisions/0011-transform-policy.md`. Document the user's
+three decisions: header merge with plugin-wins on conflict, body
+replace whole when `Transform.body is not None`, multi-plugin
+first-wins. Commit with scope `docs`. After the ADR commits,
+implement Transform handling in `forwarder.py` (header merge +
+body replacement) and stop `PluginHost.before_forward` from
+calling subsequent plugins after the first non-`Pass` result.
+Each passing test group is its own checkpoint.
+
+Strict order: ADR-0011 → Gate 1 implementation + tests
+(committed and verified) → ADR-0012 → Gate 2 implementation +
+tests. **Do not start Gate 2 until Gate 1 is fully committed
+and tested.**
 
 ## Blocking / decisions needed
 
-- **Gate 1**: Transform handling — header / body / multi-plugin
-  policies.
-- **Gate 2**: hook payload routing — option (a) / (b) / (c).
+- None. All gates decided; implementation queue is unblocked.
 
 ## Progress
 

@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-06 (Phase 1b checkpoint 11 complete)
+**Last updated**: 2026-05-06 (Phase 1b checkpoint 12 complete)
 **Updated by**: Claude Code
 
 ## Current phase
 
 - **Phase**: Phase 1b — security boundary hardening (cleanup pass in progress)
-- **Active task**: audit_log append-only triggers landed; ADR-0008 housekeeping next (Checkpoint F, docs only).
+- **Active task**: ADR-0008 housekeeping landed; small polish + ADR-0009 next (Checkpoint G).
 
 ## Active worklog
 
@@ -21,59 +21,48 @@
 ## Recent commits
 
 ```
+6a76ea5   docs: Phase 1b checkpoint 11 — audit_log append-only triggers
 2891e8f   storage: audit_log append-only DB triggers (ADR-0006)
 b06623a   docs: Phase 1b checkpoint 10 — synthetic SSE block response
 b1724fa   proxy: synthetic SSE block response per ADR-0002 §3
 ebb581a   docs: Phase 1b checkpoint 9 — on_persisted ordering fix
-a2bc3d4   proxy: fix on_persisted ordering relative to DB write
 ```
 
 ## Where we paused
 
-Phase 1b cleanup-pass checkpoint E complete (2026-05-06, commit
-2891e8f). The `audit_log` table is now DB-enforced append-only
-via two SQLite triggers — `audit_log_no_update` and
-`audit_log_no_delete` — each `RAISE(ABORT, 'audit_log is
-append-only')`. The DDL constants live in `storage/models.py`
-alongside the ORM model and are attached to
-`AuditLog.__table__`'s `after_create` event so test fixtures
-using `Base.metadata.create_all` install them automatically. The
-new Alembic migration imports the same constants, keeping prod
-and test paths in lockstep. ADR-0006's "audit-log integrity"
-open question is closed.
+Phase 1b cleanup-pass checkpoint F complete (docs only). ADR-0008
+now distinguishes Phase-1b-resolved sub-decisions (canonicalization
+= byte-exact, sibling `plugin.toml.sig`, signer+signature blob,
+`[[key]]` registry, `generate-key`/`sign-plugin` CLI,
+developer-signed reference plugin) from items that remain deferred
+(boot-time verification cache, key rotation policy, revocation
+mechanism).
 
-112/112 tests pass; touched files lint clean.
-
-Cleanup pass progress: A, B, C, D, E closed. Remaining: F
-(ADR-0008 housekeeping, docs only), G (session_factory property
-+ ADR-0009 for `allowed_modes` default tightening). Then Gates
-1/2 with user input.
+Cleanup pass progress: A, B, C, D, E, F closed. Remaining: G
+(`session_factory` read-only property on PluginHost + ADR-0009
+for `allowed_modes` default tightening + manifest validator
+update). Then Gates 1/2 with user input.
 
 ## Next single step
 
-**Checkpoint F — ADR-0008 housekeeping.** Edit
-`docs/decisions/0008-plugin-signing-trust-model.md` to mark four
-"What is deferred" items RESOLVED with the values already shipped:
+**Checkpoint G — small polish (one commit).**
 
-- Canonicalization → byte-exact contents of `plugin.toml`.
-- Signature blob format → sibling TOML, `signer` + hex
-  `signature`.
-- Registry file format → TOML `[[key]]` array, `name` + hex
-  `public_key`.
-- Signing CLI → `llm-tracker generate-key` / `sign-plugin`
-  (checkpoint 8) + reference-plugin signing flow (developer
-  signs `hello_world` for now).
-
-Leave deferred: boot-time verification cache, key rotation
-policy, revocation mechanism.
-
-Docs-only checkpoint; no code or tests change.
+1. `PluginHost.session_factory` exposed as a read-only property;
+   `forwarder.py` reaches in via the property instead of the
+   underscore name.
+2. ADR-0009 "Plugin manifest `allowed_modes` becomes
+   required-non-empty" (short, single-decision ADR).
+3. `llm_tracker_sdk/manifest.py`: drop the `list(VALID_MODES)`
+   default, mark required (`Field(...)`), add a validator
+   rejecting an empty list. `hello_world`'s manifest already
+   declares the full mode set, so neither it nor its `.sig` need
+   to change.
 
 ## Blocking / decisions needed
 
-- None for Checkpoint F.
+- None for Checkpoint G.
 - Gates 1 (Transform handling) and 2 (hook payload routing)
-  remain deferred.
+  require user input when reached.
 
 ## Progress
 

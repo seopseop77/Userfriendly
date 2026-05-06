@@ -118,10 +118,13 @@ aligns with `CLAUDE.md §1` (security first).
 
 The signature covers **the full canonicalized contents of `plugin.toml`**.
 Any modification — added capability, comment removal, whitespace
-shuffling, anything — invalidates the signature. The exact
-canonicalization rule (TOML round-trip vs. byte-exact) is an
-implementation choice, deferred to Phase 1b. Either is acceptable as
-long as the rule is documented and stable across versions.
+shuffling, anything — invalidates the signature. **Phase 1b
+resolution: byte-exact contents** (no parse / re-serialize round
+trip). Picked because TOML round-trip would couple the signature to
+whichever serializer's whitespace and quote conventions we ship; a
+library upgrade or swap would silently invalidate every existing
+signature. Byte-exact gives "what was signed" and "what is on disk"
+literal equality.
 
 ### Key registry management
 
@@ -172,27 +175,55 @@ software: *you trust what you install*. Documented; not solved at this
 phase. A future ADR might layer on a maintainer-key signature over
 `keys.toml` itself if this becomes a concern.
 
-### What is deferred
+### Resolved in Phase 1b
 
-- **Key rotation policy.** When and how team members rotate their
-  personal keys. Default for now: rotate on credible compromise or every
-  N months at the maintainer's discretion. No formal cadence.
-- **Revocation mechanism.** No way today to revoke a single signature
-  while keeping the signer's pubkey trusted. A formal
-  `revoked_signatures.toml` is a future ADR if a "revoked-but-key-still-trusted"
-  scenario arises.
-- **Signature storage format.** Whether the signature lives next to the
-  manifest as `plugin.toml.sig`, inside the manifest as an excluded
-  `[_signature]` section, or in a separate `MANIFEST.sig` file. Phase 1b
-  picks one and documents it in `docs/plugins.md`.
-- **Signing tooling.** A `llm-tracker sign-plugin <path>` CLI that uses
-  the developer's local key. Phase 1b deliverable.
-- **Reference-plugin signing.** Whether reference plugins shipped in this
-  repo are signed by a build-bot key or by an individual maintainer.
-  Phase 1b decides.
+- **Canonicalization.** Byte-exact contents of `plugin.toml` (see
+  "Signing scope" above). Implemented in `plugin_host.signing.verify_manifest_signature`
+  (worklog checkpoint 6, commit 2659284).
+- **Signature storage format.** Sibling `plugin.toml.sig` next to
+  the manifest. Picked because the verifier consumes raw bytes; the
+  alternatives (`[_signature]` inline, separate `MANIFEST.sig`)
+  would re-introduce TOML parsing into the canonicalization
+  surface. Documented in `docs/plugins.md`. Implemented in
+  `PluginHost._verify_manifest` (worklog checkpoint 8, commit
+  3010aae).
+- **Signature blob format.** TOML with two fields: `signer` (string,
+  must match a `name` in the registry) and `signature` (hex-encoded
+  64-byte ed25519 signature). Carrying the signer name in the blob
+  lets the verifier distinguish `signing_key_not_in_registry` from
+  `signature_invalid`. Implemented in `verify_manifest_signature`
+  (worklog checkpoint 6).
+- **Registry file format.** TOML `[[key]]` array, each entry with
+  `name` and `public_key` (hex of the 32-byte ed25519 public key).
+  Bundled at `packages/llm_tracker/src/llm_tracker/trust/keys.toml`.
+  Implemented in `signing.load_registry` and the `trust.load_bundled_registry`
+  helper (worklog checkpoints 6 and 8).
+- **Signing tooling.** `llm-tracker generate-key <name>` (ed25519
+  keypair, private half stored in OS keychain via `keyring`,
+  service `llm-tracker-signing`) and `llm-tracker sign-plugin
+  <plugin-pkg-path> --signer <name>` (writes the sibling `.sig`
+  TOML blob). Implemented as Typer subcommands in `cli/main.py`
+  (worklog checkpoint 8).
+- **Reference-plugin signing.** Reference plugins shipped in this
+  repo are **signed by an individual maintainer**, not by a
+  build-bot key. The `hello_world` reference plugin was signed by
+  `minseop` during checkpoint 8; `keys.toml` ships that single
+  entry. Adding a build-bot key later is a one-PR follow-up that
+  would also adjust `keys.toml` and the CI release workflow; not in
+  scope for Phase 1b.
+
+### What remains deferred
+
 - **Boot-time verification cache.** A possible optimization keyed on
-  `(manifest_bytes, signature_bytes, registry_hash)` to skip re-verifying
-  unchanged plugins. Performance only; defer.
+  `(manifest_bytes, signature_bytes, registry_hash)` to skip
+  re-verifying unchanged plugins. Performance only; defer.
+- **Key rotation policy.** When and how team members rotate their
+  personal keys. Default for now: rotate on credible compromise or
+  every N months at the maintainer's discretion. No formal cadence.
+- **Revocation mechanism.** No way today to revoke a single
+  signature while keeping the signer's pubkey trusted. A formal
+  `revoked_signatures.toml` is a future ADR if a
+  "revoked-but-key-still-trusted" scenario arises.
 
 ### Reversibility
 
@@ -203,5 +234,6 @@ require coordinated re-signing and a release.
 
 ## Open questions
 
-See "What is deferred" above. None block Phase 1b implementation; each
-becomes its own ticket or follow-up ADR if needed.
+See "What remains deferred" above. None block Phase 1b
+implementation; each becomes its own ticket or follow-up ADR if
+needed.

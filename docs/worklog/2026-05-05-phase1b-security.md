@@ -14,6 +14,23 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## What was done
 
+### Checkpoint 12 — ADR-0008 housekeeping (docs only)
+
+- `docs/decisions/0008-plugin-signing-trust-model.md`:
+  - "Signing scope" now states the canonicalization rule
+    (byte-exact `plugin.toml` contents) explicitly instead of
+    listing it as a Phase 1b deferral.
+  - "What is deferred" was renamed and split into "Resolved in
+    Phase 1b" (canonicalization, signature storage format,
+    signature blob format, registry file format, signing tooling,
+    reference-plugin signing) and "What remains deferred"
+    (boot-time verification cache, key rotation policy,
+    revocation mechanism). Each resolved item points at the
+    worklog checkpoint and commit hash that landed it.
+  - "Open questions" pointer updated.
+
+No code or tests change in this checkpoint.
+
 ### Checkpoint 11 — `audit_log` append-only DB triggers (commit 2891e8f)
 
 - `storage/models.py`: replace the "deferred to Phase 1b" comment
@@ -952,19 +969,17 @@ Remaining Phase 1b items (per roadmap.md):
 
 ## Handoff
 
-Checkpoint 11 complete (commit 2891e8f). `audit_log` is now
-DB-enforced append-only via SQLite triggers; ADR-0006's open
-question is closed. Single source of truth lives next to the
-ORM model and is consumed by both the Alembic migration and the
-`Base.metadata.create_all` test path.
+Checkpoint 12 complete (docs-only). ADR-0008's "What is deferred"
+list is now split into "Resolved in Phase 1b" (six items, with
+worklog/commit pointers) and "What remains deferred" (three
+items: boot-time cache, key rotation policy, revocation
+mechanism). Canonicalization moved out of "deferred" and is
+pinned in the body as byte-exact.
 
-Phase 1b cleanup-pass progress: A, B, C, D, E closed.
+Phase 1b cleanup-pass progress: A, B, C, D, E, F closed.
 
 Remaining cleanup-pass checkpoints in order:
 
-- **F**: ADR-0008 housekeeping (mark four resolved items —
-  signature storage location, sig blob format, registry file
-  format, signing CLI).
 - **G**: small polish: `PluginHost.session_factory` read-only
   property; ADR-0009 (small) for `allowed_modes` default →
   required-non-empty. User picked option (a) — write a small
@@ -987,22 +1002,23 @@ Until both are answered, content-level integration cannot land.
 
 ### Next single step
 
-**Checkpoint F — ADR-0008 housekeeping (docs only).** In
-`docs/decisions/0008-plugin-signing-trust-model.md`, mark these
-three "What is deferred" items RESOLVED with the values
-`signing.py` already encodes:
+**Checkpoint G — small polish (one commit).**
 
-- Canonicalization → byte-exact contents of `plugin.toml`.
-- Signature blob format → sibling TOML, `signer` + hex
-  `signature`.
-- Registry file format → TOML `[[key]]` array, `name` + hex
-  `public_key`.
+1. `PluginHost`: expose `session_factory` as a read-only property
+   so callers stop reaching into `_session_factory`. Update
+   `forwarder.py:117` to use `plugin_host.session_factory()`.
+2. Write **ADR-0009** "Plugin manifest `allowed_modes` becomes
+   required-non-empty" — short rationale, picked option (a) per
+   user.
+3. Implement: in `llm_tracker_sdk/manifest.py`, change
+   `allowed_modes: list[str] = list(VALID_MODES)` to
+   `Field(...)` (required) plus a validator that rejects an
+   empty list.
+4. `hello_world`'s manifest already declares `["L", "A", "R"]`,
+   so the runtime stays green; the `.sig` reflects the manifest
+   bytes which haven't changed, so no re-signing.
 
-Add as resolved: signing CLI (`llm-tracker generate-key` /
-`sign-plugin`, checkpoint 8) and reference-plugin signing
-(developer-signed under `minseop` for now).
-
-Leave deferred: boot-time verification cache, key rotation
-policy, revocation mechanism.
-
-This is a docs-only commit; no code or tests change.
+After Checkpoint G, the cleanup pass enters the **stop gates**
+(Gate 1: Transform handling policy; Gate 2: hook payload
+routing). Both require user input; stop and ping in Korean
+when reached.

@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-05 (Cowork; ADR-0008 sealed — signing trust model)
-**Updated by**: Claude Cowork
+**Last updated**: 2026-05-06 (Phase 1b checkpoint 2 complete)
+**Updated by**: Claude Code
 
 ## Current phase
 
 - **Phase**: Phase 1b — security boundary hardening (in progress)
-- **Active task**: Checkpoint 1 done; EgressGuard allowlist enforcement next.
+- **Active task**: Checkpoint 2 done; PluginHost ↔ EgressGuard wiring next.
 
 ## Active worklog
 
@@ -21,36 +21,45 @@
 ## Recent commits
 
 ```
+5bafac1   security: EgressGuard allowlist + mode policy
+f8447b2   docs: STATUS + worklog reflect ADR-0008 sealed
 d39c487   docs: ADR-0008 plugin signing trust model
 38a1fb2   docs: open Phase 1b worklog; update STATUS to checkpoint 1
 04aa85f   security: hook timeout/exception isolation + manifest validation at load
-b906f8d   docs: Phase 1a CLOSED — SDK complete, Phase 1b next
-2652863   docs: expand plugins.md from skeleton to Phase 1a SDK reference
 ```
 
 ## Where we paused
 
-Phase 1b checkpoint 1 complete (2026-05-05, commit 04aa85f). PluginHost now:
-- Wraps every plugin hook in `asyncio.wait_for(5s)` — crash or timeout
-  audits `plugin_fault` and returns the safe default; core never crashes.
-- Validates `plugin.toml` at load time via `PluginManifest`; invalid or
-  missing manifest → `manifest_rejected` audit entry, plugin skipped.
-- `hello_world` plugin fixed: now imports `BasePlugin` from `llm_tracker_sdk`
-  and ships a valid `plugin.toml`.
-22/22 tests pass; ruff clean.
+Phase 1b checkpoint 2 complete (2026-05-06, commit 5bafac1). EgressGuard
+now enforces the design.md §7.3 / §8 policy:
 
-Cowork sealed **ADR-0008** (plugin signing trust model) on 2026-05-05:
-per-developer ed25519 keypairs, public-key registry bundled in the core
-package, verify at install AND boot, hard-reject on failure. Manifest
-signature verification can now be implemented as a Phase 1b checkpoint
-without further design work.
+- `register(manifest)` attaches a `PluginManifest` per plugin name.
+- `check()` walks a six-step decision: Mode L always denies; otherwise
+  the plugin must be registered, the current mode must be in
+  `allowed_modes`, the requested capability must be declared, the URL
+  must exact-match `egress_destinations`, and Mode A requires exactly
+  one declared destination.
+- Every check writes `egress_attempt`/`egress_blocked` with mode and
+  denial reason in `detail_json` — the "capability use audit-logged"
+  Phase 1b checklist item is subsumed by this.
+
+32/32 tests pass (10 new in `test_egress_guard.py`); the new files lint
+clean. Five pre-existing ruff errors in unrelated files noted in
+worklog Suggestions; not touched per CLAUDE.md §9.
 
 ## Next single step
 
-EgressGuard plugin-level allowlist enforcement (`packages/llm_tracker/src/llm_tracker/egress_guard/guard.py`):
-- Accept a per-plugin `PluginManifest` in `check()`; enforce `egress_destinations` exact-match allowlist.
-- Enforce mode policy: Mode L denies all plugin egress; Mode A/R allow per manifest.
-- Write tests; each passing test = its own checkpoint per §5.3.
+Thread the validated `PluginManifest` from `PluginHost.load_plugins()`
+into `EgressGuard.register()`. Today the host validates the manifest
+and discards it, so the guard has nothing to enforce against in a real
+boot. Concretely:
+
+1. Give `PluginHost.__init__` an optional `egress_guard: EgressGuard | None`.
+2. After `_find_manifest()` succeeds, call `egress_guard.register(manifest)`
+   before instantiating the plugin.
+3. Add an integration test: load a real fixture plugin, then call
+   `egress_guard.check(...)` for its declared destination — expect
+   `True` under Mode R, `False` under Mode L.
 
 ## Blocking / decisions needed
 

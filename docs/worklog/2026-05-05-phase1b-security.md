@@ -14,6 +14,35 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## What was done
 
+### Checkpoint 4 — Content-level ladder + per-mode ceiling primitive (commit 8ca5973)
+
+- Added `packages/llm_tracker/src/llm_tracker/content_levels/__init__.py`
+  (docstring-only) and `levels.py`:
+  - `ContentLevel(IntEnum)`: L0 < L1 < L2 < L3, mirroring design.md
+    §7.1's four-level ladder.
+  - `_DEFAULT_CEILING`: per-mode plugin-visible ceiling (L→L1, A→L0,
+    R→L1) and `_OPT_IN_CEILING` (R lifts to L3 with per-task user
+    consent; L and A unchanged because they have no consent path).
+  - `effective_ceiling(mode, *, user_opted_in=False) -> ContentLevel`:
+    table lookup; raises `ValueError` on unknown mode.
+  - `degrade(level, ceiling) -> ContentLevel`: `min(level, ceiling)` —
+    can only lower, never elevate.
+
+- Added `packages/llm_tracker/tests/test_content_levels.py` (14 tests):
+  ladder ordering, IntEnum values, default ceiling per mode,
+  Mode-R-only opt-in elevation, opt-in is a no-op for L/A, unknown-mode
+  rejection, parametrized `degrade()` cases, never-elevate guard.
+
+- **Did NOT** touch the plugin manifest schema. The design (§7.1) calls
+  for plugins to declare a `min_content_level`; that field would change
+  a public interface (CLAUDE.md §10) and needs an ADR before code.
+  This checkpoint stays a pure runtime primitive.
+
+- **Did NOT** wire content levels into hook dispatch. The dispatcher
+  needs a typed payload object to degrade, and the codebase doesn't
+  yet model request/response payloads beyond raw bytes — that's its
+  own design step.
+
 ### Checkpoint 3 — PluginHost ↔ EgressGuard wiring (commit f1a31cf)
 
 - Modified `packages/llm_tracker/src/llm_tracker/plugin_host/host.py`:
@@ -90,6 +119,34 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## Decisions
 
+### Checkpoint 4
+
+- **`IntEnum` over `Enum + total_ordering`**: the ladder is naturally
+  numeric (0–3) and the implicit `int` comparison is the whole point
+  — call sites read `min(level, ceiling)` instead of `level.value`
+  bookkeeping. The "implicit int leak" objection doesn't apply for
+  an internal type that never crosses a serialization boundary
+  (the storage column is a `TEXT` "L0"/"L1"/etc. anyway, persisted
+  separately).
+- **Two tables, not "level_with_offset"**: I considered modeling
+  opt-in as `default_ceiling + opt_in_delta`, but Mode L's opt-in
+  delta is +0, A's is +0, and R's is +2 (not a stable rule). Two
+  flat lookup tables read more honestly.
+- **`ValueError` on unknown mode, not silent fallback**: modes are a
+  closed L/A/R enumeration — a typo here is a programming error in
+  the call site, not a runtime condition. Per CLAUDE.md §2.2 ("no
+  error handling for impossible scenarios"), the alternative would
+  be silently denying egress under a typo'd "Mode L" — exactly the
+  failure mode that produces ghost bugs.
+- **Pointer correction**: STATUS.md said "design.md §7.5"; the
+  content-levels section is actually §7.1. The §7.5 typo originated
+  in checkpoint 3's "Next single step". Fixed in this checkpoint's
+  STATUS update.
+- **Manifest extension deferred to ADR**: design.md §7.1 says
+  plugins declare a min level in the manifest. CLAUDE.md §10 lists
+  the manifest schema as a public-interface contract requiring an
+  ADR. Out of scope for this checkpoint; flagged in Handoff.
+
 ### Checkpoint 3
 
 - **Optional `egress_guard` parameter, not required**: existing tests
@@ -150,6 +207,19 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## Verification
 
+### After checkpoint 4
+
+```
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker/tests/ -q
+................................................                         [100%]
+48 passed in 0.61s
+
+$ .venv/bin/ruff check \
+    packages/llm_tracker/src/llm_tracker/content_levels \
+    packages/llm_tracker/tests/test_content_levels.py
+All checks passed!
+```
+
 ### After checkpoint 3
 
 ```
@@ -201,7 +271,14 @@ Remaining Phase 1b items (per roadmap.md):
       `capability`, `destination`, mode, and reason.)
 - [x] PluginHost wires loaded manifests into `EgressGuard.register()`.
       (commit f1a31cf)
-- [ ] Content-level routing (L0–L3): core degrades data before handing to plugins.
+- [~] Content-level routing (L0–L3): primitive landed (commit 8ca5973).
+      Three sub-pieces still open:
+      - [ ] ADR + manifest extension for `min_content_level` (CLAUDE.md
+            §10 — public interface).
+      - [ ] Typed payload object that the dispatcher can degrade (today
+            the host hands `exchange_id` + raw bytes around).
+      - [ ] Wire `effective_ceiling()` + `degrade()` into hook dispatch
+            so each plugin sees data only at its allowed level.
 - [ ] Mode-by-mode capability policy enforcement at hook dispatch (currently
       only enforced inside the egress path).
 - [ ] Manifest signature verification (now unblocked — see ADR-0008).
@@ -227,31 +304,45 @@ Remaining Phase 1b items (per roadmap.md):
 
 ## Handoff
 
-Checkpoint 3 complete (commit f1a31cf). The plugin lifecycle is now
-end-to-end wired for egress enforcement: load plugin → validate
-manifest → register with guard → instantiate. From a single
-`PluginHost(mode, factory, egress_guard=guard)` construction, the
-guard owns the manifests of every plugin the host accepted, in the
-same order they were accepted. Tests pin the allow path (real
-`check()` returns True) and the rejection short-circuit (no manifest
-→ no register → guard denies).
+Checkpoint 4 complete (commit 8ca5973). Content-level routing has its
+primitive: `ContentLevel` IntEnum, per-mode default + opt-in ceilings
+from design.md §7.1 / §8, `effective_ceiling()` and `degrade()`. No
+caller consumes it yet — the integration step needs two prerequisites
+that cross CLAUDE.md §10 / §4 (architectural decisions for Cowork):
 
-The next Phase 1b checklist line is **content-level routing (L0–L3)**:
-the core needs to degrade data before handing it to plugins so that
-plugins never see content above the operator-approved level for the
-current mode. Concrete shape (subject to re-reading design.md §7.5
-before implementing):
+### Open architectural questions (Cowork → ADR)
 
-1. Define an enum/string ladder `L0 < L1 < L2 < L3` in a shared module
-   (likely `llm_tracker.scrubbers` or a new `llm_tracker.content_levels`).
-2. Decide the per-mode default ceiling (design.md §8 — Mode L allows
-   higher levels in-process, Mode A/R drop further).
-3. Insert a degrade step in the request/response path *before* the hook
-   dispatcher hands payloads to plugins.
-4. Tests: each level in, expected redactions out; mode → max-level
-   table-driven cases.
+1. **Manifest field for `min_content_level`** (design.md §7.1 says
+   plugins declare a minimum required level). Adding a key to
+   `plugin.toml` changes a public interface — needs an ADR.
+2. **Typed request/response payload object** for the hook dispatcher
+   to degrade. Today `PluginHost` hands `exchange_id` + raw bytes;
+   there is no structured object to apply `degrade()` to.
 
-Defer the proxy-boot wiring (constructing `EgressGuard` and passing it
-into `PluginHost` from `cli/main.py`) until Phase 1c, when the boot
-path is actually being built. The plumbing on the framework side is
-done.
+Until those are answered, content-level integration into hook
+dispatch cannot land.
+
+### Next single step (Claude Code, no ADR needed)
+
+**Mode-by-mode capability policy enforcement at hook dispatch.** The
+roadmap line is open; the policy is defined in design.md §6.3.3
+(capability vocabulary) and §8 (mode-by-mode permissions). EgressGuard
+already enforces this for `egress_http`; this checkpoint extends the
+same pattern to the remaining capabilities so a Mode-L plugin cannot
+exercise, say, `modify_request` if the operator has not approved it
+in the current mode.
+
+Concrete shape:
+
+1. Add a `(mode, capability) -> allowed` lookup (likely
+   `llm_tracker.plugin_host.policy`) sourced from design.md §8.
+2. At plugin load time (right after manifest validation), reject any
+   plugin whose declared capabilities are denied under the active
+   mode — write `capability_denied` and skip the plugin.
+3. Tests: per-(mode, capability) parametrized matrix + a load-time
+   end-to-end test that a manifest with a denied capability is
+   rejected and audited, while a permitted manifest loads.
+
+Defer manifest signature verification (independent, also still on
+the Phase 1b checklist; unblocked by ADR-0008) and the proxy-boot
+wiring (Phase 1c) until after this.

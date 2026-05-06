@@ -14,6 +14,53 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## What was done
 
+### Checkpoint 16 — Transform handling impl + tests (commit bbb33e7)
+
+- `proxy/forwarder.py`: in the `before_forward` branch, after
+  the existing Block check, add a Transform check that
+  `headers.update(result.headers)` (plugin wins on conflict per
+  ADR-0011 §1) and replaces `body` with `result.body` when not
+  None (ADR-0011 §2). `PluginHost.before_forward` was already
+  returning the first non-`Pass` result, so first-wins (ADR-0011
+  §3) needed no host change.
+- `tests/proxy/test_forwarder.py`: four new respx-driven tests
+  exercise the policy end-to-end against a respx-mocked
+  Anthropic upstream:
+  - `test_transform_merges_new_header_into_request` — a `_Tagger`
+    plugin adds `x-llm-tracker-task`; the captured upstream
+    request shows both the new header and the original
+    `x-api-key`.
+  - `test_transform_plugin_header_wins_on_conflict` — a
+    `_Rewriter` overrides `x-api-key`; upstream sees the
+    plugin's value, not the client's.
+  - `test_transform_replaces_whole_body_when_body_is_set` — a
+    `_BodySwapper` returns a wholly different JSON body;
+    upstream sees that body verbatim.
+  - `test_transform_multi_plugin_first_wins` — a `_First` and a
+    `_Second` plugin both want to add headers; only `_First`'s
+    header reaches upstream and `_Second`'s `before_forward`
+    method is never called (verified by an explicit counter).
+  Each test uses a small `_build_request_scope()` helper plus an
+  `_empty_factory()` async helper to avoid copy-paste; the four
+  tests' assertion sites stay short and pinned.
+
+### Checkpoint 15 — ADR-0011 Transform policy (commit cfbbb8e, docs only)
+
+- New `docs/decisions/0011-transform-policy.md`. Three sub-decisions
+  per Cowork's Gate 1 — picked the user-approved option for each.
+  - **Header policy**: merge; plugin wins on conflict. Most plugin
+    use cases (tracing, audit, task tagging) are additive;
+    replace-all-headers would silently break upstream auth.
+  - **Body policy**: replace whole body when `Transform.body is
+    not None`. JSON-Patch / structured-diff would lock the SDK to
+    one provider's body shape (Anthropic vs OpenAI vs Gemini
+    differ); disallowing body changes would cripple PII-scrubbing
+    plugins exactly when Mode A / Mode R operators need them.
+  - **Multi-plugin policy**: first-wins. Consistent with Block
+    first-wins; chaining produces fragile non-local interactions
+    between plugins. Reversible later if a real chaining use case
+    appears.
+
 ### Checkpoint 14 — ADR-0010 retroactive ratification (docs only)
 
 - New `docs/decisions/0010-block-abort-plugin-field.md`
@@ -437,6 +484,31 @@ No code or tests change in this checkpoint.
 
 ## Decisions
 
+### Checkpoint 16
+
+The substantive policy choices for Transform live in ADR-0011;
+this section captures only the implementation-level calls made
+while landing the impl + tests:
+
+- **Implement Transform in the forwarder, not the dispatcher.**
+  `PluginHost.before_forward` was already returning the first
+  non-`Pass` result, so first-wins was already in place. Pushing
+  header/body merging into the host would couple the host to the
+  proxy's HTTP shape; the forwarder is the natural seam, mirroring
+  how `Block` resolves into a synthetic SSE response there.
+- **`headers.update(...)` for the merge.** Plain `dict.update`
+  gives exactly the "plugin wins on conflict" semantic ADR-0011
+  picked. No need for a custom merge helper.
+- **`_build_request_scope()` and `_empty_factory()` test
+  helpers.** Four tests share the same Starlette scope and
+  in-memory engine setup; small helpers keep each test's assertion
+  site short. Not promoted to fixtures because each test still
+  owns its own per-request scope mutation in principle.
+
+(Checkpoints 12–15 had no Decisions entries: 12 was ADR-0008
+housekeeping, 13's rationale lives in ADR-0009, 14 in ADR-0010,
+15 in ADR-0011. The substantive reasoning sits in those ADRs.)
+
 ### Checkpoint 11
 
 - **Single source of truth in `storage/models.py`, not duplicated
@@ -773,6 +845,22 @@ land with the host-wiring checkpoint.
 
 ## Verification
 
+### After checkpoint 16
+
+```
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker/tests/ -q
+........................................................................ [ 61%]
+..............................................                           [100%]
+118 passed in 0.81s
+
+$ .venv/bin/ruff check \
+    packages/llm_tracker/src/llm_tracker/proxy/forwarder.py \
+    packages/llm_tracker/tests/proxy/test_forwarder.py
+All checks passed!
+```
+
+(Checkpoint 15 was docs-only — ADR-0011; no test run needed.)
+
 ### After checkpoint 13
 
 ```
@@ -1031,41 +1119,41 @@ Remaining Phase 1b items (per roadmap.md):
 
 ## Handoff
 
-Checkpoint 14 complete (docs-only). ADR-0010 retroactively
-documents the `Block` / `Abort` `plugin` field added in checkpoint
-10. The cleanup pass's auto-decidable checkpoints (A–G) plus the
-retroactive SDK ADR are now closed:
+Checkpoint 16 complete (commit bbb33e7). Gate 1 (Transform
+handling) is now fully landed: ADR-0011 documents the policy
+(checkpoint 15, commit cfbbb8e), the forwarder honours
+`Transform` returns from `before_forward` per the policy, and
+four respx-driven tests pin the four behaviours (header merge,
+header conflict, body replacement, multi-plugin first-wins).
 
-- A: EgressGuard wired into proxy lifespan (commit e2ee4f0)
-- B: signature verifier wired + signing CLI (commit 3010aae)
-- C: on_persisted ordering fix (commit a2bc3d4)
-- D: synthetic SSE block response (commit b1724fa)
-- E: audit_log append-only triggers (commit 2891e8f)
-- F: ADR-0008 housekeeping (commit 6a08c9c)
-- G: session_factory property + ADR-0009 (commit 96305e1)
+Phase 1b cleanup-pass progress: A–G closed; ADR-0010 (retroactive)
+closed; ADR-0011 + Gate 1 implementation closed.
 
-User has now answered both stop gates and ratified the SDK
-field addition (ADR-0010). Remaining work in strict order:
+Closed-checkpoint roll-up:
 
-- **Gate 1 — Transform handling (ADR-0011).** Header policy:
-  **merge** (plugin headers merged into request; conflicts let
-  plugin win). Body policy: **replace whole body** if
-  `Transform.body is not None`. Multi-plugin: **first-wins**
-  (consistent with Block first-wins). Sequence: write
-  ADR-0011 (commit), implement in `forwarder.py`, add tests
-  (header merge, header conflict, body replacement, multi-plugin
-  first-wins). Each passing test group is its own checkpoint.
-- **Gate 2 — Hook payload routing (ADR-0012, option (b)).**
-  Add `HookContext` to the SDK; every hook signature gains
-  `ctx: HookContext`. `ctx` holds `session_id` + `exchange_id`
-  and exposes lazy accessors (`ctx.request_text(level=...)`)
-  that degrade per `effective_ceiling(mode, user_opted_in=...)`
-  at access time. `min_content_level` manifest field stays
-  deferred to Phase 1c. Sequence: write ADR-0012 (commit),
-  define `HookContext`, update `BasePlugin` and `PluginHost`
-  hooks, update `hello_world` (it can ignore `ctx`), add tests.
-  **Do not start Gate 2 until Gate 1 is fully committed and
-  tested.**
+- A: EgressGuard wired into proxy lifespan (e2ee4f0)
+- B: signature verifier wired + signing CLI (3010aae)
+- C: on_persisted ordering fix (a2bc3d4)
+- D: synthetic SSE block response (b1724fa)
+- E: audit_log append-only triggers (2891e8f)
+- F: ADR-0008 housekeeping (6a08c9c)
+- G: session_factory property + ADR-0009 (96305e1)
+- 14: ADR-0010 retroactive (654fbfb)
+- 15: ADR-0011 Transform policy (cfbbb8e)
+- 16: Transform impl + tests (bbb33e7)
+
+Remaining: **Gate 2 — Hook payload routing (ADR-0012, option (b)).**
+Add `HookContext` to the SDK; every hook signature gains
+`ctx: HookContext`. `ctx` holds `session_id` + `exchange_id`
+and exposes lazy accessors (`ctx.request_text(level=...)`)
+that degrade per `effective_ceiling(mode, user_opted_in=...)`
+at access time. `min_content_level` manifest field stays
+deferred to Phase 1c. Sequence: write ADR-0012 (commit),
+define `HookContext`, update `BasePlugin` and `PluginHost`
+hook signatures, update `hello_world` (it can ignore `ctx`),
+add tests (ctx is passed correctly, lazy accessors return
+degraded data per mode). Each passing test group is its own
+checkpoint.
 
 ### Open architectural questions (still Cowork → ADR)
 
@@ -1081,13 +1169,22 @@ Until both are answered, content-level integration cannot land.
 
 ### Next single step
 
-**Write ADR-0011 (Gate 1 — Transform handling policy).** Path
-`docs/decisions/0011-transform-policy.md`. Document the user's
-three decisions: header merge, body replace whole, multi-plugin
-first-wins. Commit with scope `docs`. After the ADR commits,
-the immediate next step is implementing Transform handling in
-`forwarder.py` (header merge + body replacement), then
-extending `PluginHost.before_forward` to honour first-wins for
-Transforms (already iterates plugins; just stop on first
-non-Pass result and skip subsequent plugins). Each passing
-test group becomes its own checkpoint.
+**Write ADR-0012 (Gate 2 — Hook payload routing).** Path
+`docs/decisions/0012-hook-context.md`. Document the user's
+choice of option (b) `HookContext`:
+
+- Hooks gain one extra parameter `ctx: HookContext`.
+- `ctx` holds `session_id` and `exchange_id`.
+- Lazy accessors (e.g. `ctx.request_text(level=...)`) degrade
+  data at access time based on
+  `effective_ceiling(mode, user_opted_in=...)`. Already-built
+  primitives (`content_levels.effective_ceiling`,
+  `content_levels.degrade`) supply the math.
+- `min_content_level` manifest field is deferred to Phase 1c.
+
+Commit ADR with scope `docs`. After the ADR commits, define
+`HookContext` in the SDK, add the `ctx` parameter to all 8
+hooks on `BasePlugin` (and the matching `PluginHost`
+dispatchers), update `hello_world` to accept (and ignore)
+`ctx`, and write tests pinning ctx propagation and degradation.
+Each passing test group is its own checkpoint.

@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-06 (Phase 1b checkpoint 14 — ADR-0010 retroactive)
+**Last updated**: 2026-05-06 (Phase 1b checkpoint 16 — Gate 1 closed)
 **Updated by**: Claude Code
 
 ## Current phase
 
-- **Phase**: Phase 1b — security boundary hardening (cleanup pass A–G + retroactive SDK ADR closed; gates decided, implementation pending)
-- **Active task**: ADR-0010 (Block/Abort plugin field) ratified retroactively. Next is ADR-0011 (Gate 1 — Transform handling) followed by implementation, then Gate 2 (ADR-0012 — HookContext).
+- **Phase**: Phase 1b — security boundary hardening (cleanup pass A–G + ADR-0010 + Gate 1 closed; Gate 2 next)
+- **Active task**: Gate 1 (Transform handling) fully landed (ADR-0011 + impl + 4 tests). Next is Gate 2 — ADR-0012 + HookContext implementation.
 
 ## Active worklog
 
@@ -21,63 +21,62 @@
 ## Recent commits
 
 ```
+bbb33e7   proxy: honour Transform from before_forward (ADR-0011)
+cfbbb8e   docs: ADR-0011 — Transform handling policy (Gate 1)
+654fbfb   docs: ADR-0010 — retroactive ratification of Block/Abort plugin field
 bda318c   docs: Phase 1b checkpoint 13 — cleanup pass complete; gates open
 96305e1   core: layering polish + manifest allowed_modes tightening
-6a08c9c   docs: Phase 1b checkpoint 12 — ADR-0008 housekeeping
-6a76ea5   docs: Phase 1b checkpoint 11 — audit_log append-only triggers
-2891e8f   storage: audit_log append-only DB triggers (ADR-0006)
 ```
 
 ## Where we paused
 
-User has answered both stop gates and ratified the SDK
-field-addition retroactively as ADR-0010.
+Phase 1b cleanup-pass checkpoint 16 complete (Gate 1 fully
+landed). The forwarder now honours `Transform` returns from
+`before_forward` per ADR-0011: plugin headers merge into the
+request (plugin wins on conflict), `Transform.body` replaces
+the upstream body wholesale when not None, and the dispatcher
+short-circuits at the first plugin returning a non-`Pass`
+result (first-wins). Four respx-driven tests pin each axis
+end-to-end against a mocked Anthropic upstream.
 
-- **ADR-0010 (retroactive, this checkpoint, docs only)**: Block /
-  Abort `plugin: str = ""` field is the chosen contract for
-  conveying the blocking plugin's name from the dispatcher to
-  the forwarder.
-- **Gate 1 → ADR-0011 next**: Transform handling policy. Header
-  merge (plugin wins on conflict), body replace whole, multi-plugin
-  first-wins.
-- **Gate 2 → ADR-0012 after Gate 1 lands**: Hook payload routing
-  via option (b) `HookContext`. Lazy accessors with mode × opt-in
-  degradation at access time. `min_content_level` manifest field
-  deferred to Phase 1c.
+118/118 tests pass; touched files lint clean.
 
-The auto-decidable cleanup-pass checkpoints (A–G) plus the
-retroactive ADR-0010 are all closed (114/114 tests pass; touched
-files lint clean):
+Closed-checkpoint roll-up:
 
 - A: EgressGuard wired into proxy lifespan (e2ee4f0)
 - B: signature verifier + signing CLI (3010aae)
 - C: on_persisted ordering fix (a2bc3d4)
 - D: synthetic SSE block response (b1724fa)
-- E: audit_log append-only DB triggers (2891e8f)
+- E: audit_log append-only triggers (2891e8f)
 - F: ADR-0008 housekeeping (6a08c9c)
 - G: session_factory property + ADR-0009 (96305e1)
-- 14: ADR-0010 retroactive (this commit)
+- 14: ADR-0010 retroactive (654fbfb)
+- 15: ADR-0011 Transform policy (cfbbb8e)
+- 16: Transform impl + 4 tests (bbb33e7)
+
+Remaining: **Gate 2 — Hook payload routing (ADR-0012, option (b)
+HookContext).**
 
 ## Next single step
 
-**Write ADR-0011 — Transform handling policy.** Path
-`docs/decisions/0011-transform-policy.md`. Document the user's
-three decisions: header merge with plugin-wins on conflict, body
-replace whole when `Transform.body is not None`, multi-plugin
-first-wins. Commit with scope `docs`. After the ADR commits,
-implement Transform handling in `forwarder.py` (header merge +
-body replacement) and stop `PluginHost.before_forward` from
-calling subsequent plugins after the first non-`Pass` result.
-Each passing test group is its own checkpoint.
-
-Strict order: ADR-0011 → Gate 1 implementation + tests
-(committed and verified) → ADR-0012 → Gate 2 implementation +
-tests. **Do not start Gate 2 until Gate 1 is fully committed
-and tested.**
+**Write ADR-0012 — Hook payload routing.** Path
+`docs/decisions/0012-hook-context.md`. Document option (b):
+add a `HookContext` to the SDK; every hook signature gains
+`ctx: HookContext`. `ctx` holds `session_id` and `exchange_id`
+and exposes lazy accessors (e.g. `ctx.request_text(level=...)`)
+that degrade at access time per
+`effective_ceiling(mode, user_opted_in=...)`. The
+`min_content_level` manifest field stays deferred to Phase 1c.
+Commit with scope `docs`. After the ADR commits, define
+`HookContext` in the SDK, add the `ctx` parameter to all 8 hook
+signatures (BasePlugin + PluginHost dispatchers), update
+`hello_world` to accept (and ignore) `ctx`, write tests pinning
+ctx propagation and lazy degradation. Each passing test group
+is its own checkpoint.
 
 ## Blocking / decisions needed
 
-- None. All gates decided; implementation queue is unblocked.
+- None. Gate 2 is unblocked; implementation can begin.
 
 ## Progress
 

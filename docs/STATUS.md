@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-06 (Phase 1b checkpoint 5 complete)
+**Last updated**: 2026-05-06 (Phase 1b checkpoint 6 complete)
 **Updated by**: Claude Code
 
 ## Current phase
 
 - **Phase**: Phase 1b — security boundary hardening (in progress)
-- **Active task**: Checkpoint 5 done; manifest signature verification next.
+- **Active task**: Verifier primitive landed; host wiring + bundled keys.toml + hello_world signing next.
 
 ## Active worklog
 
@@ -21,60 +21,76 @@
 ## Recent commits
 
 ```
+2659284   security: ed25519 manifest signature verifier
+1042f7e   docs: Phase 1b checkpoint 5 — mode×cap policy at load time
 eb7bd67   security: mode capability policy at load time
 186ad8c   docs: Phase 1b checkpoint 4 — content-level primitive landed
 8ca5973   security: content-level ladder + per-mode ceiling
-249f8bd   docs: Phase 1b checkpoint 3 — host↔guard wiring landed
-f1a31cf   security: wire PluginHost manifests to EgressGuard
 ```
 
 ## Where we paused
 
-Phase 1b checkpoint 5 complete (2026-05-06, commit eb7bd67).
-Mode-by-mode capability policy now enforced at plugin load time:
+Phase 1b checkpoint 6 complete (2026-05-06, commit 2659284).
+ed25519 manifest signature verifier primitive landed:
 
-- New `llm_tracker.plugin_host.policy`: `MODE_DENIED_CAPABILITIES`
-  table sourced from design.md §8. Today only Mode L denies
-  `egress_http`; Modes A and R deny none (their runtime
-  egress restrictions stay in EgressGuard).
-- `denied_capabilities(mode, declared)` returns the offending
-  subset; unknown mode raises `ValueError` (closed L/A/R, same
-  convention as `content_levels.effective_ceiling`).
-- `PluginHost.load_plugins()` now consults the policy after
-  manifest validation, before `egress_guard.register()`. On
-  denial it writes `capability_denied` (`detail_json` = `{mode,
-  denied}`) and skips the plugin.
-- 9 new tests: 8 in new `test_policy.py` (table shape, full
-  parametrized (mode, capability) matrix, multi-declared subset,
-  empty-declared, unknown-mode); 2 in `test_plugin_host.py`
-  (Mode L rejects egress_http manifest; Mode R accepts the same).
+- New `llm_tracker.plugin_host.signing`:
+  - `VerifyResult` (`StrEnum`): `verified` / `signature_missing`
+    / `signature_invalid` / `signing_key_not_in_registry` per
+    ADR-0008.
+  - `load_registry(toml_bytes)` parses `[[key]]` entries with
+    `name` + hex `public_key`.
+  - `verify_manifest_signature(manifest_bytes, sig_blob, registry)`
+    returns `(result, signer)`; never raises on
+    operator-controlled bytes (every malformed sig blob → `SIGNATURE_INVALID`).
+- ADR-0008 deferred sub-decisions locked here: byte-exact
+  canonicalization (no parse/round-trip), sig blob is TOML with
+  `signer` + hex `signature` so we can distinguish
+  `signing_key_not_in_registry` from `signature_invalid`. Storage
+  location, signing CLI, and reference-plugin signing approach
+  stay deferred to the host-wiring checkpoint.
+- 16 new tests cover all four verifier outcomes plus a
+  parametrized "malformed sig blob" matrix and registry parsing.
+- **Important correction**: prior worklog/STATUS proposed a new
+  `signature_rejected` audit kind. ADR-0008 §"Hard reject on
+  failure" actually specifies `manifest_rejected` (with the reason
+  in `detail_json`). The next checkpoint reuses the existing kind.
 
-87/87 tests pass; changed + new files lint clean.
+103/103 tests pass; new module + tests lint clean. The verifier
+is **not yet wired into `PluginHost.load_plugins()`** — that's
+the next checkpoint's job.
 
 ## Next single step
 
-Manifest signature verification — the last open Phase 1b line as
-a pure implementation task. ADR-0008 sealed the trust model
-(per-developer ed25519 keys, bundled public-key registry, verify
-at install AND boot, hard reject on failure).
+Wire the signature verifier into `PluginHost.load_plugins()` and
+seal the chicken-and-egg by signing the `hello_world` reference
+plugin. ADR-0008's hard-reject contract means these have to land
+together (any unsigned plugin breaks all real entry-point
+loads).
 
 Concrete shape:
 
-1. Re-read ADR-0008 to pin the on-disk shape of the bundled key
-   registry before writing code.
-2. Add a verifier module (likely `llm_tracker.plugin_host.signing`
-   — confirm SDK vs host layering against ADR-0008): reads the
-   registry, verifies a manifest signature, returns a typed
-   result (verified / wrong-key / no-signature / bad-signature).
-3. Wire into `load_plugins()` between `_find_manifest()` and
-   `denied_capabilities()`: failure → `signature_rejected` audit
-   row, skip. Mirrors existing `manifest_rejected` /
-   `capability_denied` patterns.
-4. Tests: fixture key + signed manifest covering verified,
-   tampered, and unsigned cases; one load-time end-to-end test.
+1. Pick signature storage location (sibling `plugin.toml.sig`
+   is the natural pick given the verifier takes raw bytes;
+   document in `docs/plugins.md`).
+2. Land `packages/llm_tracker/src/llm_tracker/trust/keys.toml`
+   with at least one developer pubkey. Private key stays
+   off-repo (probably in `keyring`, already a declared dep).
+3. Land a minimal `llm-tracker sign-plugin <path>` CLI
+   (ADR-0008 deliverable; CLAUDE.md §10 authorization comes
+   from the ADR).
+4. Sign `hello_world`; commit the resulting `plugin.toml.sig`.
+5. Wire `verify_manifest_signature` into `load_plugins()`
+   between `_find_manifest()` and `denied_capabilities()`. On
+   non-`VERIFIED` result, write `manifest_rejected` (kind
+   reused; `detail_json` carries the verifier's reason) and
+   skip the plugin.
+6. End-to-end load-time tests mirroring the existing
+   `manifest_rejected` / `capability_denied` patterns, plus an
+   integration test that the bundled `hello_world` verifies
+   cleanly through the real registry+sig pipeline.
 
 Content-level hook-dispatch integration stays blocked on Cowork
-ADRs (manifest `min_content_level` field; typed payload object).
+ADRs (`min_content_level` manifest field; typed payload object).
 Proxy-boot wiring deferred to Phase 1c.
 
 ## Blocking / decisions needed

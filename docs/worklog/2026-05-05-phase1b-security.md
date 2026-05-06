@@ -14,6 +14,44 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## What was done
 
+### Checkpoint 6 — ed25519 manifest signature verifier (primitive) (commit 2659284)
+
+- Added `packages/llm_tracker/src/llm_tracker/plugin_host/signing.py`:
+  - `VerifyResult` `StrEnum` with the four outcomes ADR-0008 §"Hard
+    reject on failure" enumerates: `verified`, `signature_missing`,
+    `signature_invalid`, `signing_key_not_in_registry`.
+  - `load_registry(toml_bytes) -> dict[str, VerifyKey]` parses a
+    `keys.toml` payload shaped as `[[key]]` array entries with
+    `name` and `public_key` (hex). Raises `ValueError` only for
+    distribution-bug shaped inputs (malformed TOML, missing fields,
+    bad pubkey hex). The registry ships *inside* the core package
+    so a malformed file is a build error, not a runtime fallback.
+  - `verify_manifest_signature(manifest_bytes, sig_blob, registry)
+    -> tuple[VerifyResult, str | None]`: never raises on
+    operator-controlled bytes — every malformed sig_blob path
+    returns `SIGNATURE_INVALID`. Returns the signer name on
+    `VERIFIED` / `SIGNING_KEY_NOT_IN_REGISTRY` so the caller can
+    audit it.
+
+- Added `packages/llm_tracker/tests/test_signing.py` (16 tests):
+  - Verifier outcome tests with ephemeral keys: round-trip verified,
+    `SIGNATURE_MISSING` on `None` blob, `SIGNATURE_INVALID` on
+    tampered manifest and on corrupted-but-correct-length signature,
+    `SIGNING_KEY_NOT_IN_REGISTRY` when the asserted signer is absent.
+  - Parametrized "malformed sig blob" matrix covering bad TOML,
+    missing `signer`/`signature` field, bad hex, wrong-length hex,
+    and non-UTF-8 bytes — all map to `SIGNATURE_INVALID`.
+  - Registry-parsing tests: round-trip + the three distribution-bug
+    failure modes.
+
+- **Did NOT** wire the verifier into `PluginHost.load_plugins()`. The
+  next checkpoint covers host wiring, which forces the bundled
+  `keys.toml` to land on disk and the `hello_world` reference plugin
+  to be signed (otherwise existing tests that exercise the real
+  entry-point path would fail — ADR-0008 has no warn-and-continue
+  mode). Splitting keeps each checkpoint surgical, mirroring the
+  content-level primitive split (checkpoint 4 → not-yet-integrated).
+
 ### Checkpoint 5 — Mode-by-mode capability policy at load time (commit eb7bd67)
 
 - Added `packages/llm_tracker/src/llm_tracker/plugin_host/policy.py`:
@@ -153,6 +191,45 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## Decisions
 
+### Checkpoint 6
+
+ADR-0008 §"What is deferred" left four implementation choices to
+Phase 1b. This checkpoint locks the two needed for the verifier;
+the other two (signing CLI, reference-plugin signing approach)
+land with the host-wiring checkpoint.
+
+- **Canonicalization rule: byte-exact contents of `plugin.toml`.**
+  The alternative — TOML round-trip — couples verification to
+  whichever serializer's whitespace/quote conventions we pick today,
+  and breaks signatures the moment we upgrade or swap libraries.
+  Byte-exact has the property that "what was signed" and "what is on
+  disk" are literally the same bytes; trivially auditable.
+- **Signature blob format: TOML with `signer` + `signature` fields.**
+  Carrying the asserted signer name in the blob lets the verifier
+  return distinct `SIGNING_KEY_NOT_IN_REGISTRY` and
+  `SIGNATURE_INVALID` outcomes — both ADR-0008 lists as separate
+  failure reasons. Raw 64-byte signature alone would collapse them.
+- **Signature storage location: deferred to host-wiring checkpoint.**
+  ADR-0008 lists three options (sibling `plugin.toml.sig`,
+  `[_signature]` section, separate `MANIFEST.sig`); the verifier
+  doesn't care which one — it takes raw bytes. Picking blocks on
+  the host side that has to *find* the blob, not the verifier.
+- **Never-raise contract on operator bytes.** `verify_manifest_signature`
+  returns `SIGNATURE_INVALID` for every malformed blob path — bad
+  TOML, missing field, bad hex, wrong-length hex, non-UTF-8.
+  Raising would let a broken plugin file crash the loader before
+  the audit trail records it; the whole point of the audit log is
+  to capture *which plugin* was bad and *why*.
+- **`load_registry` *does* raise.** The registry ships inside the
+  core package; a malformed file is a build/distribution bug, not
+  a runtime condition. Same reasoning as
+  `content_levels.effective_ceiling` raising on unknown mode.
+- **`StrEnum` for `VerifyResult`.** The reason strings end up in
+  audit-log `detail_json`; `StrEnum` lets the wiring code pass
+  `result.value` (or rely on `str(result)`) without a separate
+  serializer. Same shape as design.md §7.4's open kind/reason
+  vocabulary.
+
 ### Checkpoint 5
 
 - **Load-time enforcement, not hook-dispatch enforcement**: design.md
@@ -267,6 +344,20 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## Verification
 
+### After checkpoint 6
+
+```
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker/tests/ -q
+........................................................................ [ 69%]
+...............................                                          [100%]
+103 passed in 0.62s
+
+$ .venv/bin/ruff check \
+    packages/llm_tracker/src/llm_tracker/plugin_host/signing.py \
+    packages/llm_tracker/tests/test_signing.py
+All checks passed!
+```
+
 ### After checkpoint 5
 
 ```
@@ -359,7 +450,16 @@ Remaining Phase 1b items (per roadmap.md):
       `egress_http` today, so a hook-dispatch enforcement layer
       would be a no-op for every other capability and is deferred
       until the policy table grows).
-- [ ] Manifest signature verification (now unblocked — see ADR-0008).
+- [~] Manifest signature verification: verifier primitive landed
+      (commit 2659284). Two sub-pieces still open:
+      - [ ] Bundled `keys.toml` + at least one developer signing key
+            checked in.
+      - [ ] Host wiring (`PluginHost.load_plugins()` → verifier →
+            `manifest_rejected` audit on failure) plus signing the
+            `hello_world` reference plugin so existing tests still
+            pass under hard-reject.
+      ADR-0008 also lists a `llm-tracker sign-plugin` CLI as a
+      Phase 1b deliverable; in scope for the host-wiring checkpoint.
 - [ ] Proxy boot wiring: `cli/main.py` (or wherever the host is constructed
       in the eventual Phase 1c boot path) must pass the EgressGuard into
       `PluginHost(...)`. The plumbing exists; nothing currently constructs
@@ -382,53 +482,67 @@ Remaining Phase 1b items (per roadmap.md):
 
 ## Handoff
 
-Checkpoint 5 complete (commit eb7bd67). Phase 1b is now four-of-five
-checklist lines closed (egress allowlist; capability-use audit;
-host↔guard wiring; mode×capability policy at load time) plus the
-content-level primitive (partial — ladder + ceilings, no integration
-yet). Only manifest signature verification is open as a pure
-implementation task; content-level integration is still blocked
-on Cowork-side ADRs.
+Checkpoint 6 complete (commit 2659284). The ed25519 verifier
+primitive landed but is **not yet wired into the loader**. Phase 1b
+checklist status: four lines fully closed; signature verification
+is now [~] (verifier present, host wiring + bundled registry +
+hello_world signing pending); content-level routing is still [~]
+blocked on the same Cowork ADRs as before.
+
+### Important correction vs prior Handoff
+
+ADR-0008 §"Hard reject on failure" specifies the audit kind on
+signature failure is **`manifest_rejected`** (with the reason in
+`detail_json`), not the new `signature_rejected` kind I'd
+proposed in checkpoint 5's handoff. The existing
+`manifest_rejected` pattern in `host.py` already handles unparseable
+manifests — signature failures slot into the same kind with a
+distinct reason. The next checkpoint should use `manifest_rejected`.
 
 ### Open architectural questions (still Cowork → ADR)
 
-Carrying forward from checkpoint 4:
+Carrying forward from checkpoints 4 and 6:
 
 1. **Manifest field for `min_content_level`** (design.md §7.1 says
-   plugins declare a minimum required level). Adding a key to
-   `plugin.toml` changes a public interface — needs an ADR.
+   plugins declare a minimum required level). Public-interface
+   change — needs ADR.
 2. **Typed request/response payload object** for the hook
-   dispatcher to apply `content_levels.degrade()` to. Today
-   `PluginHost` hands `exchange_id` + raw bytes; there is no
-   structured object to degrade.
+   dispatcher to apply `content_levels.degrade()` to.
 
-Until those are answered, content-level integration into hook
-dispatch cannot land.
+Until both are answered, content-level integration cannot land.
 
 ### Next single step (Claude Code, no ADR needed)
 
-**Manifest signature verification.** ADR-0008 sealed the trust
-model (per-developer ed25519 keys, bundled public-key registry,
-verify at install AND boot, hard reject on failure). Pure
-implementation; no further architecture decisions required.
+**Wire the signature verifier into `PluginHost.load_plugins()`**
+and seal the chicken-and-egg by signing `hello_world`. ADR-0008's
+hard-reject contract means this all has to land in one
+checkpoint:
 
-Concrete shape:
+1. Choose signature storage location (sibling `plugin.toml.sig` is
+   the natural pick — picks itself once you commit to "verifier
+   takes raw bytes"; the other two ADR-0008 options re-introduce
+   TOML parsing). Document in `docs/plugins.md`.
+2. Land `packages/llm_tracker/src/llm_tracker/trust/keys.toml`
+   with at least one developer key. Pubkey is checked in; private
+   key stays on the developer's machine (probably in keyring —
+   `keyring` is already a declared dep).
+3. Land a minimal signing tool. ADR-0008 deliverable is
+   `llm-tracker sign-plugin <path>`. Adding a CLI subcommand is a
+   public-interface addition (CLAUDE.md §10) but ADR-0008
+   explicitly names it as a Phase 1b deliverable, so authorization
+   is in place; document the flag shape in `docs/plugins.md`.
+4. Sign `hello_world` with that tool, commit the resulting
+   `plugin.toml.sig`.
+5. Wire `verify_manifest_signature` into `PluginHost.load_plugins()`
+   between `_find_manifest()` and `denied_capabilities()`. On
+   non-`VERIFIED` result write `manifest_rejected` (kind reused;
+   `detail_json` carries the reason from `VerifyResult`) and skip.
+6. Tests: end-to-end load-time tests mirroring the existing
+   `manifest_rejected` / `capability_denied` patterns, plus an
+   integration test that the bundled `hello_world` actually
+   verifies under a real registry+sig pipeline.
 
-1. Re-read ADR-0008; pin the on-disk shape of the bundled key
-   registry it specifies before writing code.
-2. Add a verifier module (likely
-   `llm_tracker.plugin_host.signing` — the SDK already owns the
-   manifest schema, but verification is host-side; check ADR-0008
-   for the layering call). It should read the bundled registry,
-   verify a manifest's signature, and return a typed result
-   (verified / wrong-key / no-signature / bad-signature).
-3. Wire into `PluginHost.load_plugins()` between
-   `_find_manifest()` and the `denied_capabilities()` check: a
-   manifest that fails verification gets a `signature_rejected`
-   audit row and is skipped. (Mirror the existing
-   `manifest_rejected` / `capability_denied` patterns.)
-4. Tests: a fixture key + a fixture signed manifest covering
-   verified, tampered, and unsigned cases; plus a load-time
-   end-to-end test in `test_plugin_host.py`.
-
-Defer the proxy-boot wiring (Phase 1c) until after this.
+Defer the proxy-boot wiring (Phase 1c) and reference-plugin
+*signing-via-build-bot-key* policy decision (ADR-0008 deferred
+item) — for now hello_world is signed by the developer running
+this checkpoint.

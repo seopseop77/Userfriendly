@@ -14,6 +14,30 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## What was done
 
+### Checkpoint 7 — EgressGuard wired into proxy lifespan (commit e2ee4f0)
+
+- Modified `packages/llm_tracker/src/llm_tracker/proxy/app.py`:
+  - In `lifespan()`, build `EgressGuard(mode=settings.mode,
+    session_factory=factory)` alongside the host and pass it via
+    `PluginHost(..., egress_guard=guard)`. Stash the guard on
+    `app.state.egress_guard` so later phases (forwarder-side
+    `egress.fetch`) can reach it without rebuilding it from settings.
+  - `cli/main.py start` already boots the FastAPI app via uvicorn, so
+    the lifespan change is the only wiring point — no CLI edits.
+
+- Added `test_load_plugins_populates_egress_manifests_and_audits_attempt`
+  in `packages/llm_tracker/tests/test_plugin_host.py` (1 test):
+  pins the boot-time wiring contract — after `load_plugins()` the
+  fake manifest is in `EgressGuard._manifests` (identity check), and
+  a subsequent `check()` writes an `egress_attempt` row with the
+  expected `plugin`/`destination`/`outcome=ok`. Companion to
+  checkpoint 3's existing `test_load_plugins_registers_manifest_with_egress_guard`,
+  which only asserted the public `check() is True` outcome.
+
+- Did NOT add a plugin-facing `ctx.egress.fetch` API. That blocks on
+  Gate 2 (hook payload shape / SDK contract for plugins to ask the
+  guard about a URL); landing it now would freeze the wrong shape.
+
 ### Checkpoint 6 — ed25519 manifest signature verifier (primitive) (commit 2659284)
 
 - Added `packages/llm_tracker/src/llm_tracker/plugin_host/signing.py`:
@@ -191,6 +215,28 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## Decisions
 
+### Checkpoint 7
+
+- **EgressGuard built per-process at lifespan, not per-request**: the
+  guard's `_manifests` map is populated once when `load_plugins()`
+  runs; rebuilding the guard per request would discard registrations
+  and force re-registration. Same lifetime as `PluginHost`.
+- **Stash on `app.state.egress_guard`, not only inside PluginHost**:
+  later phases need the forwarder to call `guard.check()` for the
+  upstream LLM call (design.md §7.3 — single audit stream) without
+  reaching through `PluginHost._egress_guard`. Exposing it on
+  `app.state` mirrors the existing `app.state.plugin_host` pattern.
+  Read-only from there; nobody mutates it after lifespan startup.
+- **No `ctx.egress.fetch` plugin API in this checkpoint**: that's
+  the SDK-side surface plugins use to ask the guard about a URL, and
+  it depends on Gate 2 (hook payload shape — whether `ctx` is added
+  to hook signatures or surfaced via a separate context object).
+  Landing the API now would freeze the wrong shape; deferred.
+- **`cli/main.py` untouched**: `start` boots uvicorn against
+  `llm_tracker.proxy.app:app`, so the lifespan change is the only
+  wiring point. Adding a CLI-side construct-then-pass-in step would
+  duplicate config parsing and silently bypass uvicorn's reload flow.
+
 ### Checkpoint 6
 
 ADR-0008 §"What is deferred" left four implementation choices to
@@ -344,6 +390,20 @@ land with the host-wiring checkpoint.
 
 ## Verification
 
+### After checkpoint 7
+
+```
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker/tests/ -q
+........................................................................ [ 69%]
+................................                                         [100%]
+104 passed in 0.69s
+
+$ .venv/bin/ruff check \
+    packages/llm_tracker/src/llm_tracker/proxy/app.py \
+    packages/llm_tracker/tests/test_plugin_host.py
+All checks passed!
+```
+
 ### After checkpoint 6
 
 ```
@@ -460,10 +520,11 @@ Remaining Phase 1b items (per roadmap.md):
             pass under hard-reject.
       ADR-0008 also lists a `llm-tracker sign-plugin` CLI as a
       Phase 1b deliverable; in scope for the host-wiring checkpoint.
-- [ ] Proxy boot wiring: `cli/main.py` (or wherever the host is constructed
-      in the eventual Phase 1c boot path) must pass the EgressGuard into
-      `PluginHost(...)`. The plumbing exists; nothing currently constructs
-      both objects together.
+- [x] Proxy boot wiring: `proxy/app.py` lifespan now constructs
+      `EgressGuard(...)` and passes it into `PluginHost(...)`. The guard
+      is also stashed on `app.state.egress_guard` for later forwarder use.
+      `cli/main.py` boots uvicorn against `llm_tracker.proxy.app:app`,
+      so the lifespan is the single wiring point. (commit e2ee4f0)
 
 ## Suggestions (observed, not acted on)
 
@@ -482,22 +543,41 @@ Remaining Phase 1b items (per roadmap.md):
 
 ## Handoff
 
-Checkpoint 6 complete (commit 2659284). The ed25519 verifier
-primitive landed but is **not yet wired into the loader**. Phase 1b
-checklist status: four lines fully closed; signature verification
-is now [~] (verifier present, host wiring + bundled registry +
-hello_world signing pending); content-level routing is still [~]
-blocked on the same Cowork ADRs as before.
+Checkpoint 7 complete (commit e2ee4f0). The proxy boot path now
+constructs an `EgressGuard` and hands it into `PluginHost`, so any
+plugin that loads under the real entry-point flow gets its
+manifest registered with the guard. `app.state.egress_guard` is
+the read-only handle for later forwarder-side wiring.
 
-### Important correction vs prior Handoff
+Phase 1b checklist status: five lines fully closed (proxy-boot
+wiring is now [x]); signature verification still [~] (verifier
+present, host wiring + bundled registry + hello_world signing
+pending); content-level routing still [~] blocked on the same
+Cowork ADRs.
 
-ADR-0008 §"Hard reject on failure" specifies the audit kind on
-signature failure is **`manifest_rejected`** (with the reason in
-`detail_json`), not the new `signature_rejected` kind I'd
-proposed in checkpoint 5's handoff. The existing
-`manifest_rejected` pattern in `host.py` already handles unparseable
-manifests — signature failures slot into the same kind with a
-distinct reason. The next checkpoint should use `manifest_rejected`.
+This session is now a Phase 1b cleanup pass against Cowork's
+audit. Remaining checkpoints in order:
+
+- **B**: signature verifier wiring + `keys.toml` + `llm-tracker
+  generate-key` / `sign-plugin` CLI. **One atomic unit** with a
+  mid-flight stop where the user runs the two CLI commands.
+- **C**: `forwarder.py` reorders `record_exchange_timing` ahead of
+  `plugin_host.on_persisted` (design.md §6.3.2 says `on_persisted`
+  runs *after* the DB write).
+- **D**: replace `_block_response` (HTTP 503 plain text) with the
+  ADR-0002 §3 synthetic SSE 200 OK stream and persist an
+  `Exchange` row with `blocked_by`.
+- **E**: Alembic migration installing `audit_log_no_update` /
+  `audit_log_no_delete` SQLite triggers; remove the "deferred to
+  Phase 1b" comment in `storage/models.py`.
+- **F**: ADR-0008 housekeeping (mark four resolved items).
+- **G**: small polish: `PluginHost.session_factory` read-only
+  property; ADR-0009 (small) for `allowed_modes` default →
+  required-non-empty. (User picked option (a) — write a small
+  ADR, not skip the change.)
+- **Gate 1** (Transform handling policy) and **Gate 2** (hook
+  payload routing) require user input first; stop and ping when
+  reached.
 
 ### Open architectural questions (still Cowork → ADR)
 
@@ -511,38 +591,24 @@ Carrying forward from checkpoints 4 and 6:
 
 Until both are answered, content-level integration cannot land.
 
-### Next single step (Claude Code, no ADR needed)
+### Next single step
 
-**Wire the signature verifier into `PluginHost.load_plugins()`**
-and seal the chicken-and-egg by signing `hello_world`. ADR-0008's
-hard-reject contract means this all has to land in one
-checkpoint:
+**Checkpoint B — signature verifier wiring + signing CLI** (one
+atomic unit with mid-flight user input).
 
-1. Choose signature storage location (sibling `plugin.toml.sig` is
-   the natural pick — picks itself once you commit to "verifier
-   takes raw bytes"; the other two ADR-0008 options re-introduce
-   TOML parsing). Document in `docs/plugins.md`.
-2. Land `packages/llm_tracker/src/llm_tracker/trust/keys.toml`
-   with at least one developer key. Pubkey is checked in; private
-   key stays on the developer's machine (probably in keyring —
-   `keyring` is already a declared dep).
-3. Land a minimal signing tool. ADR-0008 deliverable is
-   `llm-tracker sign-plugin <path>`. Adding a CLI subcommand is a
-   public-interface addition (CLAUDE.md §10) but ADR-0008
-   explicitly names it as a Phase 1b deliverable, so authorization
-   is in place; document the flag shape in `docs/plugins.md`.
-4. Sign `hello_world` with that tool, commit the resulting
-   `plugin.toml.sig`.
-5. Wire `verify_manifest_signature` into `PluginHost.load_plugins()`
-   between `_find_manifest()` and `denied_capabilities()`. On
-   non-`VERIFIED` result write `manifest_rejected` (kind reused;
-   `detail_json` carries the reason from `VerifyResult`) and skip.
-6. Tests: end-to-end load-time tests mirroring the existing
-   `manifest_rejected` / `capability_denied` patterns, plus an
-   integration test that the bundled `hello_world` actually
-   verifies under a real registry+sig pipeline.
-
-Defer the proxy-boot wiring (Phase 1c) and reference-plugin
-*signing-via-build-bot-key* policy decision (ADR-0008 deferred
-item) — for now hello_world is signed by the developer running
-this checkpoint.
+1. Create `packages/llm_tracker/src/llm_tracker/trust/__init__.py`
+   and `keys.toml` (initially empty `[[key]]` array).
+2. Land `llm-tracker generate-key` and `llm-tracker sign-plugin
+   <plugin-pkg-path> --signer <name>` CLI subcommands.
+3. Wire `verify_manifest_signature` into `PluginHost.load_plugins()`
+   between `_find_manifest()` and `denied_capabilities()`. Update
+   existing monkeypatch-based tests to bypass the verifier or
+   provide a stub registry+sig.
+4. **STOP** — write a "decision needed" entry, ping the user in
+   Korean. The user runs `generate-key` and pastes the public-key
+   hex back, then runs `sign-plugin` against `hello_world` to
+   produce `plugin.toml.sig`.
+5. After resume: paste the hex into `keys.toml`, commit the
+   `.sig`, add a regression test asserting `manifest_rejected` is
+   written if `.sig` is removed, run the full test suite, commit
+   the whole checkpoint as one unit.

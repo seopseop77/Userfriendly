@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-06 (Phase 1b checkpoint 6 complete)
+**Last updated**: 2026-05-06 (Phase 1b checkpoint 7 complete)
 **Updated by**: Claude Code
 
 ## Current phase
 
-- **Phase**: Phase 1b — security boundary hardening (in progress)
-- **Active task**: Verifier primitive landed; host wiring + bundled keys.toml + hello_world signing next.
+- **Phase**: Phase 1b — security boundary hardening (cleanup pass in progress)
+- **Active task**: EgressGuard now wired into proxy lifespan; signature verifier wiring + signing CLI is next (Checkpoint B).
 
 ## Active worklog
 
@@ -21,83 +21,77 @@
 ## Recent commits
 
 ```
+e2ee4f0   proxy: wire EgressGuard into lifespan
+d089fc0   docs: Phase 1b checkpoint 6 — signature verifier primitive
 2659284   security: ed25519 manifest signature verifier
 1042f7e   docs: Phase 1b checkpoint 5 — mode×cap policy at load time
 eb7bd67   security: mode capability policy at load time
-186ad8c   docs: Phase 1b checkpoint 4 — content-level primitive landed
-8ca5973   security: content-level ladder + per-mode ceiling
 ```
 
 ## Where we paused
 
-Phase 1b checkpoint 6 complete (2026-05-06, commit 2659284).
-ed25519 manifest signature verifier primitive landed:
+Phase 1b cleanup-pass checkpoint A complete (2026-05-06, commit
+e2ee4f0). `proxy/app.py` lifespan now constructs an `EgressGuard`
+and passes it into `PluginHost(..., egress_guard=guard)`; the guard
+is also stashed on `app.state.egress_guard` for later forwarder use.
+`cli/main.py start` boots uvicorn against `llm_tracker.proxy.app:app`
+so the lifespan is the single wiring point — no CLI-side change
+needed.
 
-- New `llm_tracker.plugin_host.signing`:
-  - `VerifyResult` (`StrEnum`): `verified` / `signature_missing`
-    / `signature_invalid` / `signing_key_not_in_registry` per
-    ADR-0008.
-  - `load_registry(toml_bytes)` parses `[[key]]` entries with
-    `name` + hex `public_key`.
-  - `verify_manifest_signature(manifest_bytes, sig_blob, registry)`
-    returns `(result, signer)`; never raises on
-    operator-controlled bytes (every malformed sig blob → `SIGNATURE_INVALID`).
-- ADR-0008 deferred sub-decisions locked here: byte-exact
-  canonicalization (no parse/round-trip), sig blob is TOML with
-  `signer` + hex `signature` so we can distinguish
-  `signing_key_not_in_registry` from `signature_invalid`. Storage
-  location, signing CLI, and reference-plugin signing approach
-  stay deferred to the host-wiring checkpoint.
-- 16 new tests cover all four verifier outcomes plus a
-  parametrized "malformed sig blob" matrix and registry parsing.
-- **Important correction**: prior worklog/STATUS proposed a new
-  `signature_rejected` audit kind. ADR-0008 §"Hard reject on
-  failure" actually specifies `manifest_rejected` (with the reason
-  in `detail_json`). The next checkpoint reuses the existing kind.
+A new regression test (`test_load_plugins_populates_egress_manifests_and_audits_attempt`)
+pins the contract: after `load_plugins()` the manifest is in
+`EgressGuard._manifests`, and a subsequent `check()` writes an
+`egress_attempt` audit row. 104/104 tests pass.
 
-103/103 tests pass; new module + tests lint clean. The verifier
-is **not yet wired into `PluginHost.load_plugins()`** — that's
-the next checkpoint's job.
+This is part of a Cowork-driven cleanup pass (A → B → C → D → E
+→ F → G, then Gates 1/2 with stop-for-input). One scope decision
+already taken: Checkpoint G's `allowed_modes` default removal
+gets a small ADR-0009 (option (a)) rather than skipping the
+validation tightening.
 
 ## Next single step
 
-Wire the signature verifier into `PluginHost.load_plugins()` and
-seal the chicken-and-egg by signing the `hello_world` reference
-plugin. ADR-0008's hard-reject contract means these have to land
-together (any unsigned plugin breaks all real entry-point
-loads).
+**Checkpoint B — signature verifier wiring + signing CLI**, as
+one atomic unit with a mid-flight stop for user input.
 
-Concrete shape:
+1. Create `packages/llm_tracker/src/llm_tracker/trust/__init__.py`
+   and `keys.toml` (initially empty `[[key]]` array). Land a
+   `load_bundled_registry()` helper that calls
+   `signing.load_registry()` on the file content via
+   `importlib.resources`.
+2. In `host.load_plugins()`, after `_find_manifest()` and before
+   `denied_capabilities()`, locate the sibling `plugin.toml.sig`
+   via `importlib.resources`, read manifest bytes byte-exact, and
+   call `verify_manifest_signature(...)`. On any non-VERIFIED
+   result, write `manifest_rejected` to `audit_log` with the
+   reason and skip the plugin.
+3. Add CLI subcommand `llm-tracker generate-key` (writes ed25519
+   keypair to the OS keychain via `keyring`, prints public-key
+   hex for the user to paste into `keys.toml`).
+4. Add CLI subcommand `llm-tracker sign-plugin <plugin-pkg-path>
+   --signer <name>` that reads `plugin.toml`, signs with the
+   keychain-stored private key, and writes `plugin.toml.sig`
+   (TOML: `signer`, `signature` hex).
+5. **STOP** — append "decision needed" to the worklog and ping
+   user in Korean. User runs `generate-key` and pastes the hex
+   back, then runs `sign-plugin` against `hello_world` to produce
+   the `.sig`.
+6. After resume: paste hex into `keys.toml`, commit the `.sig`,
+   add a regression test asserting `manifest_rejected` is written
+   if the `.sig` is removed, run the full suite, commit the whole
+   checkpoint as one unit.
 
-1. Pick signature storage location (sibling `plugin.toml.sig`
-   is the natural pick given the verifier takes raw bytes;
-   document in `docs/plugins.md`).
-2. Land `packages/llm_tracker/src/llm_tracker/trust/keys.toml`
-   with at least one developer pubkey. Private key stays
-   off-repo (probably in `keyring`, already a declared dep).
-3. Land a minimal `llm-tracker sign-plugin <path>` CLI
-   (ADR-0008 deliverable; CLAUDE.md §10 authorization comes
-   from the ADR).
-4. Sign `hello_world`; commit the resulting `plugin.toml.sig`.
-5. Wire `verify_manifest_signature` into `load_plugins()`
-   between `_find_manifest()` and `denied_capabilities()`. On
-   non-`VERIFIED` result, write `manifest_rejected` (kind
-   reused; `detail_json` carries the verifier's reason) and
-   skip the plugin.
-6. End-to-end load-time tests mirroring the existing
-   `manifest_rejected` / `capability_denied` patterns, plus an
-   integration test that the bundled `hello_world` verifies
-   cleanly through the real registry+sig pipeline.
-
-Content-level hook-dispatch integration stays blocked on Cowork
-ADRs (`min_content_level` manifest field; typed payload object).
-Proxy-boot wiring deferred to Phase 1c.
+Existing monkeypatch-based tests (`test_plugin_host.py`) will need
+a stub registry/sig hook to bypass the verifier without breaking
+hard-reject.
 
 ## Blocking / decisions needed
 
-- None. Phase 1b is fully unblocked: ADR-0008 sealed the signing trust
-  model, so manifest signature verification can be implemented when its
-  turn comes in the Phase 1b checklist.
+- None for Checkpoint B's setup phase. After step 4, the user
+  must run two CLI commands locally before the checkpoint can
+  close.
+- Gates 1 (Transform handling) and 2 (hook payload routing)
+  are deferred to their respective checkpoints; not blocking now.
 
 ## Progress
 

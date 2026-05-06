@@ -4,9 +4,11 @@ import asyncio
 
 import llm_tracker.plugin_host.host as host_mod
 import pytest
+from llm_tracker.egress_guard.guard import EgressGuard
 from llm_tracker.plugin_host.host import PluginHost
 from llm_tracker.storage.models import AuditLog, Base
 from llm_tracker_sdk import BasePlugin, Block, Pass
+from llm_tracker_sdk.manifest import PluginManifest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -130,3 +132,54 @@ async def test_load_plugins_rejects_missing_manifest(monkeypatch, session_factor
     assert rejected is not None
     assert rejected.plugin == "no_manifest"
     assert rejected.outcome == "denied"
+
+
+# -- egress guard wiring ---------------------------------------------------
+
+
+class _AllowedPlugin(BasePlugin):
+    name = "allowed"
+
+
+class _AllowedEP:
+    name = "allowed"
+
+    def load(self):
+        return _AllowedPlugin
+
+
+async def test_load_plugins_registers_manifest_with_egress_guard(
+    monkeypatch, session_factory
+):
+    fake_manifest = PluginManifest(
+        name="allowed",
+        version="0.1.0",
+        capabilities=["egress_http"],
+        egress_destinations=["https://api.example.com"],
+        allowed_modes=["L", "A", "R"],
+    )
+    monkeypatch.setattr(host_mod, "entry_points", lambda **_kw: [_AllowedEP()])
+    monkeypatch.setattr(
+        PluginHost,
+        "_find_manifest",
+        staticmethod(lambda _cls: (fake_manifest, "")),
+    )
+
+    guard = EgressGuard(mode="R", session_factory=session_factory)
+    host = PluginHost(mode="R", session_factory=session_factory, egress_guard=guard)
+    await host.load_plugins()
+
+    assert len(host._plugins) == 1
+    assert await guard.check(plugin="allowed", url="https://api.example.com") is True
+
+
+async def test_load_plugins_skips_egress_register_when_manifest_invalid(
+    monkeypatch, session_factory
+):
+    monkeypatch.setattr(host_mod, "entry_points", lambda **_kw: [_FakeEP()])
+    guard = EgressGuard(mode="R", session_factory=session_factory)
+    host = PluginHost(mode="R", session_factory=session_factory, egress_guard=guard)
+    await host.load_plugins()
+
+    assert host._plugins == []
+    assert await guard.check(plugin="no_manifest", url="https://x") is False

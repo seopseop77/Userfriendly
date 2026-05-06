@@ -12,15 +12,22 @@ from llm_tracker_sdk.manifest import PluginManifest
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from ..egress_guard.guard import EgressGuard
 from ..storage.audit import write_audit
 
 HOOK_TIMEOUT = 5.0  # seconds; a plugin exceeding this is treated as a fault
 
 
 class PluginHost:
-    def __init__(self, mode: str, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        mode: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        egress_guard: EgressGuard | None = None,
+    ) -> None:
         self.mode = mode
         self._session_factory = session_factory
+        self._egress_guard = egress_guard
         self._plugins: list[BasePlugin] = []
 
     # -- audit helpers -------------------------------------------------------
@@ -112,6 +119,9 @@ class PluginHost:
                         detail_json=json.dumps({"reason": err}),
                     )
                 continue
+
+            if self._egress_guard is not None:
+                self._egress_guard.register(manifest)
 
             plugin = plugin_class()
             self._plugins.append(plugin)

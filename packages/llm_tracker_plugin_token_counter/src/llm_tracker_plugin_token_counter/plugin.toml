@@ -1,0 +1,6 @@
+name = "token_counter"
+version = "0.0.1"
+description = "TEST-ONLY: parses Anthropic SSE usage and writes to a sidecar SQLite. Verification artefact for Phase 1b — remove when the Phase-2 Extractor lands."
+hooks = ["on_response_chunk", "on_response_complete", "on_shutdown"]
+capabilities = ["read_response_metadata", "read_response_content"]
+allowed_modes = ["L", "A", "R"]

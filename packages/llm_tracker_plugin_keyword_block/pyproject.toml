@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llm-tracker-plugin-keyword-block"
+version = "0.0.1"
+description = "TEST-ONLY plugin for llm-tracker — blocks requests containing forbidden keywords. Verification artefact for the block path; replaced by Phase-1c scope_guard."
+requires-python = ">=3.11"
+authors = [{ name = "Userfriendly Team" }]
+license = { text = "Proprietary (internal research use)" }
+
+dependencies = [
+    "llm-tracker-sdk",
+]
+
+[project.entry-points."llm_tracker.plugins"]
+keyword_block = "llm_tracker_plugin_keyword_block:KeywordBlockPlugin"
+
+[tool.uv.sources]
+llm-tracker-sdk = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/llm_tracker_plugin_keyword_block"]

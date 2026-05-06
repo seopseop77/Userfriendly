@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llm-tracker-plugin-token-counter"
+version = "0.0.1"
+description = "TEST-ONLY plugin for llm-tracker — parses Anthropic SSE usage events into a sidecar SQLite. Verification artefact; replaced by the Phase-2 Extractor."
+requires-python = ">=3.11"
+authors = [{ name = "Userfriendly Team" }]
+license = { text = "Proprietary (internal research use)" }
+
+dependencies = [
+    "llm-tracker-sdk",
+    "aiosqlite",
+]
+
+[project.entry-points."llm_tracker.plugins"]
+token_counter = "llm_tracker_plugin_token_counter:TokenCounterPlugin"
+
+[tool.uv.sources]
+llm-tracker-sdk = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/llm_tracker_plugin_token_counter"]

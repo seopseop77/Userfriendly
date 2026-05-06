@@ -1,0 +1,6 @@
+name = "keyword_block"
+version = "0.0.1"
+description = "TEST-ONLY: blocks requests whose body contains a forbidden keyword. Verification artefact for the block path — remove when Phase-1c scope_guard lands."
+hooks = ["on_request_received"]
+capabilities = ["read_request_content", "block_request"]
+allowed_modes = ["L", "A", "R"]

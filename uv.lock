@@ -10,6 +10,8 @@ resolution-markers = [
 members = [
     "llm-tracker",
     "llm-tracker-plugin-hello-world",
+    "llm-tracker-plugin-keyword-block",
+    "llm-tracker-plugin-token-counter",
     "llm-tracker-sdk",
     "llm-tracker-server",
 ]
@@ -640,6 +642,32 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "llm-tracker-sdk", editable = "packages/llm_tracker_sdk" }]
+
+[[package]]
+name = "llm-tracker-plugin-keyword-block"
+version = "0.0.1"
+source = { editable = "packages/llm_tracker_plugin_keyword_block" }
+dependencies = [
+    { name = "llm-tracker-sdk" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "llm-tracker-sdk", editable = "packages/llm_tracker_sdk" }]
+
+[[package]]
+name = "llm-tracker-plugin-token-counter"
+version = "0.0.1"
+source = { editable = "packages/llm_tracker_plugin_token_counter" }
+dependencies = [
+    { name = "aiosqlite" },
+    { name = "llm-tracker-sdk" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiosqlite" },
+    { name = "llm-tracker-sdk", editable = "packages/llm_tracker_sdk" },
+]
 
 [[package]]
 name = "llm-tracker-sdk"

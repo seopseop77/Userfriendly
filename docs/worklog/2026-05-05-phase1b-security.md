@@ -14,6 +14,49 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## What was done
 
+### Checkpoint 10 — synthetic SSE block response per ADR-0002 §3 (commit b1724fa)
+
+- `forwarder.py`:
+  - `_block_sse_chunks(reason, exchange_id)` emits the six-event
+    Anthropic stream documented in ADR-0002 §3:
+    `message_start → content_block_start → content_block_delta`
+    (single `text_delta` carrying `"[llm-tracker] <reason>"`) `→
+    content_block_stop → message_delta` (`stop_reason="end_turn"`,
+    `usage.output_tokens=0`) `→ message_stop`. `tool_use` is never
+    emitted.
+  - `_block_response(reason, exchange_id)` returns a
+    `StreamingResponse` at status **200** with
+    `text/event-stream`, replacing the prior 503 plain-text path
+    (the exact option ADR-0002 said NOT to use). Each call site
+    that previously called `_block_response(result.reason)` now
+    also calls `_persist_block(...)` to write the `Exchange` row.
+- `storage/exchanges.py`: new `record_exchange_blocked` helper
+  next to `record_exchange_timing`. Same defaults
+  (`session_id="local"`, `provider="anthropic"`,
+  `content_level="L0"`) plus the new `blocked_by` field. Sets
+  `started_at` from the request-received timestamp passed in.
+- `packages/llm_tracker_sdk/src/llm_tracker_sdk/hooks.py`: `Block`
+  and `Abort` gain `plugin: str = ""` with a docstring noting it
+  is host-set. Backward compatible — existing plugin code building
+  `Block(reason="…")` keeps working unchanged.
+- `plugin_host/host.py`: each dispatcher that may return Block /
+  Abort now sets `result.plugin = plugin.name` before returning.
+  Affects `on_request_received`, `before_forward` (Block branch),
+  `on_upstream_response_start`, `on_response_chunk` (Abort
+  branches). The Transform branch is untouched (Gate 1 still
+  pending).
+- `tests/proxy/test_forwarder.py`:
+  - `_parse_sse_events(payload)` strict SSE parser used by the
+    new test (asserts both `event:` and `data:` lines exist for
+    every chunk).
+  - `test_block_emits_synthetic_anthropic_sse` injects a
+    `_Blocker` plugin into the host, drives `forward_request`
+    directly with a constructed Starlette `Request`, parses the
+    SSE bytes back, asserts the event order, the `[llm-tracker]
+    out of scope` payload, `stop_reason=end_turn`, the absence of
+    `tool_use` anywhere in the body, and the persisted
+    `Exchange.blocked_by == "blocker"`.
+
 ### Checkpoint 9 — `on_persisted` ordering fix in forwarder (commit a2bc3d4)
 
 - Modified `packages/llm_tracker/src/llm_tracker/proxy/forwarder.py`:
@@ -306,6 +349,58 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## Decisions
 
+### Checkpoint 10
+
+- **`plugin: str = ""` field on `Block` and `Abort`, not a
+  separate wrapper class**. The forwarder needs the blocking
+  plugin's name to populate `exchanges.blocked_by`, but the
+  current dispatcher returns `Block`/`Abort` directly. Options
+  considered: (1) host-side per-host or per-exchange transient
+  state — concurrency-fragile under multiple in-flight requests;
+  (2) host returns a tuple `(plugin_name, Block)` — breaks every
+  test that does `isinstance(result, Block)`; (3) add an optional
+  field with default. Option 3 is purely additive on a dataclass:
+  no existing call site changes, plugins ignore it (it gets
+  overwritten by the host before the forwarder sees the result).
+  CLAUDE.md §10 lists "meaning of return values" as a public
+  interface; an additive optional field with default doesn't
+  redefine any existing meaning, but flagging here for
+  visibility — if the user prefers an ADR for this, the change is
+  small enough to revert and re-land under one.
+- **Status 200, not 4xx/5xx**. ADR-0002 §3 picked Option B
+  (synthetic SSE 200) explicitly because Claude Code parses the
+  response as a normal model turn and won't retry. The prior 503
+  matched ADR-0002 Option A (the rejected one); this checkpoint
+  flips to the chosen option.
+- **`stop_reason="end_turn"`, not `stop_sequence`**. ADR-0002 §3
+  is explicit. Together with `tool_use` being absent, this stops
+  Claude Code from running a tool call against the synthetic
+  message.
+- **Use `exchange_id` as the SSE `message.id`**. Saves a separate
+  ULID for the synthetic message; debugging the audit log later
+  is easier when the exchange row id matches the `message_start`
+  payload's id. The model field is set to a constant
+  `"llm-tracker-block"` so anything that filters on real model
+  names skips this turn.
+- **Persist a separate `Exchange` row, even though no upstream
+  call happened**. The `Exchange` table is the audit-of-record
+  for what happened in each request slot; a blocked request that
+  doesn't appear in `Exchange` is invisible to operators reading
+  the audit. `record_exchange_blocked` writes the minimum NOT
+  NULL columns plus `blocked_by` and `started_at`, leaving
+  `t_upstream_first_byte_ms` etc. NULL (they don't apply).
+- **Persist *before* returning the StreamingResponse, not inside
+  the SSE generator**. The DB write must happen unconditionally,
+  including if Claude Code disconnects mid-stream. Writing inside
+  `gen()` would couple the audit row to the client actually
+  draining the body.
+- **Abort path also goes through `_block_response`**. Cowork's
+  instruction targeted Block specifically, but Abort and Block
+  share the response-shape problem (both used to return 503
+  plain text). Treating them symmetrically — same SSE shape,
+  same `_persist_block` audit — keeps the forwarder simpler and
+  avoids a future "abort gives plain text" surprise.
+
 ### Checkpoint 9
 
 - **Direct `forward_request` test, not the existing ASGITransport
@@ -562,6 +657,23 @@ land with the host-wiring checkpoint.
 
 ## Verification
 
+### After checkpoint 10
+
+```
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker/tests/ -q
+........................................................................ [ 66%]
+.....................................                                    [100%]
+109 passed in 0.68s
+
+$ .venv/bin/ruff check \
+    packages/llm_tracker/src/llm_tracker/proxy/forwarder.py \
+    packages/llm_tracker/src/llm_tracker/storage/exchanges.py \
+    packages/llm_tracker/src/llm_tracker/plugin_host/host.py \
+    packages/llm_tracker_sdk/src/llm_tracker_sdk/hooks.py \
+    packages/llm_tracker/tests/proxy/test_forwarder.py
+All checks passed!
+```
+
 ### After checkpoint 9
 
 ```
@@ -772,20 +884,17 @@ Remaining Phase 1b items (per roadmap.md):
 
 ## Handoff
 
-Checkpoint 9 complete (commit a2bc3d4). The forwarder now writes
-the `exchanges` row before dispatching `on_persisted`, so plugins
-can read it back in the hook (design.md §6.3.2). Regression test
-in `tests/proxy/test_forwarder.py` pins this by injecting a
-`_ReaderPlugin` whose `on_persisted` opens a session and asserts
-the row exists.
+Checkpoint 10 complete (commit b1724fa). Block / Abort responses
+now go through a synthetic Anthropic SSE 200 stream (ADR-0002
+§3) instead of HTTP 503 plain text, and the block path persists
+an `Exchange` row with `blocked_by` set. SDK additive change:
+`Block` and `Abort` carry an optional `plugin: str = ""` field
+that the host sets to the blocking plugin's name.
 
-Phase 1b cleanup-pass progress: A, B, C closed.
+Phase 1b cleanup-pass progress: A, B, C, D closed.
 
 Remaining cleanup-pass checkpoints in order:
 
-- **D**: replace `_block_response` (HTTP 503 plain text) with the
-  ADR-0002 §3 synthetic SSE 200 OK stream and persist an
-  `Exchange` row with `blocked_by`.
 - **E**: Alembic migration installing `audit_log_no_update` /
   `audit_log_no_delete` SQLite triggers; remove the "deferred to
   Phase 1b" comment in `storage/models.py`.
@@ -814,24 +923,18 @@ Until both are answered, content-level integration cannot land.
 
 ### Next single step
 
-**Checkpoint D — synthetic SSE block response (ADR-0002 §3).**
-`forwarder.py::_block_response` currently returns HTTP 503 plain
-text — exactly the option ADR-0002 said NOT to use. Replace with
-a synthetic Anthropic SSE 200 OK stream, sequence per design.md
-§5.4:
+**Checkpoint E — `audit_log` append-only DB enforcement (ADR-0006
+open).** Add an Alembic migration installing two SQLite triggers,
+`audit_log_no_update` (BEFORE UPDATE) and `audit_log_no_delete`
+(BEFORE DELETE), each calling `RAISE(ABORT, '...append-only...')`
+so any UPDATE / DELETE on `audit_log` rows fails fast.
 
-`message_start → content_block_start → content_block_delta`
-(single `text_delta` carrying the `[llm-tracker]` prefix + reason)
-`→ content_block_stop → message_delta` (`stop_reason="end_turn"`)
-`→ message_stop`
+Remove the "Append-only by convention; DB-level enforcement via
+triggers is deferred to Phase 1b." comment in
+`storage/models.py::AuditLog`.
 
-Status 200, `content-type: text/event-stream`. **Never** emit
-`tool_use`. The block path must also persist an `Exchange` row
-with `blocked_by=<plugin>` populated (the column already exists on
-the model; a small `record_exchange_blocked` helper alongside
-`record_exchange_timing` is the natural shape).
-
-Tests: drive a Block stream through an httpx client and parse it
-cleanly as an Anthropic SSE message — assert each expected event
-appears in order, `tool_use` is absent, and the persisted
-`Exchange` row carries `blocked_by`.
+Test: insert an audit row, then assert that both UPDATE and
+DELETE statements raise an exception (matching the message
+prefix). Run the new migration in the test fixture (or apply it
+via `Base.metadata.create_all` plus a manual trigger creation,
+matching whichever path the existing test fixtures use).

@@ -14,6 +14,29 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## What was done
 
+### Checkpoint 3 — PluginHost ↔ EgressGuard wiring (commit f1a31cf)
+
+- Modified `packages/llm_tracker/src/llm_tracker/plugin_host/host.py`:
+  - `PluginHost.__init__` now accepts an optional
+    `egress_guard: EgressGuard | None = None`. Default `None` keeps
+    every existing call site (including 7 prior tests) source-compatible.
+  - In `load_plugins()`, after `_find_manifest()` succeeds and before the
+    plugin is instantiated, the host calls
+    `self._egress_guard.register(manifest)` when a guard was supplied.
+    Manifest-rejection path is unchanged — a plugin without a valid
+    manifest is never registered with the guard.
+
+- Updated `packages/llm_tracker/tests/test_plugin_host.py`:
+  - `test_load_plugins_registers_manifest_with_egress_guard`: monkeypatches
+    `entry_points` and `_find_manifest` to inject a plugin with an
+    egress-allowing manifest, then asserts
+    `EgressGuard.check(...)` returns `True` for the declared destination
+    under Mode R.
+  - `test_load_plugins_skips_egress_register_when_manifest_invalid`: uses
+    the existing `_FakeEP` (no `plugin.toml` on disk), asserts the guard
+    still denies — proving rejection short-circuits before
+    `register()` is reached.
+
 ### Checkpoint 2 — EgressGuard: per-plugin allowlist + mode policy (commit 5bafac1)
 
 - Modified `packages/llm_tracker/src/llm_tracker/egress_guard/guard.py`:
@@ -67,6 +90,24 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## Decisions
 
+### Checkpoint 3
+
+- **Optional `egress_guard` parameter, not required**: existing tests
+  construct `PluginHost` without a guard; the proxy boot path will
+  always supply one. Keeping it `Optional` matches Phase 0 callers and
+  avoids a breaking signature change for fixture-only setups (CLAUDE.md
+  §10 lists `__init__` shape implicitly under "public interfaces").
+- **Register *before* instantiation**: the host calls `register()`
+  before `plugin_class()`, so even if the plugin's `__init__` blocks
+  or crashes, its egress allowlist is already enforceable. Putting it
+  after instantiation would create a window where a misbehaving
+  constructor leaks an unregistered plugin into the host while its
+  manifest sits unused.
+- **No audit entry for the register() call itself**: the `plugin_loaded`
+  audit row already tells operators the manifest was accepted; the
+  guard's per-`check()` audit covers actual egress decisions.
+  Adding a third entry would be noise without information gain.
+
 ### Checkpoint 2
 
 - **`register(manifest)` not constructor injection**: the host loads
@@ -109,6 +150,19 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## Verification
 
+### After checkpoint 3
+
+```
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker/tests/ -q
+..................................                                       [100%]
+34 passed in 0.59s
+
+$ .venv/bin/ruff check \
+    packages/llm_tracker/src/llm_tracker/plugin_host/host.py \
+    packages/llm_tracker/tests/test_plugin_host.py
+All checks passed!
+```
+
 ### After checkpoint 2
 
 ```
@@ -145,13 +199,16 @@ Remaining Phase 1b items (per roadmap.md):
 - [x] Capability use audit-logged on every EgressGuard call. (subsumed by 5bafac1
       — every check writes `egress_attempt`/`egress_blocked` with
       `capability`, `destination`, mode, and reason.)
-- [ ] PluginHost wires loaded manifests into `EgressGuard.register()` (today
-      `load_plugins()` validates a manifest but discards it; the guard cannot
-      enforce until the host hands it over).
+- [x] PluginHost wires loaded manifests into `EgressGuard.register()`.
+      (commit f1a31cf)
 - [ ] Content-level routing (L0–L3): core degrades data before handing to plugins.
 - [ ] Mode-by-mode capability policy enforcement at hook dispatch (currently
       only enforced inside the egress path).
 - [ ] Manifest signature verification (now unblocked — see ADR-0008).
+- [ ] Proxy boot wiring: `cli/main.py` (or wherever the host is constructed
+      in the eventual Phase 1c boot path) must pass the EgressGuard into
+      `PluginHost(...)`. The plumbing exists; nothing currently constructs
+      both objects together.
 
 ## Suggestions (observed, not acted on)
 
@@ -170,22 +227,31 @@ Remaining Phase 1b items (per roadmap.md):
 
 ## Handoff
 
-Checkpoint 2 complete (commit 5bafac1). EgressGuard now enforces the
-manifest-driven allowlist with the mode policy from design.md §7.3 / §8.
-The guard's API and contract are stable, but **nothing wires manifests
-into it yet** — `PluginHost.load_plugins()` validates a manifest and
-then discards it.
+Checkpoint 3 complete (commit f1a31cf). The plugin lifecycle is now
+end-to-end wired for egress enforcement: load plugin → validate
+manifest → register with guard → instantiate. From a single
+`PluginHost(mode, factory, egress_guard=guard)` construction, the
+guard owns the manifests of every plugin the host accepted, in the
+same order they were accepted. Tests pin the allow path (real
+`check()` returns True) and the rejection short-circuit (no manifest
+→ no register → guard denies).
 
-Next single step: thread the validated `PluginManifest` from
-`PluginHost.load_plugins()` into a constructor-injected
-`EgressGuard.register()` call. Concrete shape:
+The next Phase 1b checklist line is **content-level routing (L0–L3)**:
+the core needs to degrade data before handing it to plugins so that
+plugins never see content above the operator-approved level for the
+current mode. Concrete shape (subject to re-reading design.md §7.5
+before implementing):
 
-1. Give `PluginHost.__init__` an optional `egress_guard: EgressGuard | None`.
-2. When `_find_manifest()` succeeds, also call
-   `egress_guard.register(manifest)` before instantiating the plugin.
-3. Add a `test_plugin_host.py` test that loads a real fixture plugin and
-   asserts `EgressGuard.check(...)` for that plugin's declared
-   destination returns `True` under Mode R.
+1. Define an enum/string ladder `L0 < L1 < L2 < L3` in a shared module
+   (likely `llm_tracker.scrubbers` or a new `llm_tracker.content_levels`).
+2. Decide the per-mode default ceiling (design.md §8 — Mode L allows
+   higher levels in-process, Mode A/R drop further).
+3. Insert a degrade step in the request/response path *before* the hook
+   dispatcher hands payloads to plugins.
+4. Tests: each level in, expected redactions out; mode → max-level
+   table-driven cases.
 
-Do this before content-level routing — the latter only matters once
-plugins can actually call out, which requires the wiring above.
+Defer the proxy-boot wiring (constructing `EgressGuard` and passing it
+into `PluginHost` from `cli/main.py`) until Phase 1c, when the boot
+path is actually being built. The plumbing on the framework side is
+done.

@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-06 (Phase 1b checkpoint 2 complete)
+**Last updated**: 2026-05-06 (Phase 1b checkpoint 3 complete)
 **Updated by**: Claude Code
 
 ## Current phase
 
 - **Phase**: Phase 1b — security boundary hardening (in progress)
-- **Active task**: Checkpoint 2 done; PluginHost ↔ EgressGuard wiring next.
+- **Active task**: Checkpoint 3 done; content-level routing (L0–L3) next.
 
 ## Active worklog
 
@@ -21,45 +21,50 @@
 ## Recent commits
 
 ```
+f1a31cf   security: wire PluginHost manifests to EgressGuard
+aa223f2   docs: Phase 1b checkpoint 2 — EgressGuard allowlist landed
 5bafac1   security: EgressGuard allowlist + mode policy
 f8447b2   docs: STATUS + worklog reflect ADR-0008 sealed
 d39c487   docs: ADR-0008 plugin signing trust model
-38a1fb2   docs: open Phase 1b worklog; update STATUS to checkpoint 1
-04aa85f   security: hook timeout/exception isolation + manifest validation at load
 ```
 
 ## Where we paused
 
-Phase 1b checkpoint 2 complete (2026-05-06, commit 5bafac1). EgressGuard
-now enforces the design.md §7.3 / §8 policy:
+Phase 1b checkpoint 3 complete (2026-05-06, commit f1a31cf). The
+plugin loading lifecycle is end-to-end wired for egress enforcement:
 
-- `register(manifest)` attaches a `PluginManifest` per plugin name.
-- `check()` walks a six-step decision: Mode L always denies; otherwise
-  the plugin must be registered, the current mode must be in
-  `allowed_modes`, the requested capability must be declared, the URL
-  must exact-match `egress_destinations`, and Mode A requires exactly
-  one declared destination.
-- Every check writes `egress_attempt`/`egress_blocked` with mode and
-  denial reason in `detail_json` — the "capability use audit-logged"
-  Phase 1b checklist item is subsumed by this.
+- `PluginHost.__init__` takes an optional `egress_guard: EgressGuard | None`.
+- `load_plugins()` calls `egress_guard.register(manifest)` after a
+  successful `_find_manifest()` and before plugin instantiation. A
+  rejected manifest never reaches `register()`, so the guard's denial
+  short-circuit (`no_manifest_registered`) still bites for malformed
+  plugins.
+- Two new tests in `test_plugin_host.py` pin both paths: a registered
+  manifest's declared destination passes `EgressGuard.check()` under
+  Mode R; a manifest-rejection path leaves the guard denying.
 
-32/32 tests pass (10 new in `test_egress_guard.py`); the new files lint
-clean. Five pre-existing ruff errors in unrelated files noted in
-worklog Suggestions; not touched per CLAUDE.md §9.
+34/34 tests pass; changed files lint clean. The five pre-existing
+ruff errors in unrelated files (CLAUDE.md §9 — not in scope) remain
+flagged in worklog Suggestions.
 
 ## Next single step
 
-Thread the validated `PluginManifest` from `PluginHost.load_plugins()`
-into `EgressGuard.register()`. Today the host validates the manifest
-and discards it, so the guard has nothing to enforce against in a real
-boot. Concretely:
+Implement content-level routing (L0–L3): the core must degrade data
+to the operator-approved level for the current mode *before* it is
+handed to plugins. Re-read `docs/design.md §7.5` first; tentative
+shape (subject to that reading):
 
-1. Give `PluginHost.__init__` an optional `egress_guard: EgressGuard | None`.
-2. After `_find_manifest()` succeeds, call `egress_guard.register(manifest)`
-   before instantiating the plugin.
-3. Add an integration test: load a real fixture plugin, then call
-   `egress_guard.check(...)` for its declared destination — expect
-   `True` under Mode R, `False` under Mode L.
+1. Define an `L0 < L1 < L2 < L3` ladder in a shared module
+   (`llm_tracker.content_levels` or alongside `llm_tracker.scrubbers`).
+2. Encode the per-mode max level from design.md §8.
+3. Insert a degrade step in the request/response path before the
+   hook dispatcher passes payloads to plugins.
+4. Tests: per-level redaction expectations + per-mode max-level
+   table-driven cases.
+
+Defer proxy-boot wiring (constructing `EgressGuard` and passing it
+into `PluginHost` from `cli/main.py`) until Phase 1c — the framework
+plumbing is done; only the boot path is missing.
 
 ## Blocking / decisions needed
 

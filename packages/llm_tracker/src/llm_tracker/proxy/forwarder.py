@@ -106,11 +106,9 @@ async def forward_request(
             await drain
             await upstream.aclose()
 
-        if completed:
-            if plugin_host is not None:
-                await plugin_host.on_response_complete(exchange_id)
-                await plugin_host.on_persisted(exchange_id)
-            if "t1" in timing and "t2" in timing and plugin_host is not None:
+        if completed and plugin_host is not None:
+            await plugin_host.on_response_complete(exchange_id)
+            if "t1" in timing and "t2" in timing:
                 t_req = t0_epoch_ms
                 t_up = t0_epoch_ms + int((timing["t1"] - t0_mono) * 1000)
                 t_cli = t0_epoch_ms + int((timing["t2"] - t0_mono) * 1000)
@@ -123,6 +121,9 @@ async def forward_request(
                         t_upstream_first_byte_ms=t_up,
                         t_client_first_byte_ms=t_cli,
                     )
+            # design.md §6.3.2: on_persisted fires *after* the DB write so
+            # plugins can read the exchange row back.
+            await plugin_host.on_persisted(exchange_id)
 
     response_headers = {
         k: v

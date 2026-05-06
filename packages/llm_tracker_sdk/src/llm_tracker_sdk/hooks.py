@@ -10,9 +10,15 @@ class Pass:
 
 @dataclass
 class Block:
-    """Emit a synthetic block response and skip forwarding."""
+    """Emit a synthetic block response and skip forwarding.
+
+    `plugin` is set by the host to the name of the plugin whose hook
+    returned this Block; plugins should leave it at the default. The
+    forwarder uses it to populate the `exchanges.blocked_by` column.
+    """
 
     reason: str
+    plugin: str = ""
 
 
 @dataclass
@@ -25,6 +31,11 @@ class Transform:
 
 @dataclass
 class Abort:
-    """Terminate an in-progress response stream."""
+    """Terminate an in-progress response stream.
+
+    `plugin` is set by the host to the name of the plugin whose hook
+    returned this Abort; plugins should leave it at the default.
+    """
 
     reason: str
+    plugin: str = ""

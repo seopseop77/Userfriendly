@@ -214,6 +214,7 @@ class PluginHost:
                 Pass(),
             )
             if isinstance(result, Block):
+                result.plugin = plugin.name
                 return result
         return Pass()
 
@@ -226,7 +227,10 @@ class PluginHost:
                 plugin.before_forward(exchange_id),
                 Pass(),
             )
-            if isinstance(result, (Block, Transform)):
+            if isinstance(result, Block):
+                result.plugin = plugin.name
+                return result
+            if isinstance(result, Transform):
                 return result
         return Pass()
 
@@ -240,6 +244,7 @@ class PluginHost:
                 Pass(),
             )
             if isinstance(result, Abort):
+                result.plugin = plugin.name
                 return result
         return Pass()
 
@@ -252,6 +257,7 @@ class PluginHost:
                 Pass(),
             )
             if isinstance(result, Abort):
+                result.plugin = plugin.name
                 return result
         return Pass()
 

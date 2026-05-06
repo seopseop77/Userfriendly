@@ -1,6 +1,6 @@
 """SQLAlchemy ORM models for the llm-tracker core tables."""
 
-from sqlalchemy import ForeignKey, Index, Integer, String, Text
+from sqlalchemy import DDL, ForeignKey, Index, Integer, String, Text, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -62,7 +62,9 @@ class ToolCall(Base):
 
 
 class AuditLog(Base):
-    # Append-only by convention; DB-level enforcement via triggers is deferred to Phase 1b.
+    # Append-only. DB-level enforcement via SQLite triggers below
+    # (mirrors the Alembic migration so test fixtures using
+    # Base.metadata.create_all also get the triggers; see ADR-0006).
     __tablename__ = "audit_log"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -79,3 +81,23 @@ class AuditLog(Base):
         Index("idx_audit_ts", "ts"),
         Index("idx_audit_plugin", "plugin"),
     )
+
+
+# audit_log append-only triggers (ADR-0006). The SQL below is the source
+# of truth; the Alembic migration that ships these triggers in production
+# DBs executes the same statements.
+
+AUDIT_LOG_NO_UPDATE_DDL = (
+    "CREATE TRIGGER IF NOT EXISTS audit_log_no_update "
+    "BEFORE UPDATE ON audit_log "
+    "BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END"
+)
+
+AUDIT_LOG_NO_DELETE_DDL = (
+    "CREATE TRIGGER IF NOT EXISTS audit_log_no_delete "
+    "BEFORE DELETE ON audit_log "
+    "BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END"
+)
+
+event.listen(AuditLog.__table__, "after_create", DDL(AUDIT_LOG_NO_UPDATE_DDL))
+event.listen(AuditLog.__table__, "after_create", DDL(AUDIT_LOG_NO_DELETE_DDL))

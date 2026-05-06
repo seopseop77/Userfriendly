@@ -14,6 +14,40 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## What was done
 
+### Checkpoint 5 — Mode-by-mode capability policy at load time (commit eb7bd67)
+
+- Added `packages/llm_tracker/src/llm_tracker/plugin_host/policy.py`:
+  - `MODE_DENIED_CAPABILITIES: dict[str, frozenset[str]]` — the only
+    documented mode-policy entry from design.md §8 today is
+    Mode L denies `egress_http`; Modes A and R deny none. Modes A/R
+    runtime restrictions on egress (single destination / allowlist)
+    stay in EgressGuard, not in this load-time table.
+  - `denied_capabilities(mode, declared) -> frozenset[str]` — returns
+    the subset of declared capabilities denied under `mode`. Unknown
+    mode raises `ValueError` (closed L/A/R enumeration; same
+    convention as `content_levels.effective_ceiling`).
+
+- Modified `packages/llm_tracker/src/llm_tracker/plugin_host/host.py`:
+  - After manifest validation and before `egress_guard.register()`,
+    the host calls `denied_capabilities(self.mode, manifest.capabilities)`.
+    On non-empty result it writes a `capability_denied` audit row
+    (`detail_json = {"mode", "denied"}`, sorted) and skips the
+    plugin — the guard never sees a manifest that the policy
+    rejected.
+
+- Added `packages/llm_tracker/tests/test_policy.py` (8 tests):
+  table-shape assertions, parametrized `(mode, capability)` matrix
+  spanning all 30 combinations, multiple-declared-subset returns
+  only the denied subset, empty-declared always allowed, unknown
+  mode raises.
+
+- Updated `packages/llm_tracker/tests/test_plugin_host.py` (+2 tests):
+  `test_load_plugins_rejects_egress_http_in_mode_L` (full audit-row
+  shape pinned, plus a check that the egress guard's `_manifests`
+  dict was *not* touched) and
+  `test_load_plugins_accepts_egress_http_in_mode_R` (same manifest
+  loads cleanly, no `capability_denied` row written).
+
 ### Checkpoint 4 — Content-level ladder + per-mode ceiling primitive (commit 8ca5973)
 
 - Added `packages/llm_tracker/src/llm_tracker/content_levels/__init__.py`
@@ -119,6 +153,32 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## Decisions
 
+### Checkpoint 5
+
+- **Load-time enforcement, not hook-dispatch enforcement**: design.md
+  §8 phrases the policy in terms of what each mode "permits". The
+  cheapest faithful enforcement is to refuse the plugin at load time
+  if it declares anything denied; per-hook checks would be redundant
+  and noisier in the audit log. EgressGuard already enforces the
+  *runtime* shape of `egress_http` (allowlist + Mode A's single
+  destination), so this layer only needs to police *declarations*.
+- **Single denial table, not per-capability mode lists**: today only
+  one entry exists. Both shapes are equivalent for one entry; the
+  current shape grows naturally if design.md later restricts more
+  capabilities (just add to the per-mode set).
+- **`capability_denied` audit kind**: matches the existing
+  `manifest_rejected` / `egress_blocked` naming pattern. Not listed
+  in design.md §7.4's example kind list, but §7.4 explicitly says
+  the kind column is open ("plugin_loaded | hook_invoked | … |
+  manifest_rejected"); a new denial reason fits the same
+  audit-trail discipline.
+- **Existing test `test_load_plugins_registers_manifest_with_egress_guard`
+  uses Mode R**: I deliberately did not change it — that fixture's
+  manifest declares `egress_http` and `allowed_modes=["L","A","R"]`,
+  which under Mode L would now be rejected by the new policy. Mode R
+  is still permissive, so the test continues to pin the
+  egress-guard wiring as before.
+
 ### Checkpoint 4
 
 - **`IntEnum` over `Enum + total_ordering`**: the ladder is naturally
@@ -207,6 +267,21 @@ isolation in PluginHost so a plugin crash never propagates into the core, and
 
 ## Verification
 
+### After checkpoint 5
+
+```
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker/tests/ -q
+........................................................................ [ 82%]
+...............                                                          [100%]
+87 passed in 0.65s
+
+$ .venv/bin/ruff check \
+    packages/llm_tracker/src/llm_tracker/plugin_host \
+    packages/llm_tracker/tests/test_plugin_host.py \
+    packages/llm_tracker/tests/test_policy.py
+All checks passed!
+```
+
 ### After checkpoint 4
 
 ```
@@ -279,8 +354,11 @@ Remaining Phase 1b items (per roadmap.md):
             the host hands `exchange_id` + raw bytes around).
       - [ ] Wire `effective_ceiling()` + `degrade()` into hook dispatch
             so each plugin sees data only at its allowed level.
-- [ ] Mode-by-mode capability policy enforcement at hook dispatch (currently
-      only enforced inside the egress path).
+- [x] Mode-by-mode capability policy enforcement (commit eb7bd67 —
+      enforced at *load time*; design.md §8 only mode-gates
+      `egress_http` today, so a hook-dispatch enforcement layer
+      would be a no-op for every other capability and is deferred
+      until the policy table grows).
 - [ ] Manifest signature verification (now unblocked — see ADR-0008).
 - [ ] Proxy boot wiring: `cli/main.py` (or wherever the host is constructed
       in the eventual Phase 1c boot path) must pass the EgressGuard into
@@ -304,45 +382,53 @@ Remaining Phase 1b items (per roadmap.md):
 
 ## Handoff
 
-Checkpoint 4 complete (commit 8ca5973). Content-level routing has its
-primitive: `ContentLevel` IntEnum, per-mode default + opt-in ceilings
-from design.md §7.1 / §8, `effective_ceiling()` and `degrade()`. No
-caller consumes it yet — the integration step needs two prerequisites
-that cross CLAUDE.md §10 / §4 (architectural decisions for Cowork):
+Checkpoint 5 complete (commit eb7bd67). Phase 1b is now four-of-five
+checklist lines closed (egress allowlist; capability-use audit;
+host↔guard wiring; mode×capability policy at load time) plus the
+content-level primitive (partial — ladder + ceilings, no integration
+yet). Only manifest signature verification is open as a pure
+implementation task; content-level integration is still blocked
+on Cowork-side ADRs.
 
-### Open architectural questions (Cowork → ADR)
+### Open architectural questions (still Cowork → ADR)
+
+Carrying forward from checkpoint 4:
 
 1. **Manifest field for `min_content_level`** (design.md §7.1 says
    plugins declare a minimum required level). Adding a key to
    `plugin.toml` changes a public interface — needs an ADR.
-2. **Typed request/response payload object** for the hook dispatcher
-   to degrade. Today `PluginHost` hands `exchange_id` + raw bytes;
-   there is no structured object to apply `degrade()` to.
+2. **Typed request/response payload object** for the hook
+   dispatcher to apply `content_levels.degrade()` to. Today
+   `PluginHost` hands `exchange_id` + raw bytes; there is no
+   structured object to degrade.
 
 Until those are answered, content-level integration into hook
 dispatch cannot land.
 
 ### Next single step (Claude Code, no ADR needed)
 
-**Mode-by-mode capability policy enforcement at hook dispatch.** The
-roadmap line is open; the policy is defined in design.md §6.3.3
-(capability vocabulary) and §8 (mode-by-mode permissions). EgressGuard
-already enforces this for `egress_http`; this checkpoint extends the
-same pattern to the remaining capabilities so a Mode-L plugin cannot
-exercise, say, `modify_request` if the operator has not approved it
-in the current mode.
+**Manifest signature verification.** ADR-0008 sealed the trust
+model (per-developer ed25519 keys, bundled public-key registry,
+verify at install AND boot, hard reject on failure). Pure
+implementation; no further architecture decisions required.
 
 Concrete shape:
 
-1. Add a `(mode, capability) -> allowed` lookup (likely
-   `llm_tracker.plugin_host.policy`) sourced from design.md §8.
-2. At plugin load time (right after manifest validation), reject any
-   plugin whose declared capabilities are denied under the active
-   mode — write `capability_denied` and skip the plugin.
-3. Tests: per-(mode, capability) parametrized matrix + a load-time
-   end-to-end test that a manifest with a denied capability is
-   rejected and audited, while a permitted manifest loads.
+1. Re-read ADR-0008; pin the on-disk shape of the bundled key
+   registry it specifies before writing code.
+2. Add a verifier module (likely
+   `llm_tracker.plugin_host.signing` — the SDK already owns the
+   manifest schema, but verification is host-side; check ADR-0008
+   for the layering call). It should read the bundled registry,
+   verify a manifest's signature, and return a typed result
+   (verified / wrong-key / no-signature / bad-signature).
+3. Wire into `PluginHost.load_plugins()` between
+   `_find_manifest()` and the `denied_capabilities()` check: a
+   manifest that fails verification gets a `signature_rejected`
+   audit row and is skipped. (Mirror the existing
+   `manifest_rejected` / `capability_denied` patterns.)
+4. Tests: a fixture key + a fixture signed manifest covering
+   verified, tampered, and unsigned cases; plus a load-time
+   end-to-end test in `test_plugin_host.py`.
 
-Defer manifest signature verification (independent, also still on
-the Phase 1b checklist; unblocked by ADR-0008) and the proxy-boot
-wiring (Phase 1c) until after this.
+Defer the proxy-boot wiring (Phase 1c) until after this.

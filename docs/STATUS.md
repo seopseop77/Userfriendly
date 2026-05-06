@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-06 (Phase 1b checkpoint 4 complete)
+**Last updated**: 2026-05-06 (Phase 1b checkpoint 5 complete)
 **Updated by**: Claude Code
 
 ## Current phase
 
 - **Phase**: Phase 1b — security boundary hardening (in progress)
-- **Active task**: Checkpoint 4 done; mode×capability policy enforcement next.
+- **Active task**: Checkpoint 5 done; manifest signature verification next.
 
 ## Active worklog
 
@@ -21,53 +21,61 @@
 ## Recent commits
 
 ```
+eb7bd67   security: mode capability policy at load time
+186ad8c   docs: Phase 1b checkpoint 4 — content-level primitive landed
 8ca5973   security: content-level ladder + per-mode ceiling
 249f8bd   docs: Phase 1b checkpoint 3 — host↔guard wiring landed
 f1a31cf   security: wire PluginHost manifests to EgressGuard
-aa223f2   docs: Phase 1b checkpoint 2 — EgressGuard allowlist landed
-5bafac1   security: EgressGuard allowlist + mode policy
 ```
 
 ## Where we paused
 
-Phase 1b checkpoint 4 complete (2026-05-06, commit 8ca5973).
-Content-level routing has its primitive landed:
+Phase 1b checkpoint 5 complete (2026-05-06, commit eb7bd67).
+Mode-by-mode capability policy now enforced at plugin load time:
 
-- New module `llm_tracker.content_levels` exposes `ContentLevel`
-  (IntEnum L0<L1<L2<L3), per-mode default + opt-in ceiling tables
-  from design.md §7.1 / §8, `effective_ceiling(mode, *, user_opted_in)`,
-  and `degrade(level, ceiling)` (`min`, never elevates).
-- 14 new tests cover ladder ordering, per-mode default ceiling, the
-  Mode-R-only opt-in elevation, unknown-mode rejection, and the
-  never-elevate degrade contract.
-- Pure primitive — no manifest changes, no hook-dispatch wiring.
-  Two follow-up sub-pieces are blocked on architecture: a
-  `min_content_level` manifest field (CLAUDE.md §10 → needs ADR)
-  and a typed request/response payload object the dispatcher can
-  degrade. Both flagged in worklog Handoff.
+- New `llm_tracker.plugin_host.policy`: `MODE_DENIED_CAPABILITIES`
+  table sourced from design.md §8. Today only Mode L denies
+  `egress_http`; Modes A and R deny none (their runtime
+  egress restrictions stay in EgressGuard).
+- `denied_capabilities(mode, declared)` returns the offending
+  subset; unknown mode raises `ValueError` (closed L/A/R, same
+  convention as `content_levels.effective_ceiling`).
+- `PluginHost.load_plugins()` now consults the policy after
+  manifest validation, before `egress_guard.register()`. On
+  denial it writes `capability_denied` (`detail_json` = `{mode,
+  denied}`) and skips the plugin.
+- 9 new tests: 8 in new `test_policy.py` (table shape, full
+  parametrized (mode, capability) matrix, multi-declared subset,
+  empty-declared, unknown-mode); 2 in `test_plugin_host.py`
+  (Mode L rejects egress_http manifest; Mode R accepts the same).
 
-48/48 tests pass; new module + tests lint clean. Note: STATUS.md's
-prior pointer to "design.md §7.5" was a typo — the section is
-actually §7.1; corrected here.
+87/87 tests pass; changed + new files lint clean.
 
 ## Next single step
 
-Mode-by-mode capability policy enforcement at hook dispatch — the
-remaining roadmap-1b line that is fully unblocked (no ADR needed,
-policy already in design.md §6.3.3 / §8). Concrete shape:
+Manifest signature verification — the last open Phase 1b line as
+a pure implementation task. ADR-0008 sealed the trust model
+(per-developer ed25519 keys, bundled public-key registry, verify
+at install AND boot, hard reject on failure).
 
-1. Add a `(mode, capability) -> allowed` lookup (likely
-   `llm_tracker.plugin_host.policy`) sourced from design.md §8.
-2. At plugin load time (right after manifest validation), reject any
-   plugin whose declared capabilities are denied under the active
-   mode — write `capability_denied` and skip.
-3. Tests: per-(mode, capability) parametrized matrix + a load-time
-   test that a denied-capability manifest is rejected and a
-   permitted manifest loads.
+Concrete shape:
 
-Defer manifest signature verification (independent, on Phase 1b
-checklist; unblocked by ADR-0008) and proxy-boot wiring (Phase 1c)
-until after this.
+1. Re-read ADR-0008 to pin the on-disk shape of the bundled key
+   registry before writing code.
+2. Add a verifier module (likely `llm_tracker.plugin_host.signing`
+   — confirm SDK vs host layering against ADR-0008): reads the
+   registry, verifies a manifest signature, returns a typed
+   result (verified / wrong-key / no-signature / bad-signature).
+3. Wire into `load_plugins()` between `_find_manifest()` and
+   `denied_capabilities()`: failure → `signature_rejected` audit
+   row, skip. Mirrors existing `manifest_rejected` /
+   `capability_denied` patterns.
+4. Tests: fixture key + signed manifest covering verified,
+   tampered, and unsigned cases; one load-time end-to-end test.
+
+Content-level hook-dispatch integration stays blocked on Cowork
+ADRs (manifest `min_content_level` field; typed payload object).
+Proxy-boot wiring deferred to Phase 1c.
 
 ## Blocking / decisions needed
 

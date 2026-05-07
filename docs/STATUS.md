@@ -6,7 +6,7 @@
 
 ---
 
-**Last updated**: 2026-05-07 (`claude-manage` wrapper — code complete, manual e2e pending)
+**Last updated**: 2026-05-07 (`claude-manage` wrapper + async cleanup — code complete, manual e2e pending)
 **Updated by**: Claude Code
 
 ## Current phase
@@ -21,11 +21,11 @@
 ## Recent commits
 
 ```
+9aa8321   cli: async cleanup so claude-manage exits instantly
 d2e33d5   cli: claude-manage wrapper auto-starts proxy
 faa718d   chore: add .omc to .gitignore
 55e55cd   docs: worklog + STATUS for test-only plugin verification
 2c28f68   plugins: TEST-ONLY token_counter + keyword_block
-102e69b   docs: Phase 1b checkpoints 17+18 — Gate 2 closed; phase complete
 ```
 
 ## Where we paused
@@ -43,12 +43,17 @@ faa718d   chore: add .omc to .gitignore
   SIGINT/SIGQUIT (Ctrl-C reaches `claude` directly); SIGTERM/SIGHUP
   to the wrapper are forwarded to `claude`.
 - On `claude` exit, attempts a non-blocking exclusive lock upgrade. If
-  successful (no other `claude-manage` alive), `_terminate_proxy`
-  sends SIGTERM, polls, and escalates to SIGKILL after a grace
-  period. Pid file absent ⇒ proxy was started outside the wrapper
-  (e.g. manual `llm-tracker start`) ⇒ left alone.
+  successful (no other `claude-manage` alive), forks a detached
+  cleanup child (`_spawn_async_cleanup`) that runs SIGTERM → poll →
+  SIGKILL on the proxy. **The wrapper itself returns immediately** so
+  the user's shell prompt isn't gated on uvicorn shutdown. The lock
+  fd is inherited by the cleanup child; concurrent `claude-manage`
+  invocations still block on `LOCK_SH` until the child exits,
+  preserving the "no traffic to a shutting-down proxy" invariant.
+  Pid file absent ⇒ proxy was started outside the wrapper (e.g.
+  manual `llm-tracker start`) ⇒ left alone.
 
-22 new unit tests; full suite **172 passed**, ruff clean on the new
+23 new unit tests; full suite **173 passed**, ruff clean on the new
 files. `uv sync` registers both `claude-manage` and `llm-tracker`
 console scripts. `python -m llm_tracker ...` works via a new
 `__main__.py` (used by the daemon spawn path).
@@ -122,7 +127,7 @@ when the proper replacement lands.
 - [x] Phase 1a — plugin SDK (CLOSED 2026-05-05)
 - [x] Phase 1b — security boundary hardening (CLOSED 2026-05-06)
 - [x] Pre-Phase-1c verification — TEST-ONLY plugins (token_counter, keyword_block) (2026-05-06, commit 2c28f68)
-- [x] `claude-manage` wrapper — auto-spawn proxy + lifecycle-coupled cleanup (2026-05-07, commit d2e33d5)
+- [x] `claude-manage` wrapper — auto-spawn proxy + lifecycle-coupled cleanup (2026-05-07, commits d2e33d5, 9aa8321)
 - [ ] Phase 1c — `scope_guard` plugin
 - [ ] Phase 2+ — Mode R sink, third-party plugins
 

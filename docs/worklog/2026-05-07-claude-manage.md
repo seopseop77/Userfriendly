@@ -35,6 +35,8 @@ does not require an ADR per CLAUDE.md §10 — the existing
 
 ## What was done
 
+### Checkpoint 1 — wrapper landed (commit d2e33d5)
+
 - Created `packages/llm_tracker/src/llm_tracker/cli/manage.py` —
   the `claude-manage` entry point. Helpers: `_proxy_alive` (TCP probe),
   `_wait_for_proxy` (polling), `_spawn_proxy_daemon` (Popen with
@@ -64,8 +66,53 @@ does not require an ADR per CLAUDE.md §10 — the existing
   last-user terminates / non-last-user does not, env var overrides).
   (commit d2e33d5)
 
+### Checkpoint 2 — async cleanup so `/exit` is instant (commit 9aa8321)
+
+User pointed out that `/exit` under `claude-manage` felt slower than
+plain `claude`. Diagnosis: the wrapper's finally block was blocking
+the user's shell prompt on uvicorn's graceful shutdown
+(~100–400 ms typical, plus 50 ms polling granularity, capped at 5 s
+before SIGKILL). Fixed by moving the kill loop off the user-facing
+critical path:
+
+- Added `_spawn_async_cleanup(var_dir)` to `manage.py`. `os.fork()`
+  forks a detached cleanup child that calls `os.setsid()`, resets
+  signal handlers to SIG_DFL, redirects stdio to `/dev/null`, and
+  runs `_terminate_proxy(...)` (unchanged: SIGTERM → 50 ms poll →
+  SIGKILL after 5 s). The parent returns immediately.
+- Modified `main()` finally block. When `_try_become_last_user`
+  returns True we now call `_spawn_async_cleanup` and deliberately
+  *do not* call `_release_lock`. flock semantics keep the lock held
+  on the open file description as long as any duplicate fd
+  (parent's or child's) refers to it; we want the lock to outlive
+  the parent so concurrent `claude-manage` invocations still block
+  on `LOCK_SH` until the cleanup child finishes (preserving the
+  "no traffic to a shutting-down proxy" invariant). The lock is
+  released when the child's `os._exit(0)` closes its fd.
+- Updated `tests/test_cli_manage.py`. Renamed the two main-flow
+  tests to expect `_spawn_async_cleanup` instead of
+  `_terminate_proxy` directly. Added
+  `test_spawn_async_cleanup_returns_immediately_and_kills_proxy_in_child`
+  — a real-fork integration test that spawns a stub long-sleep
+  process, calls `_spawn_async_cleanup`, asserts the parent
+  returns in under 500 ms, then waits up to 10 s for the detached
+  child to actually kill the stub and unlink the pid file.
+- Refreshed the module docstring's step 5 to describe the fork-based
+  cleanup, the lock-fd inheritance trick, and the manual-proxy
+  carve-out.
+
 ## Decisions
 
+- **Async cleanup via `os.fork()` rather than `subprocess`.** A
+  forked child inherits the parent's open file descriptions verbatim,
+  including the flock lock — that's the whole point. A subprocess
+  would need fd-passing gymnastics to inherit the lock. Caveat: fork
+  in a multi-threaded process is deprecated in Python 3.12; pytest's
+  asyncio plugin makes the test environment multi-threaded so the
+  `_spawn_async_cleanup` test triggers a `DeprecationWarning`. The
+  real `claude-manage` runtime is single-threaded at the fork point
+  (just Popen + wait + fork), so the warning is a test-environment
+  artefact and benign.
 - **Refcount via `fcntl.flock` shared lock** rather than a marker
   directory or per-process tag files. Reason: kernel-managed locks
   release automatically on process death (including SIGKILL), so the
@@ -96,21 +143,24 @@ does not require an ADR per CLAUDE.md §10 — the existing
 
 ## Verification
 
-Full suite (existing 150 + new 22) green:
+Full suite (existing 150 + new 23) green after checkpoint 2:
 
 ```
 $ .venv/bin/python3.12 -m pytest -q
 ........................................................................ [ 41%]
 ........................................................................ [ 83%]
-............................                                             [100%]
-172 passed in 1.10s
+.............................                                            [100%]
+173 passed, 4 warnings in 1.18s
 ```
 
-Targeted run for the new tests:
+The 4 warnings are all the same `DeprecationWarning` about
+multi-threaded fork (pytest test-env artefact, see Decisions).
+
+Targeted run for the wrapper's tests after checkpoint 2:
 
 ```
 $ .venv/bin/python3.12 -m pytest packages/llm_tracker/tests/test_cli_manage.py -v
-... 22 passed in 0.59s
+... 23 passed in 0.67s
 ```
 
 Lint clean on every file added/modified by this checkpoint:

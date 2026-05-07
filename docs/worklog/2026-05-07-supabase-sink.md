@@ -312,7 +312,7 @@ remote.
   drops). `httpx` is *not* a plugin dependency — egress is solely
   through `self.egress.fetch(...)`, the SDK Protocol.
 
-### Checkpoint 7 — `on_shutdown` timeout extension (2026-05-08, commit pending)
+### Checkpoint 7 — `on_shutdown` timeout extension (2026-05-08, commit 4294d10)
 
 Critic-flagged in the original plan: `HOOK_TIMEOUT = 5.0 s` covers
 *every* hook including `on_shutdown`, but a sink plugin's drain
@@ -340,6 +340,51 @@ records and audit-log a misleading `plugin_fault timeout`.
     with the above. Past the longer budget the dispatcher still
     cuts the plugin off so a misbehaving plugin can't hold the
     proxy hostage. `plugin_fault` audit row fires.
+
+### Checkpoint 8 — integration test + manifest signing (2026-05-08, commit pending)
+
+- Signed `packages/llm_tracker_plugin_supabase_sink/src/llm_tracker_plugin_supabase_sink/plugin.toml.sig`
+  via the existing CLI:
+  ```
+  $ .venv/bin/llm-tracker sign-plugin packages/llm_tracker_plugin_supabase_sink --signer minseop
+  Wrote .../plugin.toml.sig
+  ```
+  Verifies against the bundled `trust/keys.toml` (which already
+  contains the `minseop` public key). The signed manifest is what
+  the plugin host enforces at load time per ADR-0008.
+- Created
+  `packages/llm_tracker_plugin_supabase_sink/tests/test_e2e.py`
+  (3 integration tests). Wires `PluginHost` + `EgressGuard` +
+  `HostEgressClient` + the live `SupabaseSinkPlugin` against a
+  stubbed Anthropic upstream (SSE chunks fed straight into the
+  host's `on_response_chunk` dispatcher) and a stubbed Supabase
+  upstream (`httpx.MockTransport`). Pins three end-to-end shapes:
+  - **Happy path** (Mode R + opted_in): a single POST hits the
+    PostgREST URL with the expected `apikey` / `Authorization` /
+    `Content-Type: application/json` / `Prefer:
+    resolution=ignore-duplicates` headers, body is a JSON array of
+    one row containing the right `exchange_id`, `mode`, `endpoint`,
+    `source`, `model_*`, usage, `request_text`, `response_text`,
+    `raw_request`, `raw_response`. Audit log shows
+    `egress_attempt outcome=ok plugin=supabase_sink destination=…`.
+  - **Allowlist mismatch**: env points at the legitimate URL but the
+    plugin's manifest declares a different `egress_destinations`
+    entry; EgressGuard denies, no POST hits the http transport,
+    audit log shows ≥1 `egress_blocked` row with
+    `reason=destination_not_in_allowlist`. (≥1 because the flusher's
+    retry loop calls `submit` up to `max_attempts` and each call
+    audits a denial.)
+  - **Mode L safety**: in Mode L the `egress_http` capability is
+    denied at *load time*, so the plugin never appears in
+    `loaded_plugins()` and a `capability_denied` audit row fires.
+    `egress_attempt` count stays at 0 even though we drive a fake
+    exchange — the plugin literally cannot reach the network.
+- The integration test uses the same monkey-patch pattern as
+  `test_load_plugins_registers_manifest_with_egress_guard`
+  (`entry_points` stub + `_find_manifest` override + verifier
+  bypass) to drive *only* supabase_sink without pulling in the
+  workspace's other entry-points (hello_world, token_counter,
+  keyword_block).
 
 ## Decisions
 
@@ -484,6 +529,30 @@ expected: the second test deliberately exercises the past-budget
 path with `SHUTDOWN_HOOK_TIMEOUT=0.1` and a `sleep=0.5`, so the
 dispatcher waits the full 0.5 s in real time to verify the cutoff.
 Ruff: 1 file reformatted, all checks passed.
+
+CP8 (integration test + manifest signing):
+
+```
+$ .venv/bin/python3.12 -m pytest -q
+............................................................   [ 23%]
+............................................................   [ 46%]
+............................................................   [ 69%]
+............................................................   [ 92%]
+...................                                              [100%]
+259 passed, 4 warnings in 7.10s
+```
+
+Test count went 256 → 259 (+3 — all in `test_e2e.py`).
+Targeted run on the supabase_sink package: `55 passed in 0.66s`
+(parser 26 + client 12 + plugin 14 + e2e 3). Ruff clean on the
+new file.
+
+Manifest signature verification verified by inspection: the
+bundled `packages/llm_tracker/src/llm_tracker/trust/keys.toml`
+contains the `minseop` public key, the new
+`plugin.toml.sig` is signed by that key, and the verifier path
+through `verify_manifest_signature` is already covered by the
+core `test_signing.py` suite.
 
 Ruff format + check on every changed file (CP2):
 

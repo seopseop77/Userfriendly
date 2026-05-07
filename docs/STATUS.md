@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-08 (CP7 — `SHUTDOWN_HOOK_TIMEOUT` split for sink-drain headroom)
+**Last updated**: 2026-05-08 (CP8 — supabase_sink integration test + signed manifest)
 **Updated by**: Claude Code
 
 ## Current phase
 
 - **Phase**: **Phase-2 partial — supabase_sink reference plugin (early)**. Phase 1c (`scope_guard`) explicitly deferred per user. The egress client SDK is a Phase-1b debt repayment forced by this work; the consent env knob is the smallest surface that lifts Mode R's ceiling without bundling the full Phase-2 consent UX (ADR-0016).
-- **Active task**: 9-checkpoint plan for `llm_tracker_plugin_supabase_sink`. CP1–CP7 done. CP8 (integration test + manifest signing) is next.
+- **Active task**: 9-checkpoint plan for `llm_tracker_plugin_supabase_sink`. CP1–CP8 done (signed plugin + 55 unit/integration tests against fake Supabase). **CP9 (manual e2e against the real Supabase project) is the last step — needs the operator to provide the service_role key.**
 
 ## Active worklog
 
@@ -21,11 +21,11 @@
 ## Recent commits
 
 ```
-<CP7>     plugin-host: SHUTDOWN_HOOK_TIMEOUT for sink drain
+<CP8>     supabase-sink: e2e integration test + signed manifest
+4294d10   plugin-host: SHUTDOWN_HOOK_TIMEOUT for sink drain
 6ab979c   supabase-sink: client + plugin lifecycle + flusher
 9088825   supabase-sink: package skeleton + parser + tests
 a3b5dff   supabase-sink: schema migrated + RLS enabled
-dff7e3e   config: LLMTRACK_USER_OPTED_IN env + PluginHost field
 ```
 
 ## Where we paused
@@ -88,32 +88,41 @@ side-quests):
 
 ## Next single step
 
-**CP8: integration test + manifest signing.** Two artefacts:
+**CP9: manual e2e against the real Supabase project.** Needs the
+operator's `service_role` key — Claude Code can't provide that
+itself. Steps:
 
-- `tests/integration/test_supabase_sink_e2e.py` (new) — boot a
-  `PluginHost` in Mode R + `user_opted_in=True` with a stubbed
-  `httpx.AsyncClient` (mocks Supabase) and the supabase_sink
-  manifest registered. Drive an exchange end-to-end through the
-  per-exchange dispatchers (chunk → complete → flusher → mocked
-  PostgREST) and assert: (a) a single POST hit the configured URL
-  with the expected JSON-array body and PostgREST headers; (b) the
-  `egress_attempt outcome=ok` row is in `audit_log`. Negative path:
-  pull the destination URL out of the manifest's
-  `egress_destinations` (so `EgressGuard.check` denies) and confirm
-  no POST fires + an `egress_blocked` row appears with the right
-  `reason`. Mode L safety: the same plugin loaded in Mode L is
-  rejected at `load_plugins` time (no entry in
-  `loaded_plugins()`).
-- Sign the manifest via the project's `minseop` key:
-  `python -m llm_tracker.cli.signing sign packages/llm_tracker_plugin_supabase_sink/src/llm_tracker_plugin_supabase_sink/plugin.toml`
-  (or whatever the existing signing CLI invocation is — mirror
-  what `token_counter` / `keyword_block` did in
-  `docs/worklog/2026-05-06-test-plugins.md`). Resulting
-  `plugin.toml.sig` is checked in.
+1. Operator exports env (in a fresh shell where the proxy will run):
+   ```
+   export LLMTRACK_MODE=R
+   export LLMTRACK_USER_OPTED_IN=1
+   export LLMTRACK_PLUGIN_SUPABASE_SINK_URL=\
+       https://qdcixbwwlsnkekabavmj.supabase.co/rest/v1/exchanges
+   export LLMTRACK_PLUGIN_SUPABASE_SINK_KEY=<service_role from Supabase dashboard>
+   ```
+2. Run a small claude command through the proxy:
+   ```
+   .venv/bin/claude-manage --print "say hello in five words"
+   ```
+3. Verify (via the Supabase MCP):
+   - `mcp__supabase__execute_sql "select count(*), max(ts_inserted) from public.exchanges"`
+     shows ≥1 row with a recent timestamp.
+   - `mcp__supabase__execute_sql "select exchange_id, mode, request_text, response_text, model_served, output_tokens from public.exchanges order by ts_inserted desc limit 1"`
+     shows the round-trip with sane values.
+   - `.venv/bin/llm-tracker audit | grep egress_attempt`
+     shows `outcome=ok plugin=supabase_sink`.
+4. Negative path: edit `egress_destinations` in the *signed* manifest
+   to a wrong URL, re-sign with `llm-tracker sign-plugin … --signer
+   minseop`, restart the proxy, send another claude request, confirm
+   `llm-tracker audit | grep egress_blocked` shows
+   `reason=destination_not_in_allowlist`.
+5. After verification, restore the manifest, re-sign, and update
+   STATUS.md to "Phase 2 partial — supabase_sink **shipped**" and
+   close out this worklog.
 
-Then CP9: manual e2e against the real Supabase project (apply env
-vars, run a small `claude-manage` request, verify the row arrives
-via `mcp__supabase__execute_sql`, verify the audit log).
+Once CP9 is done the supabase_sink workstream is closed. Phase 1c
+(`scope_guard`) and the rest of Phase 2 (full per-task consent UX,
+`llm_tracker_server`, contributor plugins) remain on the deck.
 
 ## Blocking / decisions needed
 

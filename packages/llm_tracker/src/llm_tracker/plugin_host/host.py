@@ -23,6 +23,13 @@ from .signing import VerifyResult, verify_manifest_signature
 
 HOOK_TIMEOUT = 5.0  # seconds; a plugin exceeding this is treated as a fault
 
+# `on_shutdown` gets a longer dedicated timeout because background-task
+# shapes (queues, flushers, retry workers) legitimately need longer than
+# a per-exchange hook to drain. A sink with a non-empty queue + retry
+# backoff can easily take >5 s to finish; clipping it would silently
+# drop records and audit-log a misleading `plugin_fault timeout`.
+SHUTDOWN_HOOK_TIMEOUT = 30.0
+
 
 class PluginHost:
     def __init__(
@@ -151,14 +158,26 @@ class PluginHost:
 
     # -- dispatch helper -----------------------------------------------------
 
-    async def _call(self, plugin: BasePlugin, hook: str, coro: Any, default: Any) -> Any:
+    async def _call(
+        self,
+        plugin: BasePlugin,
+        hook: str,
+        coro: Any,
+        default: Any,
+        *,
+        timeout: float = HOOK_TIMEOUT,
+    ) -> Any:
         """Run one plugin hook with timeout + exception isolation.
 
         A fault (crash or timeout) is audit-logged and the safe default is
         returned so the core request pipeline is never interrupted.
+
+        `timeout` defaults to `HOOK_TIMEOUT` for per-exchange hooks; the
+        `on_shutdown` dispatcher passes `SHUTDOWN_HOOK_TIMEOUT` so a
+        plugin's drain (queue flush, retry backoff) can complete.
         """
         try:
-            return await asyncio.wait_for(coro, timeout=HOOK_TIMEOUT)
+            return await asyncio.wait_for(coro, timeout=timeout)
         except TimeoutError:
             await self._audit_fault(plugin.name, hook, "timeout")
         except Exception as exc:
@@ -327,7 +346,16 @@ class PluginHost:
 
     async def on_shutdown(self) -> None:
         for plugin in self._plugins:
-            await self._call(plugin, "on_shutdown", plugin.on_shutdown(), None)
+            # Sink plugins drain queues here; `SHUTDOWN_HOOK_TIMEOUT` (30 s)
+            # gives them more headroom than the per-exchange `HOOK_TIMEOUT`
+            # (5 s).
+            await self._call(
+                plugin,
+                "on_shutdown",
+                plugin.on_shutdown(),
+                None,
+                timeout=SHUTDOWN_HOOK_TIMEOUT,
+            )
         async with self._session_factory() as session:
             await write_audit(session, kind="proxy_stopped", outcome="ok")
 

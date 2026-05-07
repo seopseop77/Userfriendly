@@ -242,7 +242,7 @@ remote.
   `[tool.pytest.ini_options].testpaths`.
 - Refreshed `uv.lock` for the new workspace member.
 
-### Checkpoint 6 — `client.py` + plugin lifecycle + queue/flusher + tests (2026-05-08, commit pending)
+### Checkpoint 6 — `client.py` + plugin lifecycle + queue/flusher + tests (2026-05-08, commit 6ab979c)
 
 - Created
   `packages/llm_tracker_plugin_supabase_sink/src/llm_tracker_plugin_supabase_sink/client.py`:
@@ -311,6 +311,35 @@ remote.
   — added `structlog` to `dependencies` (warnings on plugin-side
   drops). `httpx` is *not* a plugin dependency — egress is solely
   through `self.egress.fetch(...)`, the SDK Protocol.
+
+### Checkpoint 7 — `on_shutdown` timeout extension (2026-05-08, commit pending)
+
+Critic-flagged in the original plan: `HOOK_TIMEOUT = 5.0 s` covers
+*every* hook including `on_shutdown`, but a sink plugin's drain
+(queue depth N + per-record exp-backoff retry) can legitimately
+exceed that. Without a fix, supabase_sink would silently drop
+records and audit-log a misleading `plugin_fault timeout`.
+
+- Modified `packages/llm_tracker/src/llm_tracker/plugin_host/host.py`:
+  - New constant `SHUTDOWN_HOOK_TIMEOUT = 30.0` alongside the
+    existing `HOOK_TIMEOUT = 5.0`. Comment cites the sink-drain use
+    case.
+  - `_call` gains a keyword-only `timeout: float = HOOK_TIMEOUT`
+    parameter — backward-compatible default for the five
+    per-exchange dispatchers.
+  - `on_shutdown` dispatcher passes `timeout=SHUTDOWN_HOOK_TIMEOUT`
+    explicitly per plugin.
+- Modified `packages/llm_tracker/tests/test_plugin_host.py` (+2
+  tests):
+  - `test_on_shutdown_uses_longer_timeout_than_per_exchange_hooks` —
+    monkeypatches `HOOK_TIMEOUT=0.05` + `SHUTDOWN_HOOK_TIMEOUT=1.0`,
+    runs a `_SlowShutdownPlugin(sleep=0.2)` (between the two
+    budgets), pins that the plugin completes and *no* fault row is
+    written.
+  - `test_on_shutdown_still_faults_past_shutdown_timeout` — pairs
+    with the above. Past the longer budget the dispatcher still
+    cuts the plugin off so a misbehaving plugin can't hold the
+    proxy hostage. `plugin_fault` audit row fires.
 
 ## Decisions
 
@@ -436,6 +465,25 @@ check flagged `UP041` (`asyncio.TimeoutError` aliases builtin
 `TimeoutError` in 3.11+), `I001` import-sort in `test_plugin.py`,
 and `F401` unused `typing.Any` import — all autofixed by
 `ruff check --fix`. Final check: clean.
+
+CP7 (`on_shutdown` timeout extension):
+
+```
+$ .venv/bin/python3.12 -m pytest -q
+............................................................   [ 23%]
+............................................................   [ 46%]
+............................................................   [ 70%]
+............................................................   [ 93%]
+................                                                 [100%]
+256 passed, 4 warnings in 7.00s
+```
+
+Test count went 254 → 256 (+2 — both pinning the new
+`SHUTDOWN_HOOK_TIMEOUT` semantics). The 7-second wall time is
+expected: the second test deliberately exercises the past-budget
+path with `SHUTDOWN_HOOK_TIMEOUT=0.1` and a `sleep=0.5`, so the
+dispatcher waits the full 0.5 s in real time to verify the cutoff.
+Ruff: 1 file reformatted, all checks passed.
 
 Ruff format + check on every changed file (CP2):
 

@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-08 (CP6 — supabase_sink client + plugin lifecycle + 26 more tests)
+**Last updated**: 2026-05-08 (CP7 — `SHUTDOWN_HOOK_TIMEOUT` split for sink-drain headroom)
 **Updated by**: Claude Code
 
 ## Current phase
 
 - **Phase**: **Phase-2 partial — supabase_sink reference plugin (early)**. Phase 1c (`scope_guard`) explicitly deferred per user. The egress client SDK is a Phase-1b debt repayment forced by this work; the consent env knob is the smallest surface that lifts Mode R's ceiling without bundling the full Phase-2 consent UX (ADR-0016).
-- **Active task**: 9-checkpoint plan for `llm_tracker_plugin_supabase_sink`. CP1–CP6 done. CP7 (`on_shutdown` timeout extension) is next.
+- **Active task**: 9-checkpoint plan for `llm_tracker_plugin_supabase_sink`. CP1–CP7 done. CP8 (integration test + manifest signing) is next.
 
 ## Active worklog
 
@@ -21,11 +21,11 @@
 ## Recent commits
 
 ```
-<CP6>     supabase-sink: client + plugin lifecycle + flusher
+<CP7>     plugin-host: SHUTDOWN_HOOK_TIMEOUT for sink drain
+6ab979c   supabase-sink: client + plugin lifecycle + flusher
 9088825   supabase-sink: package skeleton + parser + tests
 a3b5dff   supabase-sink: schema migrated + RLS enabled
 dff7e3e   config: LLMTRACK_USER_OPTED_IN env + PluginHost field
-f75a841   egress: EgressClient SDK + per-plugin wiring
 ```
 
 ## Where we paused
@@ -88,24 +88,32 @@ side-quests):
 
 ## Next single step
 
-**CP7: `on_shutdown` timeout extension.** `PluginHost._call` enforces
-`HOOK_TIMEOUT = 5.0 s` for *every* hook including `on_shutdown`,
-which is too tight for a sink that may have a queue depth of N
-records when the proxy stops. Without this change a long-tail
-shutdown silently drops records and audit-logs a
-`plugin_fault timeout` row.
+**CP8: integration test + manifest signing.** Two artefacts:
 
-Plan: split the timeout in `host.py` into two constants —
-`HOOK_TIMEOUT` (per-exchange, unchanged at 5 s) and
-`SHUTDOWN_HOOK_TIMEOUT` (longer, e.g. 30 s) — and have the
-`on_shutdown` dispatcher pass the latter to `_call`. Add a unit test
-that constructs a slow `on_shutdown` plugin and pins the new
-behaviour: under the per-exchange timeout it would have faulted,
-under the shutdown timeout it completes.
+- `tests/integration/test_supabase_sink_e2e.py` (new) — boot a
+  `PluginHost` in Mode R + `user_opted_in=True` with a stubbed
+  `httpx.AsyncClient` (mocks Supabase) and the supabase_sink
+  manifest registered. Drive an exchange end-to-end through the
+  per-exchange dispatchers (chunk → complete → flusher → mocked
+  PostgREST) and assert: (a) a single POST hit the configured URL
+  with the expected JSON-array body and PostgREST headers; (b) the
+  `egress_attempt outcome=ok` row is in `audit_log`. Negative path:
+  pull the destination URL out of the manifest's
+  `egress_destinations` (so `EgressGuard.check` denies) and confirm
+  no POST fires + an `egress_blocked` row appears with the right
+  `reason`. Mode L safety: the same plugin loaded in Mode L is
+  rejected at `load_plugins` time (no entry in
+  `loaded_plugins()`).
+- Sign the manifest via the project's `minseop` key:
+  `python -m llm_tracker.cli.signing sign packages/llm_tracker_plugin_supabase_sink/src/llm_tracker_plugin_supabase_sink/plugin.toml`
+  (or whatever the existing signing CLI invocation is — mirror
+  what `token_counter` / `keyword_block` did in
+  `docs/worklog/2026-05-06-test-plugins.md`). Resulting
+  `plugin.toml.sig` is checked in.
 
-Then in order: CP8 (integration test + manifest signing), CP9
-(manual e2e against the real Supabase project). Plan in the active
-worklog above.
+Then CP9: manual e2e against the real Supabase project (apply env
+vars, run a small `claude-manage` request, verify the row arrives
+via `mcp__supabase__execute_sql`, verify the audit log).
 
 ## Blocking / decisions needed
 

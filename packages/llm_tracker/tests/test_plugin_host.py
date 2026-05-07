@@ -124,6 +124,73 @@ async def test_timeout_plugin_does_not_propagate(monkeypatch, session_factory):
     assert fault.outcome == "error"
 
 
+# -- on_shutdown gets a longer timeout (CP7 / supabase_sink prereq) --------
+
+
+class _SlowShutdownPlugin(BasePlugin):
+    """Sleeps inside `on_shutdown` to mimic a sink draining its queue."""
+
+    name = "slow-shutdown"
+
+    def __init__(self, sleep_s: float) -> None:
+        self._sleep_s = sleep_s
+        self.completed = False
+
+    async def on_shutdown(self) -> None:
+        await asyncio.sleep(self._sleep_s)
+        self.completed = True
+
+
+async def test_on_shutdown_uses_longer_timeout_than_per_exchange_hooks(
+    monkeypatch, session_factory
+):
+    """A plugin's `on_shutdown` may legitimately exceed `HOOK_TIMEOUT`
+    (e.g. flushing a sink queue). The dispatcher must apply
+    `SHUTDOWN_HOOK_TIMEOUT` instead — pinned by a sleep that would
+    fault under the per-exchange budget but completes under the
+    shutdown budget.
+    """
+    monkeypatch.setattr(host_mod, "HOOK_TIMEOUT", 0.05)
+    monkeypatch.setattr(host_mod, "SHUTDOWN_HOOK_TIMEOUT", 1.0)
+
+    plugin = _SlowShutdownPlugin(sleep_s=0.2)  # > HOOK_TIMEOUT, < SHUTDOWN
+    host = PluginHost(mode="L", session_factory=session_factory)
+    host._plugins = [plugin]
+
+    await host.on_shutdown()
+
+    assert plugin.completed is True
+    rows = await _audit_rows(session_factory)
+    # No fault row for `slow-shutdown` — the longer budget covered it.
+    faults = [r for r in rows if r.kind == "plugin_fault" and r.plugin == "slow-shutdown"]
+    assert faults == []
+    # The lifecycle audit row still fires.
+    kinds = {r.kind for r in rows}
+    assert "proxy_stopped" in kinds
+
+
+async def test_on_shutdown_still_faults_past_shutdown_timeout(monkeypatch, session_factory):
+    """Past `SHUTDOWN_HOOK_TIMEOUT` the dispatcher still cuts the plugin
+    off and audit-logs the fault — no plugin can hold the proxy hostage.
+    """
+    monkeypatch.setattr(host_mod, "HOOK_TIMEOUT", 0.05)
+    monkeypatch.setattr(host_mod, "SHUTDOWN_HOOK_TIMEOUT", 0.1)
+
+    plugin = _SlowShutdownPlugin(sleep_s=0.5)  # > both budgets
+    host = PluginHost(mode="L", session_factory=session_factory)
+    host._plugins = [plugin]
+
+    await host.on_shutdown()
+
+    rows = await _audit_rows(session_factory)
+    fault = next(
+        (r for r in rows if r.kind == "plugin_fault" and r.plugin == "slow-shutdown"),
+        None,
+    )
+    assert fault is not None
+    assert fault.outcome == "error"
+
+
 # -- manifest validation ----------------------------------------------------
 
 

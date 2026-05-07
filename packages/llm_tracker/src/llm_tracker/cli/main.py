@@ -1,4 +1,4 @@
-"""llm-tracker CLI: init, start, audit, generate-key, sign-plugin."""
+"""llm-tracker CLI: init, start, audit, plugins, generate-key, sign-plugin."""
 
 import asyncio
 from pathlib import Path
@@ -72,6 +72,36 @@ async def _audit_async(limit: int) -> None:
 
     for row in reversed(rows):
         typer.echo(f"{row.ts:>15}  {row.kind:<20}  hook={row.hook or '-':<30}  {row.outcome}")
+
+
+@app.command()
+def plugins(
+    host: str = typer.Option("127.0.0.1", envvar="LLMTRACK_PROXY_HOST"),
+    port: int = typer.Option(8787, envvar="LLMTRACK_PROXY_PORT"),
+) -> None:
+    """List plugins currently loaded by the running proxy (ADR-0014)."""
+    import httpx
+
+    url = f"http://{host}:{port}/admin/plugins"
+    try:
+        resp = httpx.get(url, timeout=2.0)
+        resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        typer.echo(f"Failed to query proxy at {url}: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    entries = resp.json()
+    if not entries:
+        typer.echo("No plugins loaded.")
+        return
+
+    for entry in entries:
+        hooks = ",".join(entry.get("hooks", [])) or "-"
+        modes = ",".join(entry.get("allowed_modes", [])) or "-"
+        typer.echo(
+            f"{entry['name']:<24}  v{entry['version']:<8}  "
+            f"hooks={hooks:<40}  modes={modes}"
+        )
 
 
 @app.command(name="generate-key")

@@ -426,6 +426,142 @@ async def test_load_plugins_records_signer_when_key_not_in_registry(
     }
 
 
+# -- disable-by-config (ADR-0013) -----------------------------------------
+
+
+async def test_load_plugins_skips_disabled_by_config(monkeypatch, session_factory):
+    """`plugins_disabled` denylist short-circuits load with a `plugin_skipped` audit.
+
+    The skip happens after manifest parse (so we have the canonical name)
+    but before signature verify, so the verifier is never reached for a
+    disabled plugin. ADR-0013 §Decision.
+    """
+    fake_manifest = PluginManifest(
+        name="disabled_one",
+        version="0.1.0",
+        capabilities=[],
+        egress_destinations=[],
+        allowed_modes=["L", "A", "R"],
+    )
+    monkeypatch.setattr(host_mod, "entry_points", lambda **_kw: [_AllowedEP()])
+    monkeypatch.setattr(
+        PluginHost,
+        "_find_manifest",
+        staticmethod(lambda _cls: (fake_manifest, "")),
+    )
+
+    # Verifier deliberately *not* monkeypatched: ADR-0013 says a disabled
+    # plugin must be skipped before the verifier runs, so this would raise
+    # if the gate fired in the wrong order.
+    def _explode_if_called(self, _cls):
+        raise AssertionError("verifier should not run for a disabled plugin")
+
+    monkeypatch.setattr(PluginHost, "_verify_manifest", _explode_if_called)
+
+    host = PluginHost(
+        mode="L",
+        session_factory=session_factory,
+        plugins_disabled=frozenset({"disabled_one"}),
+    )
+    await host.load_plugins()
+
+    assert host._plugins == []
+    assert host._manifests == []
+    rows = await _audit_rows(session_factory)
+    skipped = next((r for r in rows if r.kind == "plugin_skipped"), None)
+    assert skipped is not None
+    assert skipped.plugin == "disabled_one"
+    assert skipped.outcome == "denied"
+    assert json.loads(skipped.detail_json) == {"reason": "disabled_by_config"}
+
+
+async def test_load_plugins_disabled_match_is_manifest_name_not_ep_name(
+    monkeypatch, session_factory
+):
+    """The denylist matches `manifest.name`, not the entry-point name (ADR-0013)."""
+    fake_manifest = PluginManifest(
+        name="manifest_name",
+        version="0.1.0",
+        capabilities=[],
+        egress_destinations=[],
+        allowed_modes=["L", "A", "R"],
+    )
+
+    class _MismatchEP:
+        name = "ep_name"  # entry-point key != manifest name
+
+        def load(self):
+            return _AllowedPlugin
+
+    monkeypatch.setattr(host_mod, "entry_points", lambda **_kw: [_MismatchEP()])
+    monkeypatch.setattr(
+        PluginHost,
+        "_find_manifest",
+        staticmethod(lambda _cls: (fake_manifest, "")),
+    )
+    _bypass_verifier(monkeypatch)
+
+    # Disabling by entry-point name must NOT take effect.
+    host_ep = PluginHost(
+        mode="L",
+        session_factory=session_factory,
+        plugins_disabled=frozenset({"ep_name"}),
+    )
+    await host_ep.load_plugins()
+    assert len(host_ep._plugins) == 1, "EP name match must not skip the plugin"
+
+    # Disabling by manifest name SHOULD take effect.
+    host_mf = PluginHost(
+        mode="L",
+        session_factory=session_factory,
+        plugins_disabled=frozenset({"manifest_name"}),
+    )
+    await host_mf.load_plugins()
+    assert host_mf._plugins == []
+
+
+# -- introspection (ADR-0014) ---------------------------------------------
+
+
+async def test_loaded_plugins_returns_serialisable_view(monkeypatch, session_factory):
+    """`loaded_plugins()` reflects manifests of plugins that pass every check."""
+    fake_manifest = PluginManifest(
+        name="introspect_me",
+        version="2.3.4",
+        hooks=["on_init", "on_persisted"],
+        capabilities=["egress_http"],
+        egress_destinations=["https://api.example.com"],
+        allowed_modes=["L", "A", "R"],
+    )
+    monkeypatch.setattr(host_mod, "entry_points", lambda **_kw: [_AllowedEP()])
+    monkeypatch.setattr(
+        PluginHost,
+        "_find_manifest",
+        staticmethod(lambda _cls: (fake_manifest, "")),
+    )
+    _bypass_verifier(monkeypatch)
+
+    host = PluginHost(mode="R", session_factory=session_factory)
+    await host.load_plugins()
+
+    view = host.loaded_plugins()
+    assert view == [
+        {
+            "name": "introspect_me",
+            "version": "2.3.4",
+            "hooks": ["on_init", "on_persisted"],
+            "capabilities": ["egress_http"],
+            "allowed_modes": ["L", "A", "R"],
+        }
+    ]
+
+
+async def test_loaded_plugins_empty_before_load(session_factory):
+    """A bare host has no manifests until `load_plugins()` runs."""
+    host = PluginHost(mode="L", session_factory=session_factory)
+    assert host.loaded_plugins() == []
+
+
 # -- HookContext propagation (ADR-0012) -----------------------------------
 
 

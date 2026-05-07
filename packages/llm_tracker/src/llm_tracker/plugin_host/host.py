@@ -29,6 +29,7 @@ class PluginHost:
         session_factory: async_sessionmaker[AsyncSession],
         egress_guard: EgressGuard | None = None,
         registry: dict[str, VerifyKey] | None = None,
+        plugins_disabled: frozenset[str] | set[str] | None = None,
     ) -> None:
         self.mode = mode
         self._session_factory = session_factory
@@ -38,7 +39,14 @@ class PluginHost:
         # bundled file (intentionally empty during the cleanup pass) does not
         # block them.
         self._registry = registry if registry is not None else load_bundled_registry()
+        # Operator-supplied denylist matched on `manifest.name` (ADR-0013).
+        # Frozen so reloads can't mutate it under us.
+        self._plugins_disabled: frozenset[str] = frozenset(plugins_disabled or ())
         self._plugins: list[BasePlugin] = []
+        # Loaded manifests in load order. Populated only for plugins that pass
+        # every load-time check (ADR-0014); read by `loaded_plugins()` for the
+        # `/admin/plugins` introspection endpoint.
+        self._manifests: list[PluginManifest] = []
         # Per-exchange HookContext (ADR-0012). Created by `begin_exchange`,
         # reused across all per-exchange hook dispatches for that exchange,
         # and cleared by `end_exchange`. Dispatchers fall back to a fresh
@@ -216,6 +224,21 @@ class PluginHost:
                     )
                 continue
 
+            if manifest.name in self._plugins_disabled:
+                # ADR-0013: operator-controlled denylist gates the plugin
+                # *after* manifest parse (so we have the canonical name)
+                # but *before* signature verify (so a flapping .sig on a
+                # disabled plugin doesn't spam the audit log).
+                async with self._session_factory() as session:
+                    await write_audit(
+                        session,
+                        kind="plugin_skipped",
+                        plugin=manifest.name,
+                        outcome="denied",
+                        detail_json=json.dumps({"reason": "disabled_by_config"}),
+                    )
+                continue
+
             verify_result, signer = self._verify_manifest(plugin_class)
             if verify_result is not VerifyResult.VERIFIED:
                 async with self._session_factory() as session:
@@ -250,8 +273,28 @@ class PluginHost:
 
             plugin = plugin_class()
             self._plugins.append(plugin)
+            self._manifests.append(manifest)
             async with self._session_factory() as session:
                 await write_audit(session, kind="plugin_loaded", plugin=plugin.name, outcome="ok")
+
+    # -- introspection (ADR-0014) -------------------------------------------
+
+    def loaded_plugins(self) -> list[dict[str, Any]]:
+        """Serialisable view of every plugin that passed load-time checks.
+
+        Backs the `/admin/plugins` HTTP route and the `llm-tracker plugins`
+        CLI. Order matches load order, which is also dispatch order.
+        """
+        return [
+            {
+                "name": m.name,
+                "version": m.version,
+                "hooks": list(m.hooks),
+                "capabilities": list(m.capabilities),
+                "allowed_modes": list(m.allowed_modes),
+            }
+            for m in self._manifests
+        ]
 
     async def on_init(self) -> None:
         await self.load_plugins()

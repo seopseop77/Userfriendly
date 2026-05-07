@@ -38,6 +38,7 @@ dev = [
 
 [project.scripts]
 llm-tracker = "llm_tracker.cli:app"
+claude-manage = "llm_tracker.cli.manage:main"
 
 [tool.uv.sources]
 llm-tracker-sdk = { workspace = true }

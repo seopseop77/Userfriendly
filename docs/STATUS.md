@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-07 (CP3 — `LLMTRACK_USER_OPTED_IN` env knob + `PluginHost` field)
+**Last updated**: 2026-05-08 (CP4 — Supabase schema migrated, RLS enabled)
 **Updated by**: Claude Code
 
 ## Current phase
 
 - **Phase**: **Phase-2 partial — supabase_sink reference plugin (early)**. Phase 1c (`scope_guard`) explicitly deferred per user. The egress client SDK is a Phase-1b debt repayment forced by this work; the consent env knob is the smallest surface that lifts Mode R's ceiling without bundling the full Phase-2 consent UX (ADR-0016).
-- **Active task**: 9-checkpoint plan for `llm_tracker_plugin_supabase_sink`. CP1 (ADRs), CP2 (EgressClient SDK + per-plugin wiring), CP3 (`LLMTRACK_USER_OPTED_IN`) done. CP4 (Supabase migration) is next.
+- **Active task**: 9-checkpoint plan for `llm_tracker_plugin_supabase_sink`. CP1–CP4 done (ADRs, EgressClient SDK, opt-in env, Supabase schema). CP5 (plugin package skeleton + parser + unit tests) is next.
 
 ## Active worklog
 
@@ -21,11 +21,11 @@
 ## Recent commits
 
 ```
-<CP3>     config: LLMTRACK_USER_OPTED_IN env + PluginHost field
+<CP4>     supabase-sink: schema migrated + RLS enabled (worklog only)
+dff7e3e   config: LLMTRACK_USER_OPTED_IN env + PluginHost field
 f75a841   egress: EgressClient SDK + per-plugin wiring
 8712183   docs: ADR-0015/0016 + supabase-sink kickoff
 161505d   plugins: disable config + /admin/plugins
-0a43502   docs: ADR-0013/0014 plugin disable + introspect
 ```
 
 ## Where we paused
@@ -88,19 +88,28 @@ side-quests):
 
 ## Next single step
 
-**CP4: Supabase schema migration.** Use
-`mcp__supabase__apply_migration` (project URL
-`https://qdcixbwwlsnkekabavmj.supabase.co`) to create
-`public.exchanges` per plan §Phase B (PK `exchange_id`; full
-metadata + `request_text`/`response_text` columns; `raw_request` /
-`raw_response` as `jsonb`; indices on `(session_id, ts_started_ms)`
-and `ts_inserted`). Verify via `list_tables`. Schema-only — no code
-in this checkpoint.
+**CP5: `supabase_sink` package skeleton + parser + unit tests.**
+Create `packages/llm_tracker_plugin_supabase_sink/` with
+`pyproject.toml`, `plugin.toml` (signed with `minseop` key),
+`schema.sql` (the CP4-applied DDL committed for reproducibility),
+and `parser.py`:
+- `ResponseAssembler` — Anthropic SSE accumulator. Collects
+  `text_delta` events into `response_text`; reads usage from
+  `message_start` + `message_delta` (extends the token_counter
+  pattern). Handles `\n\n` *and* `\r\n\r\n` chunk boundaries.
+- `RequestExtractor` — decodes the cached request body and pulls
+  human-readable text from `messages[].content`. Handles string
+  content, list-of-blocks (text, tool_result), and emits an
+  `[image]` placeholder for image blocks (don't ship base64 to
+  Supabase).
 
-Then in order: CP5 (plugin skeleton + parser), CP6 (client +
-lifecycle), CP7 (`on_shutdown` timeout), CP8 (integration test +
-signing), CP9 (manual e2e). Plan and per-checkpoint scope are in
-the active worklog above.
+Tests: parser unit tests including chunk-boundary edge cases and
+each Anthropic content-block variant. No client / no flusher yet —
+those are CP6.
+
+Then in order: CP6 (client + lifecycle), CP7 (`on_shutdown`
+timeout), CP8 (integration test + signing), CP9 (manual e2e).
+Plan in the active worklog above.
 
 ## Blocking / decisions needed
 

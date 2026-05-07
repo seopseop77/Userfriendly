@@ -116,7 +116,7 @@ tests.
   `BasePlugin.egress` defaults to None; `HookContext.egress` defaults
   to None.
 
-### Checkpoint 3 — `LLMTRACK_USER_OPTED_IN` env + `PluginHost` field (commit pending)
+### Checkpoint 3 — `LLMTRACK_USER_OPTED_IN` env + `PluginHost` field (commit dff7e3e)
 
 - Modified `packages/llm_tracker/src/llm_tracker/config.py` —
   `Settings.user_opted_in: bool = False` (`LLMTRACK_USER_OPTED_IN`).
@@ -145,8 +145,52 @@ tests.
   default False; truthy env values (`1`/`true`/`True`/`yes`/`YES`)
   → True; falsy env values (`0`/`false`/`False`/`no`/`NO`) → False.
 
+### Checkpoint 4 — Supabase schema migration (2026-05-08, commit pending)
+
+Schema-only checkpoint — no repo code change. Two migrations applied
+to the operator's Supabase project
+(`https://qdcixbwwlsnkekabavmj.supabase.co`) via the Supabase MCP
+`apply_migration` tool:
+
+- **`create_exchanges_table`** — `public.exchanges` PK
+  `exchange_id`; `session_id, ts_started_ms (bigint epoch ms),
+  ts_inserted (timestamptz default now()), mode, endpoint,
+  model_requested, model_served, stop_reason, input_tokens,
+  output_tokens, cache_creation_input_tokens,
+  cache_read_input_tokens, request_text, response_text, raw_request
+  jsonb, raw_response jsonb, source`. Indices: `(session_id,
+  ts_started_ms)` and `ts_inserted`. Table comment cites ADR-0007 +
+  this worklog.
+- **`enable_rls_on_exchanges`** — `alter table public.exchanges
+  enable row level security`. No policies. Reason: the supabase_sink
+  plugin authenticates with `service_role`, which bypasses RLS at
+  the Postgres level — plugin writes are unaffected. The `anon` /
+  `authenticated` roles are now locked out, which protects the
+  prompt + response payload if the anon (publishable) key ever
+  leaks. The Supabase advisory `rls_disabled` (priority: critical)
+  surfaced after migration #1 and was the trigger for migration #2.
+
+Verified via `mcp__supabase__list_tables` after each migration:
+table created with all columns/indices on the first call;
+`rls_enabled: true` after the second call (advisory cleared).
+
+The plugin package (CP5) will check in a `schema.sql` next to the
+plugin source so the schema lives in the repo, not just on the
+remote.
+
 ## Decisions
 
+- **RLS enabled on `public.exchanges` with no policies** (CP4,
+  2026-05-08). service_role bypasses RLS at the Postgres level so
+  the supabase_sink plugin (which uses the service_role key) is
+  unaffected; anon and authenticated roles are locked out, which
+  protects the prompt + response payload if the anon key ever
+  leaks. Trigger: critical Supabase advisory `rls_disabled` after
+  the initial table migration. User-confirmed in chat before
+  applying. Lower-effort alternatives considered (do nothing /
+  explicit policy) and rejected; "RLS on, no policies" is the
+  smallest patch that closes the advisory without touching the
+  plugin's auth path.
 - **`EgressClient` lifetime is per-plugin, not per-exchange** (ADR-0015).
   Critic-flagged: a per-exchange API would break batched/retry flushers
   (the canonical Mode-R plugin pattern). The plugin's audit-log identity
@@ -208,6 +252,13 @@ match the ADR-0016 plumbing and still passes.
 
 Ruff format + check on every changed file (CP3): 1 file reformatted
 (`test_config.py`), 4 left unchanged, all checks passed.
+
+CP4 (Supabase schema): no repo tests — verification is
+`mcp__supabase__list_tables` after each migration. After
+`create_exchanges_table` the table appears with all 18 columns + 2
+indices + table comment + PK on `exchange_id`. After
+`enable_rls_on_exchanges` the same call returns `rls_enabled: true`
+and the previous critical advisory is gone.
 
 Ruff format + check on every changed file (CP2):
 

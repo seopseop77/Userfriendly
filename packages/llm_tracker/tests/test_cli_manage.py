@@ -29,6 +29,7 @@ from llm_tracker.cli.manage import (
     _build_child_env,
     _proxy_alive,
     _release_lock,
+    _spawn_async_cleanup,
     _spawn_proxy_daemon,
     _terminate_proxy,
     _try_become_last_user,
@@ -246,6 +247,43 @@ def test_terminate_proxy_escalates_to_sigkill_after_timeout(tmp_path: Path) -> N
 
 
 # ---------------------------------------------------------------------------
+# Async cleanup (real fork)
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_async_cleanup_returns_immediately_and_kills_proxy_in_child(
+    tmp_path: Path,
+) -> None:
+    """Parent must return fast; the forked child eventually SIGTERMs the proxy."""
+    proxy = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        (tmp_path / "proxy.pid").write_text(f"{proxy.pid}\n")
+
+        start = time.monotonic()
+        _spawn_async_cleanup(tmp_path)
+        elapsed = time.monotonic() - start
+
+        # Parent shouldn't wait on terminate_proxy's polling loop.
+        assert elapsed < 0.5, f"parent took {elapsed:.2f}s, expected <0.5s"
+
+        # The detached child must eventually kill the stub proxy.
+        proxy.wait(timeout=10)
+        assert proxy.returncode is not None
+
+        # Pid file is unlinked by _terminate_proxy after the kill confirms.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if not (tmp_path / "proxy.pid").exists():
+                break
+            time.sleep(0.05)
+        assert not (tmp_path / "proxy.pid").exists()
+    finally:
+        if proxy.poll() is None:
+            proxy.kill()
+            proxy.wait(timeout=5)
+
+
+# ---------------------------------------------------------------------------
 # main() top-level
 # ---------------------------------------------------------------------------
 
@@ -302,7 +340,7 @@ def test_main_returns_1_when_proxy_fails_to_start(
     assert rc == 1
 
 
-def test_main_terminates_proxy_when_last_user(
+def test_main_async_cleanup_when_last_user(
     chdir_tmp: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("llm_tracker.cli.manage._proxy_alive", lambda *a, **kw: True)
@@ -314,16 +352,16 @@ def test_main_terminates_proxy_when_last_user(
         MagicMock(return_value=fake_proc),
     )
 
-    terminate_mock = MagicMock()
-    monkeypatch.setattr("llm_tracker.cli.manage._terminate_proxy", terminate_mock)
+    cleanup_mock = MagicMock()
+    monkeypatch.setattr("llm_tracker.cli.manage._spawn_async_cleanup", cleanup_mock)
 
     rc = main([])
 
     assert rc == 42
-    terminate_mock.assert_called_once()
+    cleanup_mock.assert_called_once()
 
 
-def test_main_does_not_terminate_proxy_when_others_active(
+def test_main_does_not_cleanup_when_others_active(
     chdir_tmp: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("llm_tracker.cli.manage._proxy_alive", lambda *a, **kw: True)
@@ -336,13 +374,13 @@ def test_main_does_not_terminate_proxy_when_others_active(
     )
 
     monkeypatch.setattr("llm_tracker.cli.manage._try_become_last_user", lambda fh: False)
-    terminate_mock = MagicMock()
-    monkeypatch.setattr("llm_tracker.cli.manage._terminate_proxy", terminate_mock)
+    cleanup_mock = MagicMock()
+    monkeypatch.setattr("llm_tracker.cli.manage._spawn_async_cleanup", cleanup_mock)
 
     rc = main([])
 
     assert rc == 0
-    terminate_mock.assert_not_called()
+    cleanup_mock.assert_not_called()
 
 
 def test_main_uses_env_var_overrides(chdir_tmp: Path, monkeypatch: pytest.MonkeyPatch) -> None:

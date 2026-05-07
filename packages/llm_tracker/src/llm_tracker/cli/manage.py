@@ -13,10 +13,16 @@ Behaviour:
      wrapper are forwarded to claude.
   4. Wait for claude to exit.
   5. Try to upgrade the shared lock to exclusive (non-blocking). If
-     successful, no other `claude-manage` is alive — terminate the
-     proxy (SIGTERM, then SIGKILL after a grace period). Manually
-     started proxies are spared because only `claude-manage` writes
-     `var/proxy.pid`; missing pid file means "not ours".
+     successful, no other `claude-manage` is alive — fork a detached
+     cleanup child that terminates the proxy (SIGTERM, poll, SIGKILL
+     after grace) while the wrapper itself returns immediately so the
+     user's shell prompt isn't gated on uvicorn shutdown. The lock
+     fd is inherited by the cleanup child, so any concurrent
+     `claude-manage` still blocks on LOCK_SH until the child exits —
+     preserving the "don't send traffic to a shutting-down proxy"
+     invariant. Manually started proxies are spared because only
+     `claude-manage` writes `var/proxy.pid`; missing pid file means
+     "not ours".
 
 Configuration via `LLMTRACK_PROXY_HOST` / `LLMTRACK_PROXY_PORT` /
 `LLMTRACK_MODE` (same env vars as `llm-tracker start`). The wrapper
@@ -208,6 +214,38 @@ def _reset_signals_in_child() -> None:
     signal.signal(signal.SIGHUP, signal.SIG_DFL)
 
 
+def _spawn_async_cleanup(var_dir: Path) -> None:
+    """Fork a detached child that terminates the proxy then exits.
+
+    The shared/exclusive lock fd is inherited by the child. The parent
+    returns immediately; its fd will be closed at process exit, but
+    that does NOT release the lock — `flock` semantics keep the lock
+    alive as long as any duplicate fd (including the child's) refers
+    to the same open file description. The lock is released when the
+    child calls `os._exit()`, at which point any concurrent
+    `claude-manage` waiting in `_acquire_shared_lock` unblocks.
+
+    The child detaches via `setsid()` and redirects stdio to
+    `/dev/null` so any output from `_terminate_proxy` (none today,
+    but cheap insurance) doesn't leak into the user's terminal after
+    the prompt has already returned.
+    """
+    pid = os.fork()
+    if pid != 0:
+        return
+    try:
+        os.setsid()
+        for sig in (signal.SIGINT, signal.SIGQUIT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(sig, signal.SIG_DFL)
+        devnull = os.open(os.devnull, os.O_RDWR)
+        for fd in (0, 1, 2):
+            os.dup2(devnull, fd)
+        os.close(devnull)
+        _terminate_proxy(var_dir)
+    finally:
+        os._exit(0)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for the `claude-manage` console script.
 
@@ -274,7 +312,15 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signal.SIGTERM, old_sigterm)
         signal.signal(signal.SIGHUP, old_sighup)
         if _try_become_last_user(lock_fh):
-            _terminate_proxy(var_dir)
-        _release_lock(lock_fh)
+            # Hand the lock fd off to a detached cleanup child so the
+            # user's prompt isn't gated on uvicorn shutdown. The lock
+            # stays held via the child's fd; we deliberately do NOT
+            # call `_release_lock` here because LOCK_UN would release
+            # the lock for both fds (flock-on-shared-description
+            # semantics), defeating the gate that protects concurrent
+            # `claude-manage` invocations from racing the dying proxy.
+            _spawn_async_cleanup(var_dir)
+        else:
+            _release_lock(lock_fh)
 
     return rc

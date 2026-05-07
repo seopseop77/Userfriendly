@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .egress import EgressClient
 from .levels import ContentLevel, degrade, effective_ceiling
 
 
@@ -37,6 +38,7 @@ class HookContext:
     exchange_id: str
     mode: str
     user_opted_in: bool = False
+    egress: EgressClient | None = None
     _raw_request_body: bytes | None = field(default=None, repr=False)
 
     def effective_ceiling(self) -> ContentLevel:

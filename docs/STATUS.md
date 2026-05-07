@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-07 (Phase-2 supabase_sink kickoff — ADR-0015 / ADR-0016 written)
+**Last updated**: 2026-05-07 (CP2 — EgressClient SDK + HostEgressClient + per-plugin wiring)
 **Updated by**: Claude Code
 
 ## Current phase
 
 - **Phase**: **Phase-2 partial — supabase_sink reference plugin (early)**. Phase 1c (`scope_guard`) explicitly deferred per user. The egress client SDK is a Phase-1b debt repayment forced by this work; the consent env knob is the smallest surface that lifts Mode R's ceiling without bundling the full Phase-2 consent UX (ADR-0016).
-- **Active task**: Build `llm_tracker_plugin_supabase_sink` (ADR-0007's named reference plugin) plus the two SDK/core surfaces it depends on. 9 checkpoints planned; CP1 (ADRs) is the first.
+- **Active task**: 9-checkpoint plan for `llm_tracker_plugin_supabase_sink`. CP1 (ADRs) and CP2 (EgressClient SDK + per-plugin wiring) done. CP3 (`LLMTRACK_USER_OPTED_IN`) is next.
 
 ## Active worklog
 
@@ -21,11 +21,11 @@
 ## Recent commits
 
 ```
+<CP2>     egress: EgressClient SDK + HostEgressClient + per-plugin wiring
+8712183   docs: ADR-0015/0016 + supabase-sink kickoff
 161505d   plugins: disable config + /admin/plugins
 0a43502   docs: ADR-0013/0014 plugin disable + introspect
 9aa8321   cli: async cleanup so claude-manage exits instantly
-d2e33d5   cli: claude-manage wrapper auto-starts proxy
-faa718d   chore: add .omc to .gitignore
 ```
 
 ## Where we paused
@@ -88,21 +88,19 @@ side-quests):
 
 ## Next single step
 
-**CP2: EgressClient SDK + HostEgressClient + per-plugin wiring.**
-Files: `packages/llm_tracker_sdk/src/llm_tracker_sdk/egress.py`
-(new), exports in SDK `__init__.py`, `egress` field on
-`HookContext` and `BasePlugin`,
-`packages/llm_tracker/src/llm_tracker/egress_guard/client.py` (new
-`HostEgressClient`), `plugin_host/host.py` builds and attaches one
-client per loaded plugin (re-using the proxy's shared
-`httpx.AsyncClient` from `forwarder.py:24-31`). Tests: deny / allow
-/ cross-plugin destination block. ADR-0015 §Lifecycle is the spec.
+**CP3: `LLMTRACK_USER_OPTED_IN` env knob (ADR-0016).** Add
+`user_opted_in: bool = False` to `Settings`; `proxy/app.py` lifespan
+reads it and constructs `PluginHost(..., user_opted_in=...)`;
+`PluginHost` holds it as a startup-time field (parallel to `mode`)
+and threads it into every `HookContext` from `begin_exchange`.
+**The forwarder is not touched.** Tests: env coercion (1/true/yes →
+True, 0/false/empty → False); ctx.user_opted_in propagates; the
+existing default-False path still works.
 
-Then in order: CP3 (`LLMTRACK_USER_OPTED_IN`), CP4 (Supabase
-migration), CP5 (plugin skeleton + parser), CP6 (client + lifecycle),
-CP7 (`on_shutdown` timeout), CP8 (integration test + signing), CP9
-(manual e2e). Plan and per-checkpoint scope are in the active
-worklog above.
+Then in order: CP4 (Supabase migration), CP5 (plugin skeleton +
+parser), CP6 (client + lifecycle), CP7 (`on_shutdown` timeout), CP8
+(integration test + signing), CP9 (manual e2e). Plan and
+per-checkpoint scope are in the active worklog above.
 
 ## Blocking / decisions needed
 

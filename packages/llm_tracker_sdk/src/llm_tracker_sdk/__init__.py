@@ -4,6 +4,7 @@ Plugin authors import from this package only; never from llm_tracker.*.
 """
 
 from . import capabilities
+from .egress import EgressClient, EgressDenied, EgressResponse
 from .hook_context import HookContext
 from .hooks import Abort, Block, Pass, Transform
 from .levels import ContentLevel, degrade, effective_ceiling
@@ -16,6 +17,9 @@ __all__ = [
     "BasePlugin",
     "Block",
     "ContentLevel",
+    "EgressClient",
+    "EgressDenied",
+    "EgressResponse",
     "HookContext",
     "Pass",
     "PluginManifest",

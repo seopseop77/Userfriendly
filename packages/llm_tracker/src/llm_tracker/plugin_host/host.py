@@ -7,12 +7,14 @@ import tomllib
 from importlib.metadata import entry_points
 from typing import Any
 
+import httpx
 from llm_tracker_sdk import Abort, BasePlugin, Block, HookContext, Pass, Transform
 from llm_tracker_sdk.manifest import PluginManifest
 from nacl.signing import VerifyKey
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from ..egress_guard.client import HostEgressClient
 from ..egress_guard.guard import EgressGuard
 from ..storage.audit import write_audit
 from ..trust import load_bundled_registry
@@ -30,10 +32,16 @@ class PluginHost:
         egress_guard: EgressGuard | None = None,
         registry: dict[str, VerifyKey] | None = None,
         plugins_disabled: frozenset[str] | set[str] | None = None,
+        http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self.mode = mode
         self._session_factory = session_factory
         self._egress_guard = egress_guard
+        # Shared httpx client for plugin egress (ADR-0015). Owned and closed
+        # by the proxy lifespan, *after* every plugin's `on_shutdown` so a
+        # shutdown-time flusher can still drain. `None` is allowed for
+        # tests / harnesses that don't exercise the egress path.
+        self._http_client = http_client
         # Trust registry for manifest signature verification (ADR-0008). Defaults to
         # the bundled `trust/keys.toml`. Tests pass an explicit registry so the
         # bundled file (intentionally empty during the cleanup pass) does not
@@ -262,9 +270,7 @@ class PluginHost:
                         kind="capability_denied",
                         plugin=manifest.name,
                         outcome="denied",
-                        detail_json=json.dumps(
-                            {"mode": self.mode, "denied": sorted(denied)}
-                        ),
+                        detail_json=json.dumps({"mode": self.mode, "denied": sorted(denied)}),
                     )
                 continue
 
@@ -272,6 +278,16 @@ class PluginHost:
                 self._egress_guard.register(manifest)
 
             plugin = plugin_class()
+            # ADR-0015: bind a per-plugin EgressClient. Lifetime is per-plugin
+            # (not per-exchange), so a background flusher can call `fetch`
+            # outside any hook. Audit-log attribution is structural — the
+            # plugin name is baked in at construction.
+            if self._egress_guard is not None and self._http_client is not None:
+                plugin.egress = HostEgressClient(
+                    plugin_name=manifest.name,
+                    guard=self._egress_guard,
+                    http_client=self._http_client,
+                )
             self._plugins.append(plugin)
             self._manifests.append(manifest)
             async with self._session_factory() as session:
@@ -315,6 +331,7 @@ class PluginHost:
         await self._audit("on_request_received", exchange_id)
         ctx = self._ctx_for(exchange_id)
         for plugin in self._plugins:
+            ctx.egress = plugin.egress  # ADR-0015: per-plugin client for this dispatch
             result = await self._call(
                 plugin,
                 "on_request_received",
@@ -330,6 +347,7 @@ class PluginHost:
         await self._audit("before_forward", exchange_id)
         ctx = self._ctx_for(exchange_id)
         for plugin in self._plugins:
+            ctx.egress = plugin.egress  # ADR-0015
             result = await self._call(
                 plugin,
                 "before_forward",
@@ -347,6 +365,7 @@ class PluginHost:
         await self._audit("on_upstream_response_start", exchange_id)
         ctx = self._ctx_for(exchange_id)
         for plugin in self._plugins:
+            ctx.egress = plugin.egress  # ADR-0015
             result = await self._call(
                 plugin,
                 "on_upstream_response_start",
@@ -361,6 +380,7 @@ class PluginHost:
     async def on_response_chunk(self, exchange_id: str, chunk: bytes) -> Pass | Abort:
         ctx = self._ctx_for(exchange_id)
         for plugin in self._plugins:
+            ctx.egress = plugin.egress  # ADR-0015
             result = await self._call(
                 plugin,
                 "on_response_chunk",
@@ -376,6 +396,7 @@ class PluginHost:
         await self._audit("on_response_complete", exchange_id)
         ctx = self._ctx_for(exchange_id)
         for plugin in self._plugins:
+            ctx.egress = plugin.egress  # ADR-0015
             await self._call(
                 plugin,
                 "on_response_complete",
@@ -387,6 +408,7 @@ class PluginHost:
         await self._audit("on_persisted", exchange_id)
         ctx = self._ctx_for(exchange_id)
         for plugin in self._plugins:
+            ctx.egress = plugin.egress  # ADR-0015
             await self._call(
                 plugin,
                 "on_persisted",

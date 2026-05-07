@@ -51,7 +51,7 @@ tests.
 
 ## What was done
 
-### Checkpoint 1 — ADRs and worklog kickoff (commit pending)
+### Checkpoint 1 — ADRs and worklog kickoff (commit 8712183)
 
 - Created `docs/decisions/0015-egress-client-sdk.md` — adds `EgressClient`
   Protocol + `EgressResponse` + `EgressDenied` to the SDK; specifies
@@ -65,6 +65,56 @@ tests.
   surface; real per-task UX deferred. Reversibility: high.
 - Updated `docs/STATUS.md` — points active worklog at this file; refreshed
   "Where we paused" and "Next single step".
+
+### Checkpoint 2 — EgressClient SDK + HostEgressClient + per-plugin wiring (commit pending)
+
+- Created `packages/llm_tracker_sdk/src/llm_tracker_sdk/egress.py` —
+  `EgressResponse` (frozen dataclass), `EgressDenied` (carries url +
+  reason), `EgressClient` (Protocol with `fetch(url, *, method="POST",
+  headers=None, body=None, timeout=30.0)`).
+- Modified `packages/llm_tracker_sdk/src/llm_tracker_sdk/__init__.py` —
+  exports `EgressClient`, `EgressDenied`, `EgressResponse`.
+- Modified `packages/llm_tracker_sdk/src/llm_tracker_sdk/hook_context.py` —
+  `HookContext.egress: EgressClient | None = None`.
+- Modified `packages/llm_tracker_sdk/src/llm_tracker_sdk/plugin.py` —
+  `BasePlugin.egress: EgressClient | None = None`. Populated by host at
+  load time; background tasks hold this; `ctx.egress` is the same instance
+  for in-hook ergonomics (ADR-0015).
+- Created `packages/llm_tracker/src/llm_tracker/egress_guard/client.py` —
+  `HostEgressClient` implements the SDK Protocol; bound to
+  `(plugin_name, EgressGuard, httpx.AsyncClient)` at construction; calls
+  `guard.check(plugin=self._plugin_name, url=url, capability="egress_http")`
+  then routes through httpx; raises `EgressDenied` on guard denial.
+- Modified `packages/llm_tracker/src/llm_tracker/plugin_host/host.py` —
+  - `__init__` accepts `http_client: httpx.AsyncClient | None = None`
+    (None preserves existing test paths that don't exercise egress).
+  - In `load_plugins`, after the plugin instance is constructed and the
+    manifest passes every load-time check, the host builds one
+    `HostEgressClient` per plugin and assigns it to `plugin.egress`
+    (only when both `egress_guard` and `http_client` are wired).
+  - All six per-exchange dispatchers (`on_request_received`,
+    `before_forward`, `on_upstream_response_start`, `on_response_chunk`,
+    `on_response_complete`, `on_persisted`) now do
+    `ctx.egress = plugin.egress` immediately before each plugin's hook
+    dispatch, so `ctx.egress` and `self.egress` point at the same
+    instance for the plugin currently in its hook (ADR-0015 §Decision-3).
+- Modified `packages/llm_tracker/src/llm_tracker/proxy/app.py` lifespan —
+  creates a shared `httpx.AsyncClient(timeout=None)` before host
+  construction, passes it to `PluginHost(http_client=...)`, and closes
+  it in a `try/finally` *after* `host.on_shutdown()` (so any plugin's
+  shutdown-time flusher can still call `fetch`).
+- Created `packages/llm_tracker/tests/test_egress_client.py` (4 tests) —
+  happy path (guard allows → httpx invoked → `EgressResponse` round-trips
+  + `egress_attempt` audit row); Mode L denial (`EgressDenied` raised,
+  httpx never touched, `egress_blocked` audit row with reason
+  `mode_L_denies_egress`); cross-plugin destination (client bound to
+  `plugin_a` denied when targeting `plugin_b`'s allowlist entry; audit
+  row attributes the attempt to `plugin_a`); default method = POST.
+- Created `packages/llm_tracker/tests/test_egress_protocol.py` (5 tests) —
+  `EgressResponse` is frozen; `EgressDenied` carries url + reason;
+  Protocol `fetch` signature pinned (defaults: POST, None, None, 30.0);
+  `BasePlugin.egress` defaults to None; `HookContext.egress` defaults
+  to None.
 
 ## Decisions
 
@@ -91,17 +141,44 @@ tests.
 
 ## Verification
 
-ADR-only checkpoint — no code changes, no tests run. Internal links
-spot-checked:
+CP1 (ADRs only) — internal links spot-checked: ADR-0015 (→ ADR-0006,
+0007, 0012, plugins.md §8, design.md §6.2, this worklog, CLAUDE.md §10),
+ADR-0016 (→ ADR-0006, 0007, 0012, design.md §7, roadmap.md Phase 2,
+CLAUDE.md §10), STATUS.md "Active worklog" path matches this file.
 
-- ADR-0015 references resolve: ADR-0006, ADR-0007, ADR-0012, plugins.md §8,
-  design.md §6.2, this worklog, CLAUDE.md §10.
-- ADR-0016 references resolve: ADR-0006, ADR-0007, ADR-0012,
-  design.md §7, roadmap.md Phase 2, CLAUDE.md §10.
-- STATUS.md "Active worklog" path matches this file's path.
+CP2 (EgressClient + wiring):
 
-Code checkpoints below (CP2 onward) will paste pytest + ruff output as
-they land.
+```
+$ .venv/bin/python3.12 -m pytest -q
+............................................................   [ 36%]
+............................................................   [ 72%]
+......................................................          [100%]
+198 passed, 4 warnings in 1.38s
+```
+
+Test count went from 189 → 198 (+9 new: 4 in `test_egress_client.py`,
+5 in `test_egress_protocol.py`). The pre-existing
+`test_cli_manage` deprecation warnings are untouched (carried over from
+the `claude-manage` work, see `docs/worklog/2026-05-07-claude-manage.md`).
+
+Ruff format + check on every changed file (CP2):
+
+```
+$ .venv/bin/python3.12 -m ruff format \
+    packages/llm_tracker_sdk/src/llm_tracker_sdk/egress.py \
+    packages/llm_tracker_sdk/src/llm_tracker_sdk/__init__.py \
+    packages/llm_tracker_sdk/src/llm_tracker_sdk/hook_context.py \
+    packages/llm_tracker_sdk/src/llm_tracker_sdk/plugin.py \
+    packages/llm_tracker/src/llm_tracker/egress_guard/client.py \
+    packages/llm_tracker/src/llm_tracker/plugin_host/host.py \
+    packages/llm_tracker/src/llm_tracker/proxy/app.py \
+    packages/llm_tracker/tests/test_egress_client.py \
+    packages/llm_tracker/tests/test_egress_protocol.py
+2 files reformatted, 7 files left unchanged
+
+$ .venv/bin/python3.12 -m ruff check  <same files>
+All checks passed!
+```
 
 ## What's left / known limits
 

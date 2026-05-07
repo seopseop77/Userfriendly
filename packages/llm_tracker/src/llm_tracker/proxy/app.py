@@ -2,6 +2,7 @@
 
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -17,17 +18,25 @@ async def lifespan(app: FastAPI):
     settings = Settings()
     factory = make_session_factory(settings.db_url)
     egress_guard = EgressGuard(mode=settings.mode, session_factory=factory)
+    # ADR-0015 §Lifecycle: shared httpx client for all plugin egress.
+    # Closed *after* `host.on_shutdown()` so a shutdown-time flusher can
+    # still drain its queue.
+    egress_http_client = httpx.AsyncClient(timeout=None)
     host = PluginHost(
         mode=settings.mode,
         session_factory=factory,
         egress_guard=egress_guard,
         plugins_disabled=frozenset(settings.plugins_disabled),
+        http_client=egress_http_client,
     )
     await host.on_init()
     app.state.plugin_host = host
     app.state.egress_guard = egress_guard
-    yield
-    await host.on_shutdown()
+    try:
+        yield
+    finally:
+        await host.on_shutdown()
+        await egress_http_client.aclose()
 
 
 app = FastAPI(

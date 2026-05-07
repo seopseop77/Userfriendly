@@ -34,3 +34,4 @@ var/
 # Output directory of the local proxy (runtime)
 ~/.local/share/llm-tracker/
 .omc
+.mcp.json

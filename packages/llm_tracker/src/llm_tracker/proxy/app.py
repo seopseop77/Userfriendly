@@ -28,6 +28,7 @@ async def lifespan(app: FastAPI):
         egress_guard=egress_guard,
         plugins_disabled=frozenset(settings.plugins_disabled),
         http_client=egress_http_client,
+        user_opted_in=settings.user_opted_in,
     )
     await host.on_init()
     app.state.plugin_host = host

@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-07 (CP2 — EgressClient SDK + HostEgressClient + per-plugin wiring)
+**Last updated**: 2026-05-07 (CP3 — `LLMTRACK_USER_OPTED_IN` env knob + `PluginHost` field)
 **Updated by**: Claude Code
 
 ## Current phase
 
 - **Phase**: **Phase-2 partial — supabase_sink reference plugin (early)**. Phase 1c (`scope_guard`) explicitly deferred per user. The egress client SDK is a Phase-1b debt repayment forced by this work; the consent env knob is the smallest surface that lifts Mode R's ceiling without bundling the full Phase-2 consent UX (ADR-0016).
-- **Active task**: 9-checkpoint plan for `llm_tracker_plugin_supabase_sink`. CP1 (ADRs) and CP2 (EgressClient SDK + per-plugin wiring) done. CP3 (`LLMTRACK_USER_OPTED_IN`) is next.
+- **Active task**: 9-checkpoint plan for `llm_tracker_plugin_supabase_sink`. CP1 (ADRs), CP2 (EgressClient SDK + per-plugin wiring), CP3 (`LLMTRACK_USER_OPTED_IN`) done. CP4 (Supabase migration) is next.
 
 ## Active worklog
 
@@ -21,11 +21,11 @@
 ## Recent commits
 
 ```
-<CP2>     egress: EgressClient SDK + HostEgressClient + per-plugin wiring
+<CP3>     config: LLMTRACK_USER_OPTED_IN env + PluginHost field
+f75a841   egress: EgressClient SDK + per-plugin wiring
 8712183   docs: ADR-0015/0016 + supabase-sink kickoff
 161505d   plugins: disable config + /admin/plugins
 0a43502   docs: ADR-0013/0014 plugin disable + introspect
-9aa8321   cli: async cleanup so claude-manage exits instantly
 ```
 
 ## Where we paused
@@ -88,19 +88,19 @@ side-quests):
 
 ## Next single step
 
-**CP3: `LLMTRACK_USER_OPTED_IN` env knob (ADR-0016).** Add
-`user_opted_in: bool = False` to `Settings`; `proxy/app.py` lifespan
-reads it and constructs `PluginHost(..., user_opted_in=...)`;
-`PluginHost` holds it as a startup-time field (parallel to `mode`)
-and threads it into every `HookContext` from `begin_exchange`.
-**The forwarder is not touched.** Tests: env coercion (1/true/yes →
-True, 0/false/empty → False); ctx.user_opted_in propagates; the
-existing default-False path still works.
+**CP4: Supabase schema migration.** Use
+`mcp__supabase__apply_migration` (project URL
+`https://qdcixbwwlsnkekabavmj.supabase.co`) to create
+`public.exchanges` per plan §Phase B (PK `exchange_id`; full
+metadata + `request_text`/`response_text` columns; `raw_request` /
+`raw_response` as `jsonb`; indices on `(session_id, ts_started_ms)`
+and `ts_inserted`). Verify via `list_tables`. Schema-only — no code
+in this checkpoint.
 
-Then in order: CP4 (Supabase migration), CP5 (plugin skeleton +
-parser), CP6 (client + lifecycle), CP7 (`on_shutdown` timeout), CP8
-(integration test + signing), CP9 (manual e2e). Plan and
-per-checkpoint scope are in the active worklog above.
+Then in order: CP5 (plugin skeleton + parser), CP6 (client +
+lifecycle), CP7 (`on_shutdown` timeout), CP8 (integration test +
+signing), CP9 (manual e2e). Plan and per-checkpoint scope are in
+the active worklog above.
 
 ## Blocking / decisions needed
 

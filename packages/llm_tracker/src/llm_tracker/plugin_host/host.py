@@ -33,6 +33,7 @@ class PluginHost:
         registry: dict[str, VerifyKey] | None = None,
         plugins_disabled: frozenset[str] | set[str] | None = None,
         http_client: httpx.AsyncClient | None = None,
+        user_opted_in: bool = False,
     ) -> None:
         self.mode = mode
         self._session_factory = session_factory
@@ -42,6 +43,10 @@ class PluginHost:
         # shutdown-time flusher can still drain. `None` is allowed for
         # tests / harnesses that don't exercise the egress path.
         self._http_client = http_client
+        # Process-wide opt-in stance (ADR-0016). Lifted to True by the
+        # operator via `LLMTRACK_USER_OPTED_IN`. Threaded into every
+        # `HookContext` produced by `begin_exchange` / `_ctx_for`.
+        self._user_opted_in = user_opted_in
         # Trust registry for manifest signature verification (ADR-0008). Defaults to
         # the bundled `trust/keys.toml`. Tests pass an explicit registry so the
         # bundled file (intentionally empty during the cleanup pass) does not
@@ -80,20 +85,20 @@ class PluginHost:
         exchange_id: str,
         *,
         request_body: bytes | None = None,
-        user_opted_in: bool = False,
     ) -> HookContext:
         """Open a per-exchange `HookContext` and stash it for hook dispatch.
 
         The forwarder calls this once per request, after reading the
         body, so that every subsequent hook dispatcher can hand the
-        same `HookContext` to plugins. `user_opted_in` is wired by
-        Phase 1c's user-consent flow; for now it defaults to False.
+        same `HookContext` to plugins. The opt-in stance comes from
+        the host's startup-time field (ADR-0016) — the forwarder does
+        not need to know about it.
         """
         ctx = HookContext(
             session_id="local",
             exchange_id=exchange_id,
             mode=self.mode,
-            user_opted_in=user_opted_in,
+            user_opted_in=self._user_opted_in,
             _raw_request_body=request_body,
         )
         self._exchange_contexts[exchange_id] = ctx
@@ -117,6 +122,7 @@ class PluginHost:
                 session_id="local",
                 exchange_id=exchange_id,
                 mode=self.mode,
+                user_opted_in=self._user_opted_in,
             )
         return ctx
 

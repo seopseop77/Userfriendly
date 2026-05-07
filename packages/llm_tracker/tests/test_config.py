@@ -34,3 +34,26 @@ def test_plugins_disabled_reads_env(monkeypatch):
     monkeypatch.setenv("LLMTRACK_PLUGINS_DISABLED", "foo, bar ,baz")
     s = Settings()
     assert s.plugins_disabled == ["foo", "bar", "baz"]
+
+
+# -- ADR-0016: user_opted_in env knob ---------------------------------------
+
+
+def test_user_opted_in_default_false(monkeypatch):
+    """Off by default — ADR-0006's "explicit, never default" axiom."""
+    monkeypatch.delenv("LLMTRACK_USER_OPTED_IN", raising=False)
+    assert Settings().user_opted_in is False
+
+
+def test_user_opted_in_truthy_env_values(monkeypatch):
+    """pydantic-settings boolean coercion accepts 1/true/yes (case-insensitive)."""
+    for raw in ("1", "true", "True", "yes", "YES"):
+        monkeypatch.setenv("LLMTRACK_USER_OPTED_IN", raw)
+        assert Settings().user_opted_in is True, f"failed for {raw!r}"
+
+
+def test_user_opted_in_falsy_env_values(monkeypatch):
+    """0/false/no stay False; whitespace and empty likewise."""
+    for raw in ("0", "false", "False", "no", "NO"):
+        monkeypatch.setenv("LLMTRACK_USER_OPTED_IN", raw)
+        assert Settings().user_opted_in is False, f"failed for {raw!r}"

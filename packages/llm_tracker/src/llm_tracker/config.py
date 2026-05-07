@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     # (ADR-0013). `NoDecode` keeps pydantic-settings from JSON-decoding
     # the env var; the validator below splits the raw CSV string.
     plugins_disabled: Annotated[list[str], NoDecode] = []
+    # Process-wide user opt-in flag (ADR-0016). Default False keeps
+    # ADR-0006's "off by default" axiom intact — Mode R's content
+    # ceiling stays at L1 until the operator sets this. The real
+    # per-task consent UX is Phase-2 stretch.
+    user_opted_in: bool = False
 
     model_config = {"env_prefix": "LLMTRACK_"}
 

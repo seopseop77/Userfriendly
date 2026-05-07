@@ -83,18 +83,14 @@ async def test_on_shutdown_writes_proxy_stopped(session_factory):
 class _CrashPlugin(BasePlugin):
     name = "crasher"
 
-    async def on_request_received(
-        self, exchange_id: str, ctx: HookContext
-    ) -> Pass | Block:
+    async def on_request_received(self, exchange_id: str, ctx: HookContext) -> Pass | Block:
         raise RuntimeError("boom")
 
 
 class _SlowPlugin(BasePlugin):
     name = "slower"
 
-    async def on_request_received(
-        self, exchange_id: str, ctx: HookContext
-    ) -> Pass | Block:
+    async def on_request_received(self, exchange_id: str, ctx: HookContext) -> Pass | Block:
         await asyncio.sleep(999)
         return Pass()
 
@@ -169,9 +165,7 @@ class _AllowedEP:
         return _AllowedPlugin
 
 
-async def test_load_plugins_registers_manifest_with_egress_guard(
-    monkeypatch, session_factory
-):
+async def test_load_plugins_registers_manifest_with_egress_guard(monkeypatch, session_factory):
     fake_manifest = PluginManifest(
         name="allowed",
         version="0.1.0",
@@ -328,9 +322,7 @@ class _RealHelloWorldEP:
         return HelloWorldPlugin
 
 
-async def test_load_plugins_verifies_real_hello_world_signature(
-    monkeypatch, session_factory
-):
+async def test_load_plugins_verifies_real_hello_world_signature(monkeypatch, session_factory):
     """The bundled hello_world plugin loads cleanly under real registry+sig.
 
     ADR-0008 hard-reject contract: this test fails if either the bundled
@@ -390,9 +382,7 @@ async def test_load_plugins_rejects_when_signature_missing(monkeypatch, session_
     assert json.loads(rejected.detail_json) == {"reason": "signature_missing"}
 
 
-async def test_load_plugins_records_signer_when_key_not_in_registry(
-    monkeypatch, session_factory
-):
+async def test_load_plugins_records_signer_when_key_not_in_registry(monkeypatch, session_factory):
     """SIGNING_KEY_NOT_IN_REGISTRY surfaces the asserted signer in audit detail."""
     fake_manifest = PluginManifest(
         name="orphan",
@@ -573,15 +563,11 @@ class _CtxCapturePlugin(BasePlugin):
     def __init__(self) -> None:
         self.received: list[HookContext] = []
 
-    async def on_request_received(
-        self, exchange_id: str, ctx: HookContext
-    ) -> Pass | Block:
+    async def on_request_received(self, exchange_id: str, ctx: HookContext) -> Pass | Block:
         self.received.append(ctx)
         return Pass()
 
-    async def before_forward(
-        self, exchange_id: str, ctx: HookContext
-    ) -> Pass | Block:
+    async def before_forward(self, exchange_id: str, ctx: HookContext) -> Pass | Block:
         self.received.append(ctx)
         return Pass()
 
@@ -644,12 +630,17 @@ async def test_dispatcher_falls_back_to_default_ctx_when_no_begin_exchange(
 
 
 async def test_user_opt_in_lifts_ceiling_in_mode_r(session_factory):
-    """begin_exchange with user_opted_in=True lifts the Mode R ceiling to L3."""
+    """ADR-0016: PluginHost(user_opted_in=True) lifts the Mode R ceiling to L3.
+
+    The opt-in stance is a startup-time field on the host (sourced from
+    `LLMTRACK_USER_OPTED_IN`); `begin_exchange` reads it internally so
+    the forwarder doesn't need to thread it.
+    """
     plugin = _CtxCapturePlugin()
-    host = PluginHost(mode="R", session_factory=session_factory)
+    host = PluginHost(mode="R", session_factory=session_factory, user_opted_in=True)
     host._plugins = [plugin]
 
-    host.begin_exchange("ex-303", request_body=b"deep raw text", user_opted_in=True)
+    host.begin_exchange("ex-303", request_body=b"deep raw text")
     await host.on_request_received("ex-303")
 
     ctx = plugin.received[0]
@@ -658,8 +649,24 @@ async def test_user_opt_in_lifts_ceiling_in_mode_r(session_factory):
     # Mode R + opt-in: ceiling lifts to L3, so L3 request returns full text.
     assert ctx.request_text(ContentLevel.L3) == "deep raw text"
     # Default Mode R (no opt-in) would have capped at L1; this test pins
-    # that the begin_exchange-supplied flag actually propagates.
+    # that the host's startup-time flag actually propagates.
     assert ctx.user_opted_in is True
+
+
+async def test_user_opt_in_default_false_caps_mode_r_at_l1(session_factory):
+    """ADR-0016: without the env knob, Mode R's ceiling stays at L1."""
+    plugin = _CtxCapturePlugin()
+    host = PluginHost(mode="R", session_factory=session_factory)  # default False
+    host._plugins = [plugin]
+
+    host.begin_exchange("ex-305", request_body=b"deep raw text")
+    await host.on_request_received("ex-305")
+
+    ctx = plugin.received[0]
+    assert ctx.user_opted_in is False
+    # The fallback path (no begin_exchange) must also see the host's flag.
+    fallback = host._ctx_for("not-an-exchange")
+    assert fallback.user_opted_in is False
 
 
 async def test_end_exchange_drops_ctx(session_factory):

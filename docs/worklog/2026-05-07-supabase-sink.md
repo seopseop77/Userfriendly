@@ -66,7 +66,7 @@ tests.
 - Updated `docs/STATUS.md` — points active worklog at this file; refreshed
   "Where we paused" and "Next single step".
 
-### Checkpoint 2 — EgressClient SDK + HostEgressClient + per-plugin wiring (commit pending)
+### Checkpoint 2 — EgressClient SDK + HostEgressClient + per-plugin wiring (commit f75a841)
 
 - Created `packages/llm_tracker_sdk/src/llm_tracker_sdk/egress.py` —
   `EgressResponse` (frozen dataclass), `EgressDenied` (carries url +
@@ -116,6 +116,35 @@ tests.
   `BasePlugin.egress` defaults to None; `HookContext.egress` defaults
   to None.
 
+### Checkpoint 3 — `LLMTRACK_USER_OPTED_IN` env + `PluginHost` field (commit pending)
+
+- Modified `packages/llm_tracker/src/llm_tracker/config.py` —
+  `Settings.user_opted_in: bool = False` (`LLMTRACK_USER_OPTED_IN`).
+  pydantic-settings' default boolean coercion handles `1`/`true`/`yes`
+  → True, everything else → False.
+- Modified `packages/llm_tracker/src/llm_tracker/plugin_host/host.py`:
+  - `PluginHost.__init__` accepts `user_opted_in: bool = False`,
+    stored as `self._user_opted_in` (parallel to `self.mode`).
+  - `begin_exchange` drops its `user_opted_in` parameter and reads
+    `self._user_opted_in` instead — the forwarder no longer needs to
+    know about consent (ADR-0016 §Plumbing).
+  - `_ctx_for` fallback path also reads `self._user_opted_in` so the
+    no-`begin_exchange` test path matches production behaviour.
+  - Docstring on `begin_exchange` updated to point at ADR-0016 (was
+    "wired by Phase 1c's user-consent flow").
+- Modified `packages/llm_tracker/src/llm_tracker/proxy/app.py`
+  lifespan — passes `user_opted_in=settings.user_opted_in` to
+  `PluginHost`. The forwarder is untouched.
+- Updated `packages/llm_tracker/tests/test_plugin_host.py`:
+  - `test_user_opt_in_lifts_ceiling_in_mode_r` rewritten to construct
+    the host with `user_opted_in=True` instead of passing the flag to
+    `begin_exchange`.
+  - New `test_user_opt_in_default_false_caps_mode_r_at_l1` pins the
+    "off by default" axiom + the `_ctx_for` fallback path.
+- Updated `packages/llm_tracker/tests/test_config.py` (+3 tests):
+  default False; truthy env values (`1`/`true`/`True`/`yes`/`YES`)
+  → True; falsy env values (`0`/`false`/`False`/`no`/`NO`) → False.
+
 ## Decisions
 
 - **`EgressClient` lifetime is per-plugin, not per-exchange** (ADR-0015).
@@ -160,6 +189,25 @@ Test count went from 189 → 198 (+9 new: 4 in `test_egress_client.py`,
 5 in `test_egress_protocol.py`). The pre-existing
 `test_cli_manage` deprecation warnings are untouched (carried over from
 the `claude-manage` work, see `docs/worklog/2026-05-07-claude-manage.md`).
+
+CP3 (user_opted_in env + host field):
+
+```
+$ .venv/bin/python3.12 -m pytest -q
+............................................................   [ 35%]
+............................................................   [ 71%]
+..........................................................     [100%]
+202 passed, 4 warnings in 1.33s
+```
+
+Test count went 198 → 202 (+4 new: 3 in `test_config.py` for the env
+coercion paths, 1 in `test_plugin_host.py` for the default-False
+fallback through `_ctx_for`). The existing
+`test_user_opt_in_lifts_ceiling_in_mode_r` was rewritten in-place to
+match the ADR-0016 plumbing and still passes.
+
+Ruff format + check on every changed file (CP3): 1 file reformatted
+(`test_config.py`), 4 left unchanged, all checks passed.
 
 Ruff format + check on every changed file (CP2):
 

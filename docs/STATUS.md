@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-08 (CP5 — supabase_sink package skeleton + parser + 26 unit tests)
+**Last updated**: 2026-05-08 (CP6 — supabase_sink client + plugin lifecycle + 26 more tests)
 **Updated by**: Claude Code
 
 ## Current phase
 
 - **Phase**: **Phase-2 partial — supabase_sink reference plugin (early)**. Phase 1c (`scope_guard`) explicitly deferred per user. The egress client SDK is a Phase-1b debt repayment forced by this work; the consent env knob is the smallest surface that lifts Mode R's ceiling without bundling the full Phase-2 consent UX (ADR-0016).
-- **Active task**: 9-checkpoint plan for `llm_tracker_plugin_supabase_sink`. CP1–CP5 done (ADRs, EgressClient SDK, opt-in env, Supabase schema, package skeleton + parser). CP6 (client + lifecycle + queue/flusher) is next.
+- **Active task**: 9-checkpoint plan for `llm_tracker_plugin_supabase_sink`. CP1–CP6 done. CP7 (`on_shutdown` timeout extension) is next.
 
 ## Active worklog
 
@@ -21,11 +21,11 @@
 ## Recent commits
 
 ```
-<CP5>     supabase-sink: package skeleton + parser + tests
+<CP6>     supabase-sink: client + plugin lifecycle + flusher
+9088825   supabase-sink: package skeleton + parser + tests
 a3b5dff   supabase-sink: schema migrated + RLS enabled
 dff7e3e   config: LLMTRACK_USER_OPTED_IN env + PluginHost field
 f75a841   egress: EgressClient SDK + per-plugin wiring
-8712183   docs: ADR-0015/0016 + supabase-sink kickoff
 ```
 
 ## Where we paused
@@ -88,38 +88,24 @@ side-quests):
 
 ## Next single step
 
-**CP6: `client.py` + plugin `__init__` (queue + flusher + retry) +
-unit tests.** Two artefacts:
+**CP7: `on_shutdown` timeout extension.** `PluginHost._call` enforces
+`HOOK_TIMEOUT = 5.0 s` for *every* hook including `on_shutdown`,
+which is too tight for a sink that may have a queue depth of N
+records when the proxy stops. Without this change a long-tail
+shutdown silently drops records and audit-logs a
+`plugin_fault timeout` row.
 
-- `client.py` — `SupabaseSinkClient.submit(record)`. Takes
-  `(url, headers_factory)` so vendor coupling lives only here:
-  swapping PostgREST → Edge Function later means rewriting *this
-  file* (URL + auth + idempotency mapping + response parsing), not
-  the plugin core. Builds JSON body (single-row PostgREST array),
-  sets `apikey` + `Authorization: Bearer …` + `Prefer:
-  resolution=ignore-duplicates` + `Content-Type: application/json`,
-  delegates to `self.egress.fetch`. 201 = ok, 409 = idempotent skip,
-  other = retry signal. The `service_role` key is read from env at
-  call time via the `headers_factory` callable — never stored as a
-  string attribute.
-- `__init__.py` (overwrite the CP5 placeholder) —
-  `SupabaseSinkPlugin`. `on_init` validates env (`LLMTRACK_PLUGIN_
-  SUPABASE_SINK_URL`, `LLMTRACK_PLUGIN_SUPABASE_SINK_KEY`) and
-  bails with a warning if missing. Per-exchange:
-  `on_response_chunk` feeds the `ResponseAssembler`;
-  `on_response_complete` builds an `ExchangeRecord` from the
-  cached request body + assembled response + usage and enqueues it.
-  Background flusher task: batch every N=8 records or T=2 s,
-  retry with exponential backoff (3 attempts then drop +
-  audit-warn), uses `self.egress.fetch`. `on_shutdown` drains the
-  queue (CP7 will extend the timeout).
+Plan: split the timeout in `host.py` into two constants —
+`HOOK_TIMEOUT` (per-exchange, unchanged at 5 s) and
+`SHUTDOWN_HOOK_TIMEOUT` (longer, e.g. 30 s) — and have the
+`on_shutdown` dispatcher pass the latter to `_call`. Add a unit test
+that constructs a slow `on_shutdown` plugin and pins the new
+behaviour: under the per-exchange timeout it would have faulted,
+under the shutdown timeout it completes.
 
-Tests via `PluginHarness` + a stub `ctx.egress` that records the
-fetch calls — verify the chunk → complete → batch → fetch flow,
-the 409 idempotent path, retry-then-drop, and shutdown drain.
-
-Then in order: CP7 (`on_shutdown` timeout), CP8 (integration test +
-signing), CP9 (manual e2e). Plan in the active worklog above.
+Then in order: CP8 (integration test + manifest signing), CP9
+(manual e2e against the real Supabase project). Plan in the active
+worklog above.
 
 ## Blocking / decisions needed
 

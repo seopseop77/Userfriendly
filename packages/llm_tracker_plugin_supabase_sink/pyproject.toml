@@ -12,6 +12,7 @@ license = { text = "Proprietary (internal research use)" }
 
 dependencies = [
     "llm-tracker-sdk",
+    "structlog",
 ]
 
 [project.entry-points."llm_tracker.plugins"]

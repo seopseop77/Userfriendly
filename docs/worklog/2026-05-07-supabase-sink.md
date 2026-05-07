@@ -178,7 +178,7 @@ The plugin package (CP5) will check in a `schema.sql` next to the
 plugin source so the schema lives in the repo, not just on the
 remote.
 
-### Checkpoint 5 — supabase_sink package skeleton + parser + unit tests (2026-05-08, commit pending)
+### Checkpoint 5 — supabase_sink package skeleton + parser + unit tests (2026-05-08, commit 9088825)
 
 - Created `packages/llm_tracker_plugin_supabase_sink/pyproject.toml`
   — workspace member, hatchling build, depends on `llm-tracker-sdk`,
@@ -241,6 +241,76 @@ remote.
   `packages/llm_tracker_plugin_supabase_sink/tests` to
   `[tool.pytest.ini_options].testpaths`.
 - Refreshed `uv.lock` for the new workspace member.
+
+### Checkpoint 6 — `client.py` + plugin lifecycle + queue/flusher + tests (2026-05-08, commit pending)
+
+- Created
+  `packages/llm_tracker_plugin_supabase_sink/src/llm_tracker_plugin_supabase_sink/client.py`:
+  - `ExchangeRecord` (frozen dataclass) mirrors the CP4 schema 1:1; a
+    `to_postgrest_row()` helper turns it into the JSON-serialisable
+    dict that ships in the request body.
+  - `SubmitOutcome` enum: `OK` (200/201), `IDEMPOTENT_SKIP` (409),
+    `RETRY` (5xx), `TERMINAL_FAILURE` (other 4xx + `EgressDenied`).
+    Pinned by parametrised tests.
+  - `SupabaseSinkClient(url, headers_factory, egress)` — vendor
+    coupling lives only here. Posts a single-row JSON array (PostgREST
+    accepts both shapes; array form means a future batch-of-N variant
+    is a one-line change). Headers: `apikey` + `Authorization: Bearer
+    …` from the factory + `Content-Type: application/json` + `Prefer:
+    resolution=ignore-duplicates`. Catches `EgressDenied` and maps it
+    to `TERMINAL_FAILURE` (the guard already wrote the
+    `egress_blocked` audit row).
+- Overwrote
+  `packages/llm_tracker_plugin_supabase_sink/src/llm_tracker_plugin_supabase_sink/__init__.py`
+  — full `SupabaseSinkPlugin`:
+  - `on_init` builds a `SupabaseSinkClient` from
+    `LLMTRACK_PLUGIN_SUPABASE_SINK_URL` /
+    `LLMTRACK_PLUGIN_SUPABASE_SINK_KEY` (or accepts a
+    test-injected `client=`); starts the background flusher task. If
+    env is missing or `self.egress` was not wired by the host, the
+    plugin disables itself and logs a structlog warning instead of
+    raising.
+  - `on_response_chunk` no-ops unless `ctx.user_opted_in` (consent
+    gate). On first chunk, captures `(session_id, mode,
+    ts_started_ms=now, request_text+raw_request via
+    extract_request_text(ctx._raw_request_body))` and a fresh
+    `ResponseAssembler`. Subsequent chunks feed the assembler.
+  - `on_response_complete` builds an `ExchangeRecord` from the
+    captured state + the assembler's outputs and enqueues it.
+  - Background flusher (`_collect_batch` + `_flush`): batches up to
+    `batch_size` records or until `batch_interval_s` elapses (whichever
+    first); per-record exp-backoff retry up to `max_attempts` (default
+    3) on `RETRY`; drops + structlog-warns on `TERMINAL_FAILURE` or
+    max-attempts-exceeded.
+  - `on_shutdown` puts a `None` sentinel and awaits the flusher so
+    queued records drain before exit.
+  - `headers_factory` is a closure that re-reads `KEY_ENV` *each call*
+    — the service_role key is never stored as a string attribute on
+    the client (CLAUDE.md §7 + critic recommendation).
+  - Plugin's tunables (`batch_size`, `batch_interval_s`,
+    `max_attempts`, `backoff_base_s`, `sleep`) are constructor args
+    so tests run fast (sleep stub) and exercise small-batch /
+    aggressive-retry shapes.
+- Created
+  `packages/llm_tracker_plugin_supabase_sink/tests/test_client.py`
+  (12 tests): parametrised status-code → `SubmitOutcome` mapping (10
+  rows: 200/201/409/500/502/503/400/401/403/404), `EgressDenied` →
+  `TERMINAL_FAILURE`, URL/header construction, JSON-array body shape,
+  per-call `headers_factory` invocation (no caching), null-optional
+  fields round-trip.
+- Created
+  `packages/llm_tracker_plugin_supabase_sink/tests/test_plugin.py`
+  (14 tests): full chunk → submit pipeline; opted-out no-op;
+  batch-size threshold flushes early; retry-then-succeed records
+  twice (verify retry path); terminal failure drops without retry;
+  max-attempts-exceeded drop; on_shutdown drains; `on_init` disables
+  on missing env; `on_init` disables on no-egress; empty
+  `on_response_complete` (Block/Abort path); two interleaved
+  exchanges stay isolated.
+- Modified `packages/llm_tracker_plugin_supabase_sink/pyproject.toml`
+  — added `structlog` to `dependencies` (warnings on plugin-side
+  drops). `httpx` is *not* a plugin dependency — egress is solely
+  through `self.egress.fetch(...)`, the SDK Protocol.
 
 ## Decisions
 
@@ -344,6 +414,28 @@ Ruff format + check: 2 files reformatted (parser.py, tests),
 (import-sort) in `test_parser.py`, autofixed by `ruff check --fix`.
 Final `ruff check packages/llm_tracker_plugin_supabase_sink`: all
 checks passed.
+
+CP6 (client + plugin lifecycle + queue/flusher):
+
+```
+$ .venv/bin/python3.12 -m pytest -q
+............................................................   [ 23%]
+............................................................   [ 47%]
+............................................................   [ 70%]
+............................................................   [ 94%]
+..............                                                   [100%]
+254 passed, 4 warnings in 1.74s
+```
+
+Test count went 228 → 254 (+26 new: 12 in `test_client.py`, 14 in
+`test_plugin.py`). Targeted run on the supabase_sink package alone:
+`52 passed in 0.53s` (parser + client + plugin all green).
+
+Ruff format + check: 3 files reformatted, 3 unchanged. Initial
+check flagged `UP041` (`asyncio.TimeoutError` aliases builtin
+`TimeoutError` in 3.11+), `I001` import-sort in `test_plugin.py`,
+and `F401` unused `typing.Any` import — all autofixed by
+`ruff check --fix`. Final check: clean.
 
 Ruff format + check on every changed file (CP2):
 

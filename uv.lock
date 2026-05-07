@@ -661,10 +661,14 @@ version = "0.1.0"
 source = { editable = "packages/llm_tracker_plugin_supabase_sink" }
 dependencies = [
     { name = "llm-tracker-sdk" },
+    { name = "structlog" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "llm-tracker-sdk", editable = "packages/llm_tracker_sdk" }]
+requires-dist = [
+    { name = "llm-tracker-sdk", editable = "packages/llm_tracker_sdk" },
+    { name = "structlog" },
+]
 
 [[package]]
 name = "llm-tracker-plugin-token-counter"

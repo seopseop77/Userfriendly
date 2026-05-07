@@ -6,55 +6,72 @@
 
 ---
 
-**Last updated**: 2026-05-08 (operator UX: proxy reads `.env` at startup)
+**Last updated**: 2026-05-08 (CP9 — supabase_sink **shipped**; happy + Mode-L + allowlist-mismatch all verified against real traffic)
 **Updated by**: Claude Code
 
 ## Current phase
 
-- **Phase**: **Phase-2 partial — supabase_sink reference plugin (early)**. Phase 1c (`scope_guard`) explicitly deferred per user. The egress client SDK is a Phase-1b debt repayment forced by this work; the consent env knob is the smallest surface that lifts Mode R's ceiling without bundling the full Phase-2 consent UX (ADR-0016).
-- **Active task**: 9-checkpoint plan for `llm_tracker_plugin_supabase_sink`. CP1–CP8 done (signed plugin + 55 unit/integration tests against fake Supabase) plus a tiny operator-UX side-quest (.env loading at lifespan start). **CP9 (manual e2e against the real Supabase project) is the last step — needs the operator to fill `.env` with the service_role key.**
+- **Phase**: **Phase-2 partial — `supabase_sink` reference plugin shipped.** ADR-0007's named Phase-2 plugin is operational end-to-end against the operator's real Supabase project. Phase 1c (`scope_guard`) and the rest of Phase 2 (`llm_tracker_server` routes, full per-task consent UX, contributor plugins) remain on the deck.
+- **Active task**: None. The workstream closed at CP9; pick the next direction (Phase 1c, Phase-1b loose ends, or a Phase-2 follow-on) when starting the next session.
 
 ## Active worklog
 
-`docs/worklog/2026-05-07-supabase-sink.md`
+`docs/worklog/2026-05-07-supabase-sink.md` (closed; final entry under "Checkpoint 9")
 
 ## Recent commits
 
 ```
-<sq-env>  proxy: load .env at lifespan + refreshed .env.example
+<CP9>     supabase-sink: CP9 e2e shipped (worklog/STATUS only)
+f2f53b7   proxy: load .env at lifespan + refreshed .env.example
 f420000   supabase-sink: e2e integration test + signed manifest
 4294d10   plugin-host: SHUTDOWN_HOOK_TIMEOUT for sink drain
 6ab979c   supabase-sink: client + plugin lifecycle + flusher
-9088825   supabase-sink: package skeleton + parser + tests
 ```
 
 ## Where we paused
 
-**Phase-2 reference plugin (`supabase_sink`) work kicked off; CP1
-(ADRs) about to land.** User asked for a "real, working" plugin that
-ships request prompt + model response to a Supabase Postgres,
-explicitly to also exercise the egress stack end-to-end. Plan was
-critic-reviewed and folded its three load-bearing changes back into
-the design before commit:
+**`supabase_sink` workstream closed.** ADR-0007's reference Mode-R
+plugin is operational against the operator's real Supabase project
+(7 rows in `public.exchanges` from Path 1). All three safety
+paths verified against real traffic in CP9:
 
-- **ADR-0015** (`docs/decisions/0015-egress-client-sdk.md`) — adds
-  `EgressClient` Protocol + `EgressResponse` + `EgressDenied` to the
-  SDK; `BasePlugin.egress` and `HookContext.egress` reference the
-  *same* per-plugin instance bound at load time. Per-plugin lifetime
-  (not per-exchange) is what lets a batched/retry background flusher
-  call `fetch` outside any hook. Discharges the plugins.md §8
-  promise that has been carrying since Phase 1a.
-- **ADR-0016** (`docs/decisions/0016-user-opt-in-env-knob.md`) —
-  `LLMTRACK_USER_OPTED_IN` (default False), held as a `PluginHost`
-  startup-time field, threaded into every `HookContext`. Smallest
-  surface that lifts Mode R's content ceiling to L3 without bundling
-  the per-task consent UX (which stays deferred per ADR-0006 §"Open
+- **Path 1 — Happy** (`Mode R` + opted_in + correct manifest):
+  7 rows landed; `request_text` / `response_text` / `usage`
+  populated as expected; one row has `model_served=null` (HTTP
+  error response from Anthropic — non-SSE body — by-design
+  observability hole, see CP9 worklog "Observation").
+- **Path 2 — Mode L safety**: `capability_denied` at proxy
+  startup, plugin never loaded, 0 new rows, `claude` response
+  flowed through the proxy normally. Production equivalent of
+  `test_e2e_mode_l_rejects_plugin_at_load_time`.
+- **Path 3 — Allowlist mismatch**: manifest's `egress_destinations`
+  set to a bogus URL → plugin loaded but `EgressGuard` denied
+  every fetch with `reason=destination_not_in_allowlist`; 0 new
+  rows; 4 `egress_blocked` audit rows; manifest restored +
+  re-signed (ed25519 deterministic → byte-identical to CP8).
+
+The deferred `Phase 1b loose ends` and the user-deferred
+`Phase 1c` (`scope_guard`) remain the natural next directions.
+
+**Workstream artefacts** (per CLAUDE.md §10 public-interface
+catalogue):
+
+- ADR-0015 — `EgressClient` Protocol + `EgressResponse` +
+  `EgressDenied`; `BasePlugin.egress` / `HookContext.egress`
+  reference the *same* per-plugin instance bound at load time.
+- ADR-0016 — `LLMTRACK_USER_OPTED_IN` env knob (interim consent
+  surface; per-task UX still deferred per ADR-0006 §"Open
   questions").
-
-Sequencing reality: this brings forward parts of Phase 2
-(supabase_sink + a stub of the consent flow) and pays back the
-Phase-1b egress-API debt. Phase 1c (`scope_guard`) is **explicitly
-deferred** at the user's direction.
+- New SDK module: `llm_tracker_sdk.egress`.
+- New core module: `llm_tracker.egress_guard.client` (`HostEgressClient`).
+- New `PluginHost` constructor params: `http_client`,
+  `user_opted_in`. New `SHUTDOWN_HOOK_TIMEOUT` = 30 s for sink
+  drain.
+- New plugin package: `packages/llm_tracker_plugin_supabase_sink/`
+  (signed by `minseop`, 55 unit + 3 integration tests).
+- Supabase: `public.exchanges` table + RLS enabled (CP4).
+- Operator UX: proxy reads `.env` at lifespan; refreshed
+  `.env.example` to match the current `Settings` surface.
 
 Closed-checkpoint roll-up (cleanup pass A–G + stop gates +
 side-quests):
@@ -74,6 +91,12 @@ side-quests):
 - pre-1c verification (2c28f68): TEST-ONLY token_counter + keyword_block
 - side-quest #2 (d2e33d5, 9aa8321): `claude-manage` wrapper + async cleanup
 - side-quest #3 (0a43502, 161505d): plugin disable config + `/admin/plugins`
+- supabase_sink workstream (8712183, f75a841, dff7e3e, a3b5dff,
+  9088825, 6ab979c, 4294d10, f420000, f2f53b7, + this CP9
+  finalize commit): ADR-0015/0016 + `EgressClient` SDK +
+  `LLMTRACK_USER_OPTED_IN` + Supabase schema + the plugin itself
+  + `SHUTDOWN_HOOK_TIMEOUT` + signed manifest + `.env` lifespan
+  loader + manual e2e
 
 ### Phase 1b loose ends (still deferred)
 
@@ -88,44 +111,34 @@ side-quests):
 
 ## Next single step
 
-**CP9: manual e2e against the real Supabase project.** Needs the
-operator's `service_role` key — Claude Code can't provide that
-itself. Steps:
+**Pick a direction.** The supabase_sink workstream closed cleanly,
+so the next session is free to choose. Three obvious candidates,
+in roughly increasing scope:
 
-1. Operator copies `.env.example` → `.env` (project root) and fills
-   the `LLMTRACK_*` block. Minimum:
-   ```
-   LLMTRACK_MODE=R
-   LLMTRACK_USER_OPTED_IN=1
-   LLMTRACK_PLUGIN_SUPABASE_SINK_URL=https://qdcixbwwlsnkekabavmj.supabase.co/rest/v1/exchanges
-   LLMTRACK_PLUGIN_SUPABASE_SINK_KEY=<service_role from Supabase dashboard>
-   ```
-   `.env` is in `.gitignore` so the key won't end up in a commit.
-   Lifespan calls `load_dotenv()` before `Settings()`, so the proxy
-   picks it up automatically.
-2. Run a small claude command through the proxy:
-   ```
-   .venv/bin/claude-manage --print "say hello in five words"
-   ```
-3. Verify (via the Supabase MCP):
-   - `mcp__supabase__execute_sql "select count(*), max(ts_inserted) from public.exchanges"`
-     shows ≥1 row with a recent timestamp.
-   - `mcp__supabase__execute_sql "select exchange_id, mode, request_text, response_text, model_served, output_tokens from public.exchanges order by ts_inserted desc limit 1"`
-     shows the round-trip with sane values.
-   - `.venv/bin/llm-tracker audit | grep egress_attempt`
-     shows `outcome=ok plugin=supabase_sink`.
-4. Negative path: edit `egress_destinations` in the *signed* manifest
-   to a wrong URL, re-sign with `llm-tracker sign-plugin … --signer
-   minseop`, restart the proxy, send another claude request, confirm
-   `llm-tracker audit | grep egress_blocked` shows
-   `reason=destination_not_in_allowlist`.
-5. After verification, restore the manifest, re-sign, and update
-   STATUS.md to "Phase 2 partial — supabase_sink **shipped**" and
-   close out this worklog.
+1. **Phase-1b loose ends (small).** `end_exchange` cleanup in the
+   forwarder is a bounded `_exchange_contexts` leak; per-level
+   shape refinement of `ctx.request_text()` (L1 hash, L2 scrubbed)
+   has been deferred since Phase 1a. Either is a small standalone
+   checkpoint. Per-level shape work pairs naturally with whatever
+   real consent / scrubber work comes next.
+2. **Phase 2 follow-ons (medium).** A real per-task consent UX
+   (replacing `LLMTRACK_USER_OPTED_IN` per ADR-0016 §"Open
+   questions") needs its own design pass. `llm_tracker_server`
+   routes / repositories / migrations are still empty (ADR-0007
+   §2 demoted them to optional analysis app, not write path).
+   `drift_metrics` contributor plugin is the planned third-party
+   integration test target.
+3. **Phase 1c — `scope_guard` (large).** User-deferred at the
+   start of the supabase_sink workstream. Now that the egress
+   API and signed-plugin pattern are ready, `scope_guard`'s
+   Stage-2 LLM judge has the infra it needs. Will need its own
+   planning pass — multiple ADR-worthy decisions (TaskDefinition
+   schema, embedding judge sizing, eval-set acceptance criteria).
+   Should re-open the planning interview.
 
-Once CP9 is done the supabase_sink workstream is closed. Phase 1c
-(`scope_guard`) and the rest of Phase 2 (full per-task consent UX,
-`llm_tracker_server`, contributor plugins) remain on the deck.
+Recommend starting from option 1 unless the user has a reason to
+push 1c — Phase-1b loose ends are quick wins that unblock 1c
+later.
 
 ## Blocking / decisions needed
 
@@ -145,7 +158,7 @@ Once CP9 is done the supabase_sink workstream is closed. Phase 1c
 - [x] Pre-Phase-1c verification — TEST-ONLY plugins (token_counter, keyword_block) (2026-05-06, commit 2c28f68)
 - [x] `claude-manage` wrapper — auto-spawn proxy + lifecycle-coupled cleanup (2026-05-07, commits d2e33d5, 9aa8321)
 - [x] Plugin disable config + `/admin/plugins` introspection (2026-05-07, commits 0a43502, 161505d)
-- [ ] **Phase 2 partial — `supabase_sink` reference plugin (in progress, 9 checkpoints)**
+- [x] **Phase 2 partial — `supabase_sink` reference plugin (CLOSED 2026-05-08, 9 commits 8712183 → CP9 finalize)**
 - [ ] Phase 1c — `scope_guard` plugin (deferred per user)
 - [ ] Phase 2 remainder — `llm_tracker_server` routes, full per-task consent UX, contributor plugins
 

@@ -386,7 +386,7 @@ records and audit-log a misleading `plugin_fault timeout`.
   workspace's other entry-points (hello_world, token_counter,
   keyword_block).
 
-### Side-quest — `.env` support for the proxy (2026-05-08, commit pending)
+### Side-quest — `.env` support for the proxy (2026-05-08, commit f2f53b7)
 
 User flagged that re-exporting `LLMTRACK_PLUGIN_SUPABASE_SINK_*`
 each shell session is annoying before CP9. Tiny operator-UX
@@ -415,6 +415,116 @@ addition.
   is committable; `.env` is already in `.gitignore`.
 - No new tests — `load_dotenv` is upstream-tested; the wiring is a
   one-line lifespan addition. Suite still 259 passed; ruff clean.
+
+### Checkpoint 9 — manual e2e against the real Supabase project (2026-05-08, commit pending)
+
+Three safety paths verified against real Anthropic + real Supabase
+traffic. End of the supabase_sink workstream.
+
+**Path 1 — Happy path** (Mode R + opted_in + correct manifest)
+
+User filled `.env`, ran `claude-manage --print …` a few times.
+Result: 7 rows in `public.exchanges`, all `mode=R`, all
+`source=supabase_sink/0.1.0`. Spot-checks via
+`mcp__supabase__execute_sql`:
+
+- `model_requested` matches the request's `model` field
+  (`claude-opus-4-7`, `claude-haiku-4-5-20251001`).
+- `model_served` matches *when SSE arrived* — see Observation
+  below for the one row where it's NULL.
+- `request_text` is the rendered `[role]\n…` shape from
+  `extract_request_text`; `response_text` is the assembled text
+  delta join. `request_text` lengths 60–60k chars confirm system
+  prompts and tool_use round-trip; image bodies (if any) would
+  show up as `[image]` placeholders.
+- Usage / cache_* token columns populated except in error rows.
+- 7 matching `egress_attempt outcome=ok` rows in the local
+  `audit_log`, each `plugin=supabase_sink destination=<env URL>`.
+
+**Observation — one row with `model_served=null`** (`exchange_id
+01KR1KQ9YBEGSDW6VQ1FCNQ5EP`, `request_text="[user]\nquota"`).
+Cause: `ResponseAssembler` never saw a `message_start` SSE event
+for this exchange, so `model`/`stop_reason`/`usage` stayed at
+their initial values. Most likely an Anthropic HTTP error response
+(rate-limit / quota / 4xx) that returned a JSON error body
+*instead of* an SSE stream — our parser is SSE-only, so the
+event boundary `\n\n` never fires, the assembler ends up with 0
+blocks, and `on_response_complete` enqueues a sparsely-populated
+record. Intentional behaviour: the row exists for forensics and
+the NULLs are honest about what we couldn't observe. v0.2 could
+add an `error_status` column or stash the raw error body in
+`raw_response.error`; out of scope for v0.1.
+
+**Path 2 — Mode L safety** (accidentally — but still valuable)
+
+User's `.env` briefly reverted to `LLMTRACK_MODE=L` between Path 1
+and Path 3. Result: a single audit row `capability_denied
+plugin=supabase_sink detail_json={"mode": "L", "denied":
+["egress_http"]}` at proxy startup. The plugin never reached the
+hook dispatch loop; zero new Supabase rows; `claude` response
+flowed through the proxy normally. This is the production
+equivalent of the
+`test_e2e_mode_l_rejects_plugin_at_load_time` integration test
+from CP8.
+
+**Path 3 — Allowlist mismatch** (the original CP9 negative-path
+intent)
+
+Procedure:
+
+1. Edited the manifest's `egress_destinations` to
+   `["https://wrong-host.invalid/rest/v1/exchanges"]` and
+   re-signed with `llm-tracker sign-plugin … --signer minseop`.
+2. User restored `LLMTRACK_MODE=R` in `.env` and ran
+   `claude-manage --print "negative test 2"`.
+3. Verification (this document's author, via the supabase MCP +
+   the local `audit_log`):
+
+```
+$ mcp supabase execute_sql "select count(*), max(ts_inserted) from public.exchanges"
+[{"total": 7, "latest": "2026-05-07 16:18:38.945705+00"}]   # unchanged
+```
+
+```
+audit_log | most-recent run window:
+  plugin_loaded: 4   (incl. supabase_sink — manifest sig verified, capabilities allowed in Mode R)
+  egress_blocked: 4  (4 attempts: 1 record × max_attempts=3 + 1 partial retry from a second exchange)
+  proxy_started/_stopped: 1 / 1
+  hook_invoked: 20
+
+egress_blocked detail_json (all 4 rows):
+  plugin=supabase_sink
+  capability=egress_http
+  destination=https://qdcixbwwlsnkekabavmj.supabase.co/rest/v1/exchanges  ← env URL the plugin tried
+  outcome=denied
+  detail_json={"mode": "R", "reason": "destination_not_in_allowlist"}
+```
+
+So the plugin loaded (manifest sig verified, capabilities allowed
+in Mode R), tried to call out to the env URL, EgressGuard
+compared it against the manifest's allowlist (`wrong-host.invalid`)
+and denied each attempt with the right reason. Zero rows landed
+in Supabase. The `claude` response still flowed through the proxy
+normally — the operator-facing impact is "you don't get any
+Supabase upload" rather than "Claude is broken".
+
+**Cleanup**
+
+- Restored `egress_destinations` to the production URL and
+  re-signed. ed25519 signatures are deterministic over
+  `(key, message)`, so the regenerated `plugin.toml.sig` is
+  byte-identical to the file committed in CP8 — `git status` is
+  clean.
+- Suite re-run: `259 passed`. No regressions.
+
+**Phase-2-partial wrap-up**
+
+`llm_tracker_plugin_supabase_sink` workstream closes here. ADR-0007's
+named reference plugin is now operational against a real Supabase
+project. Phase 1c (`scope_guard`), the rest of Phase 2
+(`llm_tracker_server` routes, full per-task consent UX,
+`drift_metrics` contributor plugin), and the Phase-1b loose ends
+listed in STATUS.md remain on the deck.
 
 ## Decisions
 
@@ -490,6 +600,13 @@ match the ADR-0016 plumbing and still passes.
 
 Ruff format + check on every changed file (CP3): 1 file reformatted
 (`test_config.py`), 4 left unchanged, all checks passed.
+
+CP9 (manual e2e against real Supabase): see the dedicated CP9 entry
+in "What was done" above for the structured walk through Paths 1/2/3.
+End-of-CP9 state: 7 rows in `public.exchanges` from Path 1, 0
+new rows from Paths 2+3, audit log shows `egress_attempt: 7`,
+`egress_blocked: 4`, `capability_denied: 1` for the run window.
+`pytest -q`: `259 passed`.
 
 CP4 (Supabase schema): no repo tests — verification is
 `mcp__supabase__list_tables` after each migration. After
@@ -646,8 +763,26 @@ Not in scope for v0.1 (deferred to v0.2 / future ADRs):
 
 ## Handoff
 
-After CP1 commit, the next single step is **CP2: EgressClient SDK +
-HostEgressClient + per-plugin wiring**. Files to touch:
+**Workstream closed.** All 9 checkpoints + the `.env` side-quest
+shipped as 9 commits (`8712183`, `f75a841`, `dff7e3e`, `a3b5dff`,
+`9088825`, `6ab979c`, `4294d10`, `f420000`, `f2f53b7`) plus the
+final CP9 doc-only commit. `llm_tracker_plugin_supabase_sink` is
+operational against the operator's Supabase project and the
+three-axis safety model (Mode L / consent / allowlist) is verified
+against real traffic.
+
+The next session's "Next single step" should rotate to either
+Phase 1c (`scope_guard`) — which the user explicitly deferred at
+the start of this workstream and which now needs its own planning
+pass — or one of the Phase-1b loose ends still tracked in STATUS.md
+("end_exchange cleanup in the forwarder", per-level shape
+refinement of `ctx.request_text()`, manifest `min_content_level`,
+response-side ctx accessors). STATUS.md has been refreshed
+accordingly.
+
+For *historical* reference, the original CP1 handoff that started
+this workstream pointed at **CP2: EgressClient SDK +
+HostEgressClient + per-plugin wiring**. Files touched:
 
 - `packages/llm_tracker_sdk/src/llm_tracker_sdk/egress.py` (new)
 - `packages/llm_tracker_sdk/src/llm_tracker_sdk/__init__.py` (export

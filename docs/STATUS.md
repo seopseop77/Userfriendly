@@ -6,46 +6,57 @@
 
 ---
 
-**Last updated**: 2026-05-06 (Phase-1b verification — test plugins green)
+**Last updated**: 2026-05-07 (`claude-manage` wrapper — code complete, manual e2e pending)
 **Updated by**: Claude Code
 
 ## Current phase
 
-- **Phase**: Pre-Phase-1c verification side-quest (TEST-ONLY plugins). Phase 1b sealed at commit 75ff46a; Phase 1c (`scope_guard`) still on deck.
-- **Active task**: Two TEST-ONLY plugins (`token_counter`, `keyword_block`) landed and verified end-to-end against the existing hook chain.
+- **Phase**: Pre-Phase-1c side-quest #2 — `claude-manage` wrapper. Phase 1b sealed at 75ff46a; Phase 1c (`scope_guard`) still on deck.
+- **Active task**: User-facing CLI ergonomics — typing `claude-manage` auto-starts the proxy daemon, sets `ANTHROPIC_BASE_URL`, runs `claude`, and tears the proxy down on last-user exit (refcounted via `fcntl.flock`).
 
 ## Active worklog
 
-`docs/worklog/2026-05-06-test-plugins.md`
+`docs/worklog/2026-05-07-claude-manage.md`
 
 ## Recent commits
 
 ```
+d2e33d5   cli: claude-manage wrapper auto-starts proxy
+faa718d   chore: add .omc to .gitignore
+55e55cd   docs: worklog + STATUS for test-only plugin verification
 2c28f68   plugins: TEST-ONLY token_counter + keyword_block
 102e69b   docs: Phase 1b checkpoints 17+18 — Gate 2 closed; phase complete
-75ff46a   core: HookContext for hook payload routing (ADR-0012)
-4606ed0   docs: ADR-0012 — HookContext for hook payload routing (Gate 2)
-bbb33e7   proxy: honour Transform from before_forward (ADR-0011)
 ```
 
 ## Where we paused
 
-**Verification side-quest landed before Phase 1c.** Two TEST-ONLY
-plugins under `packages/` exercise the hook chain end-to-end:
+**`claude-manage` wrapper code-complete.** New top-level console script
+(`packages/llm_tracker/src/llm_tracker/cli/manage.py`) that:
 
-- `token_counter` (commit 2c28f68): `on_response_chunk` →
-  `on_response_complete`. Buffers Anthropic SSE and writes
-  per-exchange usage rows to a sidecar SQLite at
-  `var/plugin_token_counter.db`.
-- `keyword_block` (commit 2c28f68): `on_request_received`. Returns
-  `Block(...)` when the request body matches a forbidden keyword
-  (env-configurable via `LLMTRACK_KEYWORDS_BLOCK_LIST`).
+- Probes whether the configured proxy is up; if not, spawns
+  `python -m llm_tracker start ...` as a detached daemon (own session,
+  stdout+stderr to `var/proxy.log`, PID to `var/proxy.pid`).
+- Acquires a shared `fcntl.flock` on `var/proxy.lock` as a refcount
+  across concurrent `claude-manage` invocations.
+- Spawns `claude <argv>` as a foreground child with
+  `ANTHROPIC_BASE_URL` pointed at the proxy. Wrapper ignores
+  SIGINT/SIGQUIT (Ctrl-C reaches `claude` directly); SIGTERM/SIGHUP
+  to the wrapper are forwarded to `claude`.
+- On `claude` exit, attempts a non-blocking exclusive lock upgrade. If
+  successful (no other `claude-manage` alive), `_terminate_proxy`
+  sends SIGTERM, polls, and escalates to SIGKILL after a grace
+  period. Pid file absent ⇒ proxy was started outside the wrapper
+  (e.g. manual `llm-tracker start`) ⇒ left alone.
 
-Both manifests are signed by the bundled `minseop` trust key and
-loaded successfully by `PluginHost.load_plugins()` alongside
-`hello_world` (smoke-tested). 150/150 tests pass; ruff clean.
+22 new unit tests; full suite **172 passed**, ruff clean on the new
+files. `uv sync` registers both `claude-manage` and `llm-tracker`
+console scripts. `python -m llm_tracker ...` works via a new
+`__main__.py` (used by the daemon spawn path).
 
-**Phase 1b remains feature-complete** (commit 75ff46a closed it).
+**Pre-Phase-1c verification (2026-05-06) still applies** — the
+TEST-ONLY plugins (`token_counter`, `keyword_block`) remain loaded
+and ready for the long-deferred manual e2e against real Anthropic
+traffic.
 
 Closed-checkpoint roll-up (cleanup pass A–G + both stop gates):
 
@@ -61,6 +72,7 @@ Closed-checkpoint roll-up (cleanup pass A–G + both stop gates):
 - 16 (bbb33e7): Transform impl + 4 tests
 - 17 (4606ed0): ADR-0012 hook payload routing
 - 18 (75ff46a): HookContext impl + 14 tests
+- pre-1c verification (2c28f68): TEST-ONLY token_counter + keyword_block
 
 ### Phase 1b loose ends
 
@@ -79,12 +91,14 @@ Known-deferred; each would be its own checkpoint when picked up:
 
 Two paths, pick one:
 
-1. **Manual real-traffic e2e** with both test plugins loaded — start
-   `llm-tracker start --mode L`, point `ANTHROPIC_BASE_URL` at it,
-   send one real Claude Code request, and inspect both
-   `var/llm_tracker.db` (core) and `var/plugin_token_counter.db`
-   (sidecar). This is the highest-confidence verification of
-   everything Phase 1a/1b shipped.
+1. **Manual real-traffic e2e via `claude-manage`** — in a fresh
+   working directory, run `.venv/bin/llm-tracker init`, then
+   `.venv/bin/claude-manage --print "hello"` (or any quick claude
+   command). Verify `var/proxy.log` shows clean uvicorn startup, the
+   exchange lands in `var/llm_tracker.db`, the token-counter sidecar
+   db (`var/plugin_token_counter.db`) records usage, and the proxy
+   process is gone after `claude` exits. This combines the previously
+   pending Phase-1a/1b manual e2e with the new wrapper's smoke test.
 2. **Open Phase 1c — `scope_guard` plugin.** Create
    `docs/worklog/<YYYY-MM-DD>-phase1c-scope-guard.md`, point this
    STATUS.md at it, and schedule removal of the now-redundant
@@ -108,6 +122,7 @@ when the proper replacement lands.
 - [x] Phase 1a — plugin SDK (CLOSED 2026-05-05)
 - [x] Phase 1b — security boundary hardening (CLOSED 2026-05-06)
 - [x] Pre-Phase-1c verification — TEST-ONLY plugins (token_counter, keyword_block) (2026-05-06, commit 2c28f68)
+- [x] `claude-manage` wrapper — auto-spawn proxy + lifecycle-coupled cleanup (2026-05-07, commit d2e33d5)
 - [ ] Phase 1c — `scope_guard` plugin
 - [ ] Phase 2+ — Mode R sink, third-party plugins
 

@@ -1,0 +1,14 @@
+name = "supabase_sink"
+version = "0.1.0"
+description = "Mode-R reference upload sink. Batches each exchange's request prompt + assembled model response + usage to a Supabase Postgres via PostgREST. Reference plugin per ADR-0007; first plugin to exercise ctx.egress (ADR-0015) end-to-end."
+hooks = ["on_init", "on_response_chunk", "on_response_complete", "on_shutdown"]
+capabilities = [
+    "read_request_metadata",
+    "read_request_content",
+    "read_response_metadata",
+    "read_response_content",
+    "egress_http",
+]
+egress_destinations = ["https://qdcixbwwlsnkekabavmj.supabase.co/rest/v1/exchanges"]
+allowed_modes = ["R"]
+db_namespace = "supabase_sink"

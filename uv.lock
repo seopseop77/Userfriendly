@@ -11,6 +11,7 @@ members = [
     "llm-tracker",
     "llm-tracker-plugin-hello-world",
     "llm-tracker-plugin-keyword-block",
+    "llm-tracker-plugin-supabase-sink",
     "llm-tracker-plugin-token-counter",
     "llm-tracker-sdk",
     "llm-tracker-server",
@@ -647,6 +648,17 @@ requires-dist = [{ name = "llm-tracker-sdk", editable = "packages/llm_tracker_sd
 name = "llm-tracker-plugin-keyword-block"
 version = "0.0.1"
 source = { editable = "packages/llm_tracker_plugin_keyword_block" }
+dependencies = [
+    { name = "llm-tracker-sdk" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "llm-tracker-sdk", editable = "packages/llm_tracker_sdk" }]
+
+[[package]]
+name = "llm-tracker-plugin-supabase-sink"
+version = "0.1.0"
+source = { editable = "packages/llm_tracker_plugin_supabase_sink" }
 dependencies = [
     { name = "llm-tracker-sdk" },
 ]

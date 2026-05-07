@@ -19,4 +19,5 @@ testpaths = [
     "packages/llm_tracker/tests",
     "packages/llm_tracker_plugin_token_counter/tests",
     "packages/llm_tracker_plugin_keyword_block/tests",
+    "packages/llm_tracker_plugin_supabase_sink/tests",
 ]

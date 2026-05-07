@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-08 (CP4 — Supabase schema migrated, RLS enabled)
+**Last updated**: 2026-05-08 (CP5 — supabase_sink package skeleton + parser + 26 unit tests)
 **Updated by**: Claude Code
 
 ## Current phase
 
 - **Phase**: **Phase-2 partial — supabase_sink reference plugin (early)**. Phase 1c (`scope_guard`) explicitly deferred per user. The egress client SDK is a Phase-1b debt repayment forced by this work; the consent env knob is the smallest surface that lifts Mode R's ceiling without bundling the full Phase-2 consent UX (ADR-0016).
-- **Active task**: 9-checkpoint plan for `llm_tracker_plugin_supabase_sink`. CP1–CP4 done (ADRs, EgressClient SDK, opt-in env, Supabase schema). CP5 (plugin package skeleton + parser + unit tests) is next.
+- **Active task**: 9-checkpoint plan for `llm_tracker_plugin_supabase_sink`. CP1–CP5 done (ADRs, EgressClient SDK, opt-in env, Supabase schema, package skeleton + parser). CP6 (client + lifecycle + queue/flusher) is next.
 
 ## Active worklog
 
@@ -21,11 +21,11 @@
 ## Recent commits
 
 ```
-<CP4>     supabase-sink: schema migrated + RLS enabled (worklog only)
+<CP5>     supabase-sink: package skeleton + parser + tests
+a3b5dff   supabase-sink: schema migrated + RLS enabled
 dff7e3e   config: LLMTRACK_USER_OPTED_IN env + PluginHost field
 f75a841   egress: EgressClient SDK + per-plugin wiring
 8712183   docs: ADR-0015/0016 + supabase-sink kickoff
-161505d   plugins: disable config + /admin/plugins
 ```
 
 ## Where we paused
@@ -88,28 +88,38 @@ side-quests):
 
 ## Next single step
 
-**CP5: `supabase_sink` package skeleton + parser + unit tests.**
-Create `packages/llm_tracker_plugin_supabase_sink/` with
-`pyproject.toml`, `plugin.toml` (signed with `minseop` key),
-`schema.sql` (the CP4-applied DDL committed for reproducibility),
-and `parser.py`:
-- `ResponseAssembler` — Anthropic SSE accumulator. Collects
-  `text_delta` events into `response_text`; reads usage from
-  `message_start` + `message_delta` (extends the token_counter
-  pattern). Handles `\n\n` *and* `\r\n\r\n` chunk boundaries.
-- `RequestExtractor` — decodes the cached request body and pulls
-  human-readable text from `messages[].content`. Handles string
-  content, list-of-blocks (text, tool_result), and emits an
-  `[image]` placeholder for image blocks (don't ship base64 to
-  Supabase).
+**CP6: `client.py` + plugin `__init__` (queue + flusher + retry) +
+unit tests.** Two artefacts:
 
-Tests: parser unit tests including chunk-boundary edge cases and
-each Anthropic content-block variant. No client / no flusher yet —
-those are CP6.
+- `client.py` — `SupabaseSinkClient.submit(record)`. Takes
+  `(url, headers_factory)` so vendor coupling lives only here:
+  swapping PostgREST → Edge Function later means rewriting *this
+  file* (URL + auth + idempotency mapping + response parsing), not
+  the plugin core. Builds JSON body (single-row PostgREST array),
+  sets `apikey` + `Authorization: Bearer …` + `Prefer:
+  resolution=ignore-duplicates` + `Content-Type: application/json`,
+  delegates to `self.egress.fetch`. 201 = ok, 409 = idempotent skip,
+  other = retry signal. The `service_role` key is read from env at
+  call time via the `headers_factory` callable — never stored as a
+  string attribute.
+- `__init__.py` (overwrite the CP5 placeholder) —
+  `SupabaseSinkPlugin`. `on_init` validates env (`LLMTRACK_PLUGIN_
+  SUPABASE_SINK_URL`, `LLMTRACK_PLUGIN_SUPABASE_SINK_KEY`) and
+  bails with a warning if missing. Per-exchange:
+  `on_response_chunk` feeds the `ResponseAssembler`;
+  `on_response_complete` builds an `ExchangeRecord` from the
+  cached request body + assembled response + usage and enqueues it.
+  Background flusher task: batch every N=8 records or T=2 s,
+  retry with exponential backoff (3 attempts then drop +
+  audit-warn), uses `self.egress.fetch`. `on_shutdown` drains the
+  queue (CP7 will extend the timeout).
 
-Then in order: CP6 (client + lifecycle), CP7 (`on_shutdown`
-timeout), CP8 (integration test + signing), CP9 (manual e2e).
-Plan in the active worklog above.
+Tests via `PluginHarness` + a stub `ctx.egress` that records the
+fetch calls — verify the chunk → complete → batch → fetch flow,
+the 409 idempotent path, retry-then-drop, and shutdown drain.
+
+Then in order: CP7 (`on_shutdown` timeout), CP8 (integration test +
+signing), CP9 (manual e2e). Plan in the active worklog above.
 
 ## Blocking / decisions needed
 

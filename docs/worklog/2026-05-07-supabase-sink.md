@@ -145,7 +145,7 @@ tests.
   default False; truthy env values (`1`/`true`/`True`/`yes`/`YES`)
   → True; falsy env values (`0`/`false`/`False`/`no`/`NO`) → False.
 
-### Checkpoint 4 — Supabase schema migration (2026-05-08, commit pending)
+### Checkpoint 4 — Supabase schema migration (2026-05-08, commit a3b5dff)
 
 Schema-only checkpoint — no repo code change. Two migrations applied
 to the operator's Supabase project
@@ -177,6 +177,70 @@ table created with all columns/indices on the first call;
 The plugin package (CP5) will check in a `schema.sql` next to the
 plugin source so the schema lives in the repo, not just on the
 remote.
+
+### Checkpoint 5 — supabase_sink package skeleton + parser + unit tests (2026-05-08, commit pending)
+
+- Created `packages/llm_tracker_plugin_supabase_sink/pyproject.toml`
+  — workspace member, hatchling build, depends on `llm-tracker-sdk`,
+  registers the entry point `supabase_sink =
+  "llm_tracker_plugin_supabase_sink:SupabaseSinkPlugin"`.
+- Created
+  `packages/llm_tracker_plugin_supabase_sink/src/llm_tracker_plugin_supabase_sink/plugin.toml`
+  — manifest. Hooks: `on_init`, `on_response_chunk`,
+  `on_response_complete`, `on_shutdown` (deliberate deviation from
+  design.md §13.1 which suggested `on_persisted` — see Decisions).
+  Capabilities: `read_request_metadata`, `read_request_content`,
+  `read_response_metadata`, `read_response_content`, `egress_http`.
+  `egress_destinations` is a single PostgREST URL. `allowed_modes =
+  ["R"]`. `db_namespace = "supabase_sink"`. (Manifest signing in
+  CP8.)
+- Created
+  `packages/llm_tracker_plugin_supabase_sink/src/llm_tracker_plugin_supabase_sink/schema.sql`
+  — byte-exact CP4 DDL (`create table` + indices + table comment +
+  `alter table … enable row level security`) checked into the repo
+  for reproducibility.
+- Created
+  `packages/llm_tracker_plugin_supabase_sink/src/llm_tracker_plugin_supabase_sink/parser.py`:
+  - `ResponseAssembler` — Anthropic SSE accumulator. Buffers raw
+    bytes, parses event/data blocks, tracks `model`, `stop_reason`,
+    4 usage fields (max-merge — `message_delta.output_tokens` is
+    cumulative final). `text_delta` events accumulate into per-index
+    blocks; `response_text` joins text-only blocks with `\\n\\n` in
+    index order. Handles `\\n\\n` *and* `\\r\\n\\r\\n` event
+    terminators (some HTTP stacks emit CRLF). Bad UTF-8 / invalid
+    JSON in any block drops only that block.
+  - `extract_request_text(body)` — decodes the cached request body,
+    renders `system` + `messages[].content` into a labelled
+    human-readable string. Image blocks → literal `[image]` (never
+    ship base64 to Supabase). Tool blocks render compactly:
+    `[tool_use name(input_json)]`, `[tool_result tool_use_id]
+    content`. Returns `(text, raw_dict)`; failure modes (empty,
+    non-UTF-8, non-JSON, top-level non-dict) return `("", None)`.
+- Created
+  `packages/llm_tracker_plugin_supabase_sink/src/llm_tracker_plugin_supabase_sink/__init__.py`
+  — exports `ResponseAssembler`, `extract_request_text`, and a
+  *placeholder* `SupabaseSinkPlugin` class (just `name =
+  "supabase_sink"` over `BasePlugin`). The full lifecycle/queue/
+  flusher/client wiring lands in CP6; the placeholder is enough for
+  the entry point to resolve.
+- Created `packages/llm_tracker_plugin_supabase_sink/tests/test_parser.py`
+  with **26 unit tests** covering both surfaces:
+  - SSE: in-order text deltas; multi-block `\\n\\n` join; non-text
+    blocks excluded; per-byte chunk fragmentation; `\\r\\n\\r\\n`
+    terminators; mixed LF/CRLF; usage max across `message_start` +
+    `message_delta`; unknown event types skipped; invalid JSON
+    dropped; non-UTF-8 dropped; `raw_response_summary` shape.
+  - Request: string content; list of text blocks; image →
+    placeholder + base64 absent from rendered text; tool_use with
+    rendered input; tool_result with string content; tool_result
+    with list content; top-level system string; top-level system
+    block list; invalid JSON; empty; missing `messages`; non-dict
+    message entries; non-UTF-8 body; top-level non-object; unknown
+    block types skipped (forward-compat).
+- Modified `pyproject.toml` (workspace root) — added
+  `packages/llm_tracker_plugin_supabase_sink/tests` to
+  `[tool.pytest.ini_options].testpaths`.
+- Refreshed `uv.lock` for the new workspace member.
 
 ## Decisions
 
@@ -259,6 +323,27 @@ CP4 (Supabase schema): no repo tests — verification is
 indices + table comment + PK on `exchange_id`. After
 `enable_rls_on_exchanges` the same call returns `rls_enabled: true`
 and the previous critical advisory is gone.
+
+CP5 (supabase_sink package + parser):
+
+```
+$ .venv/bin/python3.12 -m pytest -q
+............................................................   [ 31%]
+............................................................   [ 63%]
+............................................................   [ 94%]
+.............                                                    [100%]
+228 passed, 4 warnings in 1.34s
+```
+
+Test count went 202 → 228 (+26 new — all in
+`packages/llm_tracker_plugin_supabase_sink/tests/test_parser.py`).
+Targeted run on the new package alone: `26 passed in 0.06s`.
+
+Ruff format + check: 2 files reformatted (parser.py, tests),
+1 file left unchanged. Initial run flagged a single I001
+(import-sort) in `test_parser.py`, autofixed by `ruff check --fix`.
+Final `ruff check packages/llm_tracker_plugin_supabase_sink`: all
+checks passed.
 
 Ruff format + check on every changed file (CP2):
 

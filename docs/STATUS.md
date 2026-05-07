@@ -6,13 +6,13 @@
 
 ---
 
-**Last updated**: 2026-05-08 (CP8 — supabase_sink integration test + signed manifest)
+**Last updated**: 2026-05-08 (operator UX: proxy reads `.env` at startup)
 **Updated by**: Claude Code
 
 ## Current phase
 
 - **Phase**: **Phase-2 partial — supabase_sink reference plugin (early)**. Phase 1c (`scope_guard`) explicitly deferred per user. The egress client SDK is a Phase-1b debt repayment forced by this work; the consent env knob is the smallest surface that lifts Mode R's ceiling without bundling the full Phase-2 consent UX (ADR-0016).
-- **Active task**: 9-checkpoint plan for `llm_tracker_plugin_supabase_sink`. CP1–CP8 done (signed plugin + 55 unit/integration tests against fake Supabase). **CP9 (manual e2e against the real Supabase project) is the last step — needs the operator to provide the service_role key.**
+- **Active task**: 9-checkpoint plan for `llm_tracker_plugin_supabase_sink`. CP1–CP8 done (signed plugin + 55 unit/integration tests against fake Supabase) plus a tiny operator-UX side-quest (.env loading at lifespan start). **CP9 (manual e2e against the real Supabase project) is the last step — needs the operator to fill `.env` with the service_role key.**
 
 ## Active worklog
 
@@ -21,11 +21,11 @@
 ## Recent commits
 
 ```
-<CP8>     supabase-sink: e2e integration test + signed manifest
+<sq-env>  proxy: load .env at lifespan + refreshed .env.example
+f420000   supabase-sink: e2e integration test + signed manifest
 4294d10   plugin-host: SHUTDOWN_HOOK_TIMEOUT for sink drain
 6ab979c   supabase-sink: client + plugin lifecycle + flusher
 9088825   supabase-sink: package skeleton + parser + tests
-a3b5dff   supabase-sink: schema migrated + RLS enabled
 ```
 
 ## Where we paused
@@ -92,14 +92,17 @@ side-quests):
 operator's `service_role` key — Claude Code can't provide that
 itself. Steps:
 
-1. Operator exports env (in a fresh shell where the proxy will run):
+1. Operator copies `.env.example` → `.env` (project root) and fills
+   the `LLMTRACK_*` block. Minimum:
    ```
-   export LLMTRACK_MODE=R
-   export LLMTRACK_USER_OPTED_IN=1
-   export LLMTRACK_PLUGIN_SUPABASE_SINK_URL=\
-       https://qdcixbwwlsnkekabavmj.supabase.co/rest/v1/exchanges
-   export LLMTRACK_PLUGIN_SUPABASE_SINK_KEY=<service_role from Supabase dashboard>
+   LLMTRACK_MODE=R
+   LLMTRACK_USER_OPTED_IN=1
+   LLMTRACK_PLUGIN_SUPABASE_SINK_URL=https://qdcixbwwlsnkekabavmj.supabase.co/rest/v1/exchanges
+   LLMTRACK_PLUGIN_SUPABASE_SINK_KEY=<service_role from Supabase dashboard>
    ```
+   `.env` is in `.gitignore` so the key won't end up in a commit.
+   Lifespan calls `load_dotenv()` before `Settings()`, so the proxy
+   picks it up automatically.
 2. Run a small claude command through the proxy:
    ```
    .venv/bin/claude-manage --print "say hello in five words"

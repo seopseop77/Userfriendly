@@ -341,7 +341,7 @@ records and audit-log a misleading `plugin_fault timeout`.
     cuts the plugin off so a misbehaving plugin can't hold the
     proxy hostage. `plugin_fault` audit row fires.
 
-### Checkpoint 8 — integration test + manifest signing (2026-05-08, commit pending)
+### Checkpoint 8 — integration test + manifest signing (2026-05-08, commit f420000)
 
 - Signed `packages/llm_tracker_plugin_supabase_sink/src/llm_tracker_plugin_supabase_sink/plugin.toml.sig`
   via the existing CLI:
@@ -385,6 +385,36 @@ records and audit-log a misleading `plugin_fault timeout`.
   bypass) to drive *only* supabase_sink without pulling in the
   workspace's other entry-points (hello_world, token_counter,
   keyword_block).
+
+### Side-quest — `.env` support for the proxy (2026-05-08, commit pending)
+
+User flagged that re-exporting `LLMTRACK_PLUGIN_SUPABASE_SINK_*`
+each shell session is annoying before CP9. Tiny operator-UX
+addition.
+
+- Modified `packages/llm_tracker/pyproject.toml` — moved
+  `python-dotenv` (already a transitive of `pydantic-settings`) into
+  the explicit `dependencies` list so we don't break if upstream
+  drops it.
+- Modified `packages/llm_tracker/src/llm_tracker/proxy/app.py` —
+  `lifespan` calls `load_dotenv(override=False)` *before*
+  `Settings()` so `.env` populates `os.environ`. Both pydantic-
+  settings and the plugin's direct `os.environ.get(...)` then read
+  the same source. `override=False` keeps shell exports
+  authoritative — `.env` is for convenience, not for overriding a
+  deliberately-set value. No-op when `.env` is absent.
+- Replaced `.env.example` (was Phase-0-pre-stale, referenced env
+  vars that no longer exist like `LLMTRACK_HOST`,
+  `LLMTRACK_UPSTREAM_BASE_URL`, `LLMTRACK_CONTENT_LEVEL`,
+  `LLMTRACK_DB_PATH`, `LLMTRACK_INGEST_*`, `LLMTRACK_LOG_LEVEL`)
+  with the current `Settings` surface (`LLMTRACK_MODE`,
+  `LLMTRACK_USER_OPTED_IN`, `LLMTRACK_PROXY_HOST`,
+  `LLMTRACK_PROXY_PORT`, `LLMTRACK_DB_URL`,
+  `LLMTRACK_PLUGINS_DISABLED`) plus the supabase_sink env block
+  (`LLMTRACK_PLUGIN_SUPABASE_SINK_URL` / `_KEY`). `.env.example`
+  is committable; `.env` is already in `.gitignore`.
+- No new tests — `load_dotenv` is upstream-tested; the wiring is a
+  one-line lifespan addition. Suite still 259 passed; ruff clean.
 
 ## Decisions
 

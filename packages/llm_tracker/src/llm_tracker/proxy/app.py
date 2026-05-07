@@ -3,6 +3,7 @@
 from contextlib import asynccontextmanager
 
 import httpx
+from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -15,6 +16,11 @@ from .forwarder import forward_request
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Load `.env` from the proxy's working directory before reading any
+    # config or env-driven plugin secrets. `override=False` (default) so a
+    # shell-exported value still wins over the file — the file is for
+    # convenience, not authority. No-op if `.env` is absent.
+    load_dotenv(override=False)
     settings = Settings()
     factory = make_session_factory(settings.db_url)
     egress_guard = EgressGuard(mode=settings.mode, session_factory=factory)

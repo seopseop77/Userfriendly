@@ -16,6 +16,7 @@ dependencies = [
     "httpx[http2]",
     "pydantic",
     "pydantic-settings",
+    "python-dotenv",
     "structlog",
     "typer",
     "sqlalchemy[asyncio]",

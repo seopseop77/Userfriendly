@@ -100,13 +100,26 @@ def _block_sse_chunks(reason: str, exchange_id: str) -> list[bytes]:
     ]
 
 
-def _block_response(reason: str, exchange_id: str) -> StreamingResponse:
-    """Build the synthetic block SSE response (ADR-0002 §3, status 200)."""
+def _block_response(
+    reason: str,
+    exchange_id: str,
+    plugin_host: PluginHost,
+) -> StreamingResponse:
+    """Build the synthetic block SSE response (ADR-0002 §3, status 200).
+
+    The block path is the only return path that exits `forward_request`
+    early, so the per-exchange `HookContext` cleanup must run from the
+    generator that `StreamingResponse` iterates — `forward_request`
+    itself returns before any of `gen()` runs.
+    """
     chunks = _block_sse_chunks(reason, exchange_id)
 
     async def gen() -> AsyncGenerator[bytes, None]:
-        for chunk in chunks:
-            yield chunk
+        try:
+            for chunk in chunks:
+                yield chunk
+        finally:
+            plugin_host.end_exchange(exchange_id)
 
     return StreamingResponse(
         gen(),
@@ -161,7 +174,7 @@ async def forward_request(
                 blocked_by=result.plugin,
                 started_at_ms=t0_epoch_ms,
             )
-            return _block_response(result.reason, exchange_id)
+            return _block_response(result.reason, exchange_id, plugin_host)
 
     url = f"{UPSTREAM_BASE}/{path}"
     if query := request.url.query:
@@ -177,7 +190,7 @@ async def forward_request(
                 blocked_by=result.plugin,
                 started_at_ms=t0_epoch_ms,
             )
-            return _block_response(result.reason, exchange_id)
+            return _block_response(result.reason, exchange_id, plugin_host)
         if isinstance(result, Transform):
             # ADR-0011: merge plugin headers into the request, plugin wins
             # on conflict. Body replace is whole-body when set.
@@ -202,52 +215,61 @@ async def forward_request(
                 blocked_by=result.plugin,
                 started_at_ms=t0_epoch_ms,
             )
-            return _block_response(result.reason, exchange_id)
+            return _block_response(result.reason, exchange_id, plugin_host)
 
     internal: asyncio.Queue[bytes | None] = asyncio.Queue()
     timing: dict[str, float] = {}
 
     async def generate() -> AsyncGenerator[bytes, None]:
-        drain = asyncio.create_task(_drain(internal))
-        completed = False
-        first_byte = True
+        # Outer try/finally guarantees `end_exchange` runs after the
+        # post-completion `record_exchange_timing` / `on_persisted`
+        # block too, regardless of whether the upstream stream ended
+        # cleanly, was Aborted, or raised. The inner try/finally still
+        # owns upstream/queue cleanup.
         try:
-            async for chunk in upstream.aiter_bytes():
-                if first_byte:
-                    timing["t1"] = time.monotonic()
-                if plugin_host is not None:
-                    chunk_result = await plugin_host.on_response_chunk(exchange_id, chunk)
-                    if isinstance(chunk_result, Abort):
-                        break
-                await internal.put(chunk)
-                if first_byte:
-                    timing["t2"] = time.monotonic()
-                    first_byte = False
-                yield chunk
-            completed = True
-        finally:
-            await internal.put(None)
-            await drain
-            await upstream.aclose()
+            drain = asyncio.create_task(_drain(internal))
+            completed = False
+            first_byte = True
+            try:
+                async for chunk in upstream.aiter_bytes():
+                    if first_byte:
+                        timing["t1"] = time.monotonic()
+                    if plugin_host is not None:
+                        chunk_result = await plugin_host.on_response_chunk(exchange_id, chunk)
+                        if isinstance(chunk_result, Abort):
+                            break
+                    await internal.put(chunk)
+                    if first_byte:
+                        timing["t2"] = time.monotonic()
+                        first_byte = False
+                    yield chunk
+                completed = True
+            finally:
+                await internal.put(None)
+                await drain
+                await upstream.aclose()
 
-        if completed and plugin_host is not None:
-            await plugin_host.on_response_complete(exchange_id)
-            if "t1" in timing and "t2" in timing:
-                t_req = t0_epoch_ms
-                t_up = t0_epoch_ms + int((timing["t1"] - t0_mono) * 1000)
-                t_cli = t0_epoch_ms + int((timing["t2"] - t0_mono) * 1000)
-                async with plugin_host.session_factory() as session:
-                    await record_exchange_timing(
-                        session,
-                        exchange_id=exchange_id,
-                        endpoint=path,
-                        t_request_received_ms=t_req,
-                        t_upstream_first_byte_ms=t_up,
-                        t_client_first_byte_ms=t_cli,
-                    )
-            # design.md §6.3.2: on_persisted fires *after* the DB write so
-            # plugins can read the exchange row back.
-            await plugin_host.on_persisted(exchange_id)
+            if completed and plugin_host is not None:
+                await plugin_host.on_response_complete(exchange_id)
+                if "t1" in timing and "t2" in timing:
+                    t_req = t0_epoch_ms
+                    t_up = t0_epoch_ms + int((timing["t1"] - t0_mono) * 1000)
+                    t_cli = t0_epoch_ms + int((timing["t2"] - t0_mono) * 1000)
+                    async with plugin_host.session_factory() as session:
+                        await record_exchange_timing(
+                            session,
+                            exchange_id=exchange_id,
+                            endpoint=path,
+                            t_request_received_ms=t_req,
+                            t_upstream_first_byte_ms=t_up,
+                            t_client_first_byte_ms=t_cli,
+                        )
+                # design.md §6.3.2: on_persisted fires *after* the DB write so
+                # plugins can read the exchange row back.
+                await plugin_host.on_persisted(exchange_id)
+        finally:
+            if plugin_host is not None:
+                plugin_host.end_exchange(exchange_id)
 
     response_headers = {
         k: v

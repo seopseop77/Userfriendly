@@ -6,27 +6,29 @@
 
 ---
 
-**Last updated**: 2026-05-09 (CP2 of Phase-1b loose-ends — `HookContext` per-level shape landed; closing checkpoint next)
+**Last updated**: 2026-05-09 (Phase-1b loose-ends workstream **closed**; pick Phase 1c or a Phase-2 follow-on next)
 **Updated by**: Claude Code
 
 ## Current phase
 
-- **Phase**: **Phase-1b loose-ends nearly closed.** CP1 (`end_exchange` leak fix) and CP2 (`HookContext` per-level shape: L1 → None for `request_text`; new `request_hash` / `request_length` accessors) both landed. The closing checkpoint is a docs-only commit that retires "Phase 1b loose ends" from this STATUS and migrates the genuinely-Phase-1c-blocked items under "Phase 1c prerequisites".
-- **Active task**: Closing checkpoint of `2026-05-09-phase1b-loose-ends`.
+- **Phase**: **Phase-1b loose-ends closed.** Two surgical refinements landed today (CP1 = `end_exchange` leak fix in the forwarder; CP2 = `HookContext` per-level shape with new `request_hash` / `request_length` accessors). The remaining items previously listed as "Phase 1b loose ends" were genuinely Phase-1c-blocked; they now live under "Phase 1c prerequisites" below.
+- **Active task**: None. Pick the next direction (Phase 1c kickoff or a Phase-2 follow-on) when starting the next session.
 
 ## Active worklog
 
-`docs/worklog/2026-05-09-phase1b-loose-ends.md` (CP1 + CP2 closed; closing checkpoint pending)
+`docs/worklog/2026-05-09-phase1b-loose-ends.md` (closed; final entry under "Handoff")
 
 ## Recent commits
 
 ```
+8d4422b   docs: Phase-1b loose-ends CP2 closed
 86caf03   sdk: per-level shape for HookContext request accessors  (Phase-1b CP2)
 14b6f7a   docs: open Phase-1b loose-ends worklog; CP1 closed
 86acecd   proxy: pair begin_exchange with end_exchange             (Phase-1b CP1)
 2a21f4d   supabase-sink: CP9 manual e2e shipped
-f2f53b7   proxy: load .env at lifespan + refreshed .env.example
 ```
+
+(The closing docs commit that produced this STATUS revision will appear at the top of `git log -5` in the next session.)
 
 ## Where we paused
 
@@ -53,11 +55,11 @@ landed:
   per-level table; the test-only `keyword_block` fixture moved to
   Mode R + opt-in (the plugin needs raw text to function).
 
-**Next: closing checkpoint** — docs-only commit that retires
-"Phase 1b loose ends" from this STATUS and migrates the three
-remaining items (L2 scrubbed shape, manifest `min_content_level`,
-response-side `ctx` accessors) under a new "Phase 1c prerequisites"
-heading. They're no longer Phase-1b debt.
+The closing checkpoint (this commit) retired the "Phase 1b loose
+ends" subsection from STATUS and migrated the three genuinely-Phase-
+1c-blocked items (L2 scrubbed shape, manifest `min_content_level`,
+response-side `ctx` accessors) under "Phase 1c prerequisites" below
+— they were never Phase-1b debt.
 
 ---
 
@@ -81,9 +83,6 @@ Path 1). All three safety paths verified against real traffic in CP9:
   every fetch with `reason=destination_not_in_allowlist`; 0 new
   rows; 4 `egress_blocked` audit rows; manifest restored +
   re-signed (ed25519 deterministic → byte-identical to CP8).
-
-The deferred `Phase 1b loose ends` and the user-deferred
-`Phase 1c` (`scope_guard`) remain the natural next directions.
 
 **Workstream artefacts** (per CLAUDE.md §10 public-interface
 catalogue):
@@ -130,40 +129,57 @@ side-quests):
   + `SHUTDOWN_HOOK_TIMEOUT` + signed manifest + `.env` lifespan
   loader + manual e2e
 
-### Phase 1b loose ends (still deferred)
+## Phase 1c prerequisites
 
-- `end_exchange` cleanup in the forwarder. Sidestepped for
-  supabase_sink (per-plugin egress client lifetime is independent of
-  per-exchange ctx), but the `_exchange_contexts` leak is real.
-- Per-level shape refinement of `ctx.request_text()` (L1 hash,
-  L2 scrubbed) — Phase 1c alongside scrubbers.
-- Manifest `min_content_level` field — Phase 1c when scope_guard
-  needs it.
-- Response-side ctx accessors — Phase-2 Extractor.
+These three items are blocked on Phase 1c (scrubber primitives,
+`scope_guard`, the Phase-2 Extractor) — not Phase-1b debt. They're
+documented here so the next session knows what `scope_guard` and the
+Extractor unlock when they land.
+
+- **L2 scrubbed shape of `request_text`**. Today
+  `HookContext.request_text(L2)` returns the raw decoded body — same
+  bytes as L3. Per design.md §7.1 L2 should be the scrubbed body
+  (secrets / PII / paths / emails / IPs removed). The switch needs
+  the Phase-1c scrubber primitives. Pinned by
+  `test_hook_context.py::test_request_text_returns_body_at_l2_when_ceiling_allows`
+  so the eventual change is test-visible.
+- **Manifest `min_content_level` field** (ADR-0012 §"Open
+  questions"). Plugins should declare the lowest content level they
+  can function at; the host can then short-circuit dispatch when the
+  effective ceiling is below it. Add this when `scope_guard` becomes
+  the first plugin that actually needs it; separate ADR (refines
+  ADR-0012).
+- **Response-side `ctx` accessors** (`response_text`,
+  `tool_call_inputs`, etc.). ADR-0012 ships only the request-side
+  accessors. Response-side data needs the Phase-2 Extractor to
+  surface structured response records first; separate ADR if the
+  semantics surface anything non-obvious (e.g. partial vs assembled).
 
 ## Next single step
 
-**Closing checkpoint of `2026-05-09-phase1b-loose-ends`** — a
-docs-only commit (scope `docs:`) that:
+**Pick a direction.** Phase-1b loose-ends and the supabase_sink
+workstream are both closed cleanly, so the next session is free to
+choose. Two obvious candidates:
 
-1. Drops the "Phase 1b loose ends (still deferred)" subheading
-   from this STATUS.
-2. Adds a new top-level heading "Phase 1c prerequisites" that
-   collects the three items legitimately blocked on Phase 1c:
-   - L2 scrubbed shape of `request_text` (needs scrubber primitives;
-     pinned by `test_request_text_returns_body_at_l2_when_ceiling_allows`
-     so the shape change is test-visible).
-   - Manifest `min_content_level` field (needs scope_guard).
-   - Response-side `ctx` accessors (`response_text`,
-     `tool_call_inputs`) — needs Phase 2 Extractor.
-3. Updates the active worklog "Handoff" to declare Phase 1b
-   loose-ends workstream closed.
-4. Refreshes "Next single step" to re-state the choice between
-   Phase 1c kickoff (with planning interview for TaskDefinition,
-   judge sizing, eval-set acceptance criteria) and Phase 2
-   follow-ons (per-task consent UX, `llm_tracker_server` routes,
-   `drift_metrics` contributor plugin).
-5. Bumps "Last updated" to today.
+1. **Phase 1c — `scope_guard` (large; user-deferred so far).** Now
+   that the egress API, signed-plugin pattern, and the L1 escape
+   hatch (`request_hash` / `request_length`) are all ready, the
+   Stage-2 LLM judge has the infra it needs. Re-open the planning
+   interview — multiple ADR-worthy decisions: TaskDefinition
+   schema, embedding judge sizing, eval-set acceptance criteria,
+   manifest `min_content_level` field. The "Phase 1c prerequisites"
+   section above is what 1c unlocks.
+2. **Phase 2 follow-ons (medium).** A real per-task consent UX
+   (replacing `LLMTRACK_USER_OPTED_IN` per ADR-0016 §"Open
+   questions") needs its own design pass. `llm_tracker_server`
+   routes / repositories / migrations are still empty (ADR-0007
+   §2 demoted them to optional analysis app, not write path).
+   `drift_metrics` contributor plugin is the planned third-party
+   integration test target.
+
+Recommend Phase 1c next — the security model and SDK contract are
+now stable enough that scope_guard can be designed against a fixed
+target, and the planning interview will surface everything else.
 
 ## Blocking / decisions needed
 
@@ -184,7 +200,8 @@ docs-only commit (scope `docs:`) that:
 - [x] `claude-manage` wrapper — auto-spawn proxy + lifecycle-coupled cleanup (2026-05-07, commits d2e33d5, 9aa8321)
 - [x] Plugin disable config + `/admin/plugins` introspection (2026-05-07, commits 0a43502, 161505d)
 - [x] **Phase 2 partial — `supabase_sink` reference plugin (CLOSED 2026-05-08, 9 commits 8712183 → CP9 finalize)**
-- [ ] Phase 1c — `scope_guard` plugin (deferred per user)
+- [x] **Phase 1b loose-ends (CLOSED 2026-05-09, commits 86acecd / 14b6f7a / 86caf03 / 8d4422b + closing docs commit)**
+- [ ] Phase 1c — `scope_guard` plugin (recommended next)
 - [ ] Phase 2 remainder — `llm_tracker_server` routes, full per-task consent UX, contributor plugins
 
 ---

@@ -179,30 +179,42 @@ notices, untouched by this checkpoint.
 
 ## What's left / known limits
 
-- Closing checkpoint (STATUS.md cleanup — drop "Phase 1b loose ends",
-  migrate the genuinely-Phase-1c-blocked items under a new "Phase 1c
-  prerequisites" heading, refresh "Next single step") — owed.
+Nothing left in this workstream. The three items below are Phase-1c
+prerequisites, not Phase-1b debt — they live under STATUS.md
+"Phase 1c prerequisites" now:
+
 - **L2 = raw text today**. Will switch to scrubbed output when Phase 1c
   ships scrubber primitives. Pinned by
   `test_hook_context.py::test_request_text_returns_body_at_l2_when_ceiling_allows`
   so the eventual change is test-visible.
-- Manifest `min_content_level` field — still deferred to Phase 1c
-  (needs scope_guard).
-- Response-side `ctx` accessors (`response_text`, `tool_call_inputs`)
-  — still deferred to Phase 2 Extractor.
+- Manifest `min_content_level` field — needs `scope_guard`. Separate
+  ADR (refines ADR-0012).
+- Response-side `ctx` accessors (`response_text`,
+  `tool_call_inputs`) — needs the Phase-2 Extractor; separate ADR if
+  the partial-vs-assembled semantics surface anything non-obvious.
 
 ## Handoff
 
-CP1 + CP2 both closed. Next single step: **closing checkpoint** —
-docs-only commit that retires "Phase 1b loose ends" from STATUS.md
-and migrates the three remaining items (L2 scrubbed shape,
-manifest `min_content_level`, response-side accessors) under a new
-"Phase 1c prerequisites" heading. After that, the next session is
-free to choose between Phase 1c kickoff (scope_guard, with a
+**Phase-1b loose-ends workstream closed.** Five commits land the
+two refinements + their docs:
+
+- 86acecd — proxy: pair begin_exchange with end_exchange (CP1)
+- 14b6f7a — docs: open Phase-1b loose-ends worklog; CP1 closed
+- 86caf03 — sdk: per-level shape for HookContext request accessors (CP2)
+- 8d4422b — docs: Phase-1b loose-ends CP2 closed
+- This commit — docs: Phase-1b loose-ends workstream closed; 1c prerequisites migrated
+
+STATUS.md "Phase 1b loose ends (still deferred)" subsection
+removed; the three Phase-1c-blocked items moved to a new top-level
+"Phase 1c prerequisites" heading; "Next single step" re-states the
+choice between Phase 1c kickoff (recommended; scope_guard, with a
 planning interview for TaskDefinition / judge sizing / eval-set
 acceptance criteria) and Phase 2 follow-ons (per-task consent UX,
 `llm_tracker_server` routes, `drift_metrics` contributor plugin).
 
+Next session: read STATUS.md "Next single step" and pick a
+direction.
+
 ## Suggestions (untouched)
 
-- None observed during CP1 or CP2.
+- None observed during CP1, CP2, or the closing checkpoint.

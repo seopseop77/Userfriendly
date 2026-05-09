@@ -1,11 +1,16 @@
-"""Tests for `llm_tracker_sdk.HookContext` (ADR-0012).
+"""Tests for `llm_tracker_sdk.HookContext` (ADR-0012, design.md §7.1).
 
-Pure SDK-level tests on the dataclass: how `request_text(level)`
-degrades against the per-mode ceiling, and that the lazy
-accessor handles the missing-body and bad-encoding edge cases.
+Pure SDK-level tests on the dataclass. Two surfaces:
+
+- `request_text(level)` degrades against the per-mode ceiling and is
+  only non-None at effective L2 / L3.
+- `request_hash()` / `request_length()` are the L1 escape hatch:
+  populated whenever `effective_ceiling() >= L1`, `None` otherwise.
 """
 
 from __future__ import annotations
+
+import hashlib
 
 from llm_tracker_sdk import ContentLevel, HookContext
 
@@ -25,6 +30,9 @@ def _ctx(
     )
 
 
+# -- effective_ceiling ----------------------------------------------------
+
+
 def test_effective_ceiling_per_mode() -> None:
     assert _ctx(mode="L").effective_ceiling() == ContentLevel.L1
     assert _ctx(mode="A").effective_ceiling() == ContentLevel.L0
@@ -38,10 +46,15 @@ def test_effective_ceiling_lifts_only_in_mode_r_with_opt_in() -> None:
     assert _ctx(mode="R", user_opted_in=True).effective_ceiling() == ContentLevel.L3
 
 
-def test_request_text_returns_body_when_within_ceiling() -> None:
-    """Mode L allows up to L1; asking for L1 returns the body."""
+# -- request_text ---------------------------------------------------------
+
+
+def test_request_text_returns_none_at_l1_ceiling() -> None:
+    """Mode L caps at L1; request_text(L1) returns None — use request_hash()."""
     ctx = _ctx(mode="L", request_body=b"user message")
-    assert ctx.request_text(ContentLevel.L1) == "user message"
+    assert ctx.request_text(ContentLevel.L1) is None
+    # Asking for L3 still degrades to L1 → None.
+    assert ctx.request_text(ContentLevel.L3) is None
 
 
 def test_request_text_returns_none_when_degraded_to_l0() -> None:
@@ -62,11 +75,14 @@ def test_request_text_returns_body_in_mode_r_with_opt_in_at_l3() -> None:
     assert ctx.request_text(ContentLevel.L3) == "raw text"
 
 
-def test_request_text_caps_at_ceiling_in_mode_r_without_opt_in() -> None:
-    """Mode R without opt-in caps at L1; asking for L3 returns text (not L0)."""
-    ctx = _ctx(mode="R", user_opted_in=False, request_body=b"raw text")
-    # L3 requested, ceiling is L1 → degrade to L1 → return text.
-    assert ctx.request_text(ContentLevel.L3) == "raw text"
+def test_request_text_returns_body_at_l2_when_ceiling_allows() -> None:
+    """L2 today returns raw text (scrubbing deferred to Phase 1c).
+
+    Pinning the current shape so the Phase 1c switch to scrubbed
+    output is a deliberate, test-visible change.
+    """
+    ctx = _ctx(mode="R", user_opted_in=True, request_body=b"raw text")
+    assert ctx.request_text(ContentLevel.L2) == "raw text"
 
 
 def test_request_text_returns_none_when_no_body() -> None:
@@ -75,12 +91,53 @@ def test_request_text_returns_none_when_no_body() -> None:
 
 
 def test_request_text_returns_none_for_invalid_utf8() -> None:
-    """Binary body that isn't valid UTF-8 → None, not a UnicodeDecodeError."""
-    ctx = _ctx(mode="L", request_body=b"\xff\xfe\x00")
-    assert ctx.request_text(ContentLevel.L1) is None
+    """Binary body that isn't valid UTF-8 → None at L3, not a UnicodeDecodeError."""
+    ctx = _ctx(mode="R", user_opted_in=True, request_body=b"\xff\xfe\x00")
+    assert ctx.request_text(ContentLevel.L3) is None
 
 
 def test_default_request_text_level_is_l3() -> None:
     """Calling `request_text()` with no arg defaults to L3 (degrades down)."""
-    ctx = _ctx(mode="L", request_body=b"hi")
-    assert ctx.request_text() == "hi"  # L3 → degrade to L1 → return text
+    ctx = _ctx(mode="R", user_opted_in=True, request_body=b"hi")
+    assert ctx.request_text() == "hi"
+
+
+# -- request_hash / request_length ---------------------------------------
+
+
+def test_request_hash_and_length_return_none_at_l0_ceiling() -> None:
+    """Mode A's ceiling is L0; even hashes are denied."""
+    ctx = _ctx(mode="A", request_body=b"hello")
+    assert ctx.request_hash() is None
+    assert ctx.request_length() is None
+
+
+def test_request_hash_and_length_populated_at_l1_ceiling() -> None:
+    """Mode L caps at L1; hash and length are the L1 escape hatch."""
+    body = b"user message"
+    ctx = _ctx(mode="L", request_body=body)
+    assert ctx.request_hash() == hashlib.sha256(body).hexdigest()
+    assert ctx.request_length() == len(body)
+
+
+def test_request_hash_and_length_populated_at_l3_ceiling() -> None:
+    """Mode R + opt-in lifts to L3; hash and length still populated."""
+    body = b"deep raw text"
+    ctx = _ctx(mode="R", user_opted_in=True, request_body=body)
+    assert ctx.request_hash() == hashlib.sha256(body).hexdigest()
+    assert ctx.request_length() == len(body)
+
+
+def test_request_hash_and_length_return_none_when_no_body() -> None:
+    """No body → hash and length are None even at high ceilings."""
+    ctx = _ctx(mode="R", user_opted_in=True, request_body=None)
+    assert ctx.request_hash() is None
+    assert ctx.request_length() is None
+
+
+def test_request_hash_handles_non_utf8_body() -> None:
+    """SHA-256 is over raw bytes; non-UTF-8 must hash without raising."""
+    body = b"\xff\xfe\x00"
+    ctx = _ctx(mode="L", request_body=body)
+    assert ctx.request_hash() == hashlib.sha256(body).hexdigest()
+    assert ctx.request_length() == 3

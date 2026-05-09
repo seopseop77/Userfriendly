@@ -11,11 +11,23 @@ from llm_tracker_sdk import HookContext
 from llm_tracker_sdk.testing import PluginHarness
 
 
-def _ctx(body: bytes | None, *, mode: str = "L") -> HookContext:
+def _ctx(body: bytes | None, *, mode: str = "R", user_opted_in: bool = True) -> HookContext:
+    """Build a ctx whose ceiling exposes raw text.
+
+    `keyword_block` matches against the raw request body, so it can
+    only do its job at ceilings that allow `request_text` to return
+    text — i.e. L2+. Per design.md §7.1 that means Mode R with the
+    operator's opt-in flag set; in any other mode the plugin
+    correctly degrades to "no signal, pass through" (covered by
+    `test_passes_when_body_unavailable`). Defaulting fixtures to
+    Mode R + opt-in keeps the block-path tests exercising the real
+    decision branch.
+    """
     return HookContext(
         session_id="test",
         exchange_id="exch-1",
         mode=mode,
+        user_opted_in=user_opted_in,
         _raw_request_body=body,
     )
 

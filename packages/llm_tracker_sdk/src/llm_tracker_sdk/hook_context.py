@@ -2,9 +2,23 @@
 
 The host constructs one `HookContext` per request and passes the
 same instance to every per-exchange hook for that request. Plugins
-read request/response data via lazy accessors (`ctx.request_text(level=...)`);
-the accessor degrades the returned content based on the deployment
-mode and the operator opt-in flag.
+read request/response data via lazy accessors; the accessor degrades
+the returned content based on the deployment mode and the operator
+opt-in flag.
+
+Per-level shape of the request-side accessors (design.md §7.1):
+
+| Effective level | `request_text()` | `request_hash()` | `request_length()` |
+|---|---|---|---|
+| L0 | None             | None             | None               |
+| L1 | None             | hex SHA-256      | byte length        |
+| L2 | raw decoded text | hex SHA-256      | byte length        |
+| L3 | raw decoded text | hex SHA-256      | byte length        |
+
+L2 returns the raw decoded text today. The "scrubbed" shape promised
+by §7.1 lands in Phase 1c alongside the scrubber primitives; the
+deferral is tracked under STATUS.md "Phase 1c prerequisites" and
+ADR-0006 §"Open questions".
 
 Plugins should not construct `HookContext` themselves; the host
 owns its lifecycle.
@@ -12,6 +26,7 @@ owns its lifecycle.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 
 from .egress import EgressClient
@@ -28,10 +43,10 @@ class HookContext:
     the ceiling in Mode R only.
 
     The `_raw_request_body` slot is set by the host before
-    dispatch; plugins read it via `request_text(level=...)`, which
-    degrades to `min(level, effective_ceiling)` and returns `None`
-    when the effective level falls to L0 (no plugin-visible
-    content).
+    dispatch; plugins read it via `request_text(level=...)`,
+    `request_hash()`, and `request_length()`. Each accessor
+    returns `None` when the data is not available at the
+    plugin's effective ceiling.
     """
 
     session_id: str
@@ -49,26 +64,54 @@ class HookContext:
         """Return the request body as text, degraded to `min(level, ceiling)`.
 
         Returns `None` when:
-        - the effective level (`degrade(level, ceiling)`) is L0 — no
-          plugin-visible content for this mode/opt-in combination;
+        - the effective level (`degrade(level, ceiling)`) is L0 or L1 —
+          neither tier exposes the raw body. L1 plugins read
+          `request_hash()` / `request_length()` instead;
         - the request body has not yet been provided to this context
           (e.g. a hook firing before the forwarder reads the body);
         - the body is not valid UTF-8 (the SDK doesn't speculate
           about non-text payloads).
 
-        At L1 the host returns the raw text — Phase 1c will refine
-        the per-level shape (e.g. L1 hash-only, L2 scrubbed). The
-        primitive contract is "degrade-or-None" today; the
-        per-level transform is wired plugin-by-plugin alongside
-        `scope_guard`.
+        At L2 the host returns the raw decoded text; the scrubbed
+        shape promised by design.md §7.1 lands in Phase 1c alongside
+        the scrubber primitives. At L3 raw text is returned as-is.
         """
         if self._raw_request_body is None:
             return None
         ceiling = self.effective_ceiling()
         effective = degrade(level, ceiling)
-        if effective <= ContentLevel.L0:
+        if effective <= ContentLevel.L1:
             return None
         try:
             return self._raw_request_body.decode("utf-8")
         except UnicodeDecodeError:
             return None
+
+    def request_hash(self) -> str | None:
+        """Hex SHA-256 of the raw request bytes.
+
+        Returns `None` when the effective ceiling is below L1 (Mode A
+        denies even hashes) or when no request body has been provided
+        to this context yet. Plugins use this to fingerprint a body
+        without ever seeing its contents — the L1 escape hatch for
+        deduplication and "did this exact prompt repeat" checks.
+        """
+        if self._raw_request_body is None:
+            return None
+        if self.effective_ceiling() < ContentLevel.L1:
+            return None
+        return hashlib.sha256(self._raw_request_body).hexdigest()
+
+    def request_length(self) -> int | None:
+        """Byte length of the raw request body.
+
+        Returns `None` under the same conditions as `request_hash()`:
+        below-L1 ceiling or absent body. Length is metadata that
+        belongs to L1+ alongside the hash; Mode A (L0 ceiling) does
+        not expose it.
+        """
+        if self._raw_request_body is None:
+            return None
+        if self.effective_ceiling() < ContentLevel.L1:
+            return None
+        return len(self._raw_request_body)

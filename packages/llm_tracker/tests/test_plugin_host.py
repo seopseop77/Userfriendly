@@ -664,10 +664,13 @@ async def test_begin_exchange_passes_ctx_to_each_hook(session_factory):
     assert ctx.mode == "L"
     assert ctx.session_id == "local"
     assert ctx.user_opted_in is False
-    # Mode L: ceiling L1; L1 request returns the body text.
+    # Mode L caps at L1, so request_text returns None at every level;
+    # hash + length are the L1 escape hatch (design.md §7.1).
     from llm_tracker_sdk import ContentLevel
 
-    assert ctx.request_text(ContentLevel.L1) == "user message body"
+    assert ctx.request_text(ContentLevel.L1) is None
+    assert ctx.request_hash() is not None
+    assert ctx.request_length() == len(b"user message body")
 
 
 async def test_dispatcher_falls_back_to_default_ctx_when_no_begin_exchange(

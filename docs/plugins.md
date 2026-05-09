@@ -55,6 +55,37 @@ Use `PluginManifest.from_path(Path("plugin.toml"))` to validate programmatically
 
 `Block` / `Abort` results in a synthetic response delivered to the client.
 
+### 3.1 What `HookContext` exposes per level
+
+Every per-exchange hook receives a `HookContext` (ADR-0012). The
+context has lazy accessors for the request body that degrade against
+the deployment mode and operator opt-in flag (design.md §7.1).
+
+| Effective level | `request_text(level)` | `request_hash()` | `request_length()` |
+|---|---|---|---|
+| L0 (Mode A)                          | `None`           | `None`         | `None`         |
+| L1 (Mode L; Mode R no opt-in)        | `None`           | hex SHA-256    | byte length    |
+| L2 (Mode R + opt-in, asking for L2)  | raw decoded text\* | hex SHA-256  | byte length    |
+| L3 (Mode R + opt-in, asking for L3)  | raw decoded text | hex SHA-256    | byte length    |
+
+\* L2 returns the raw decoded text today. The "scrubbed" shape
+described in design.md §7.1 lands in Phase 1c alongside the scrubber
+primitives — until then a plugin asking for L2 receives the same
+bytes it would get at L3.
+
+**Reading rules of thumb**:
+
+- Plugins that only need fingerprints (dedup, "did this exact prompt
+  repeat") call `request_hash()` / `request_length()` — these work in
+  Mode L without any consent flow.
+- Plugins that must read the body call `request_text(level)`. Treat
+  `None` as "no signal at this ceiling, fall through" rather than
+  blocking blindly — that's the policy the test-only `keyword_block`
+  plugin demonstrates.
+- The accessor returns `None` if the body has not been delivered to
+  the context yet (e.g. a hook firing before the forwarder reads the
+  body) and if the body is not valid UTF-8.
+
 ## 4. Capability vocabulary
 
 Declare required capabilities in `plugin.toml`. The operator approves each

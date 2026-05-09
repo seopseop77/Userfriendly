@@ -6,34 +6,56 @@
 
 ---
 
-**Last updated**: 2026-05-08 (CP9 — supabase_sink **shipped**; happy + Mode-L + allowlist-mismatch all verified against real traffic)
+**Last updated**: 2026-05-09 (CP1 of Phase-1b loose-ends — `end_exchange` leak fixed in the forwarder; CP2 next)
 **Updated by**: Claude Code
 
 ## Current phase
 
-- **Phase**: **Phase-2 partial — `supabase_sink` reference plugin shipped.** ADR-0007's named Phase-2 plugin is operational end-to-end against the operator's real Supabase project. Phase 1c (`scope_guard`) and the rest of Phase 2 (`llm_tracker_server` routes, full per-task consent UX, contributor plugins) remain on the deck.
-- **Active task**: None. The workstream closed at CP9; pick the next direction (Phase 1c, Phase-1b loose ends, or a Phase-2 follow-on) when starting the next session.
+- **Phase**: **Phase-1b loose-ends in flight.** CP1 (`end_exchange` leak fix) landed; CP2 (per-level `request_text` shape + `request_hash`/`request_length` accessors) is the next checkpoint. After CP2, a closing docs commit retires "Phase 1b loose ends" from STATUS.
+- **Active task**: CP2 of `2026-05-09-phase1b-loose-ends`.
 
 ## Active worklog
 
-`docs/worklog/2026-05-07-supabase-sink.md` (closed; final entry under "Checkpoint 9")
+`docs/worklog/2026-05-09-phase1b-loose-ends.md` (CP1 closed; CP2 in progress)
 
 ## Recent commits
 
 ```
-<CP9>     supabase-sink: CP9 e2e shipped (worklog/STATUS only)
+86acecd   proxy: pair begin_exchange with end_exchange   (Phase-1b CP1)
+2a21f4d   supabase-sink: CP9 manual e2e shipped
 f2f53b7   proxy: load .env at lifespan + refreshed .env.example
 f420000   supabase-sink: e2e integration test + signed manifest
 4294d10   plugin-host: SHUTDOWN_HOOK_TIMEOUT for sink drain
-6ab979c   supabase-sink: client + plugin lifecycle + flusher
 ```
 
 ## Where we paused
 
-**`supabase_sink` workstream closed.** ADR-0007's reference Mode-R
-plugin is operational against the operator's real Supabase project
-(7 rows in `public.exchanges` from Path 1). All three safety
-paths verified against real traffic in CP9:
+**Phase-1b loose-ends CP1 closed.** The forwarder now pairs
+`PluginHost.begin_exchange` with `end_exchange` on every return
+path: normal completion, Block-from-`on_request_received`,
+Block-from-`before_forward`, and Abort-from-`on_upstream_response_start`.
+The cleanup runs from the generators that `StreamingResponse` iterates
+(in `_block_response`'s inner `gen()` and `generate()`'s outer
+`try/finally`), because `forward_request` itself returns to Starlette
+before any of the generator code runs. `_exchange_contexts == {}`
+after each path is pinned by
+`tests/proxy/test_exchange_context_lifecycle.py` (3 tests, all green;
+189-test suite still green).
+
+**Next: CP2** — refine `HookContext.request_text(level=...)` per
+design.md §7.1 (L1 → None; add `request_hash()` / `request_length()`).
+The closing checkpoint after CP2 retires "Phase 1b loose ends" from
+this STATUS and migrates the remaining items (L2 scrubbed shape,
+manifest `min_content_level`, response-side accessors) under a new
+"Phase 1c prerequisites" heading.
+
+---
+
+### Prior workstream — `supabase_sink` (closed 2026-05-08, CP9)
+
+ADR-0007's reference Mode-R plugin is operational against the
+operator's real Supabase project (7 rows in `public.exchanges` from
+Path 1). All three safety paths verified against real traffic in CP9:
 
 - **Path 1 — Happy** (`Mode R` + opted_in + correct manifest):
   7 rows landed; `request_text` / `response_text` / `usage`
@@ -111,34 +133,27 @@ side-quests):
 
 ## Next single step
 
-**Pick a direction.** The supabase_sink workstream closed cleanly,
-so the next session is free to choose. Three obvious candidates,
-in roughly increasing scope:
+**CP2 of `2026-05-09-phase1b-loose-ends`** — refine
+`HookContext.request_text(level=...)` so L1 returns `None` (per
+design.md §7.1: L1 = metadata + hash, not raw body) and add two
+new accessors derived from `_raw_request_body`:
 
-1. **Phase-1b loose ends (small).** `end_exchange` cleanup in the
-   forwarder is a bounded `_exchange_contexts` leak; per-level
-   shape refinement of `ctx.request_text()` (L1 hash, L2 scrubbed)
-   has been deferred since Phase 1a. Either is a small standalone
-   checkpoint. Per-level shape work pairs naturally with whatever
-   real consent / scrubber work comes next.
-2. **Phase 2 follow-ons (medium).** A real per-task consent UX
-   (replacing `LLMTRACK_USER_OPTED_IN` per ADR-0016 §"Open
-   questions") needs its own design pass. `llm_tracker_server`
-   routes / repositories / migrations are still empty (ADR-0007
-   §2 demoted them to optional analysis app, not write path).
-   `drift_metrics` contributor plugin is the planned third-party
-   integration test target.
-3. **Phase 1c — `scope_guard` (large).** User-deferred at the
-   start of the supabase_sink workstream. Now that the egress
-   API and signed-plugin pattern are ready, `scope_guard`'s
-   Stage-2 LLM judge has the infra it needs. Will need its own
-   planning pass — multiple ADR-worthy decisions (TaskDefinition
-   schema, embedding judge sizing, eval-set acceptance criteria).
-   Should re-open the planning interview.
+- `request_hash() -> str | None` — hex SHA-256 when
+  `effective_ceiling() >= L1`, else `None`.
+- `request_length() -> int | None` — `len(_raw_request_body)` when
+  `effective_ceiling() >= L1`, else `None`.
 
-Recommend starting from option 1 unless the user has a reason to
-push 1c — Phase-1b loose ends are quick wins that unblock 1c
-later.
+Stdlib `hashlib.sha256` only — no new dependencies. Update
+`docs/plugins.md` with a per-level shape table (or a fresh §3.1).
+Rewrite `tests/test_hook_context.py::test_request_text_returns_body_when_within_ceiling`
+(currently expects raw text at L1 in Mode L) plus add positive-coverage
+tests for the two new accessors at L0 / L1 / L3 ceilings. No ADR —
+this is a refinement of ADR-0012's contract documented in the SDK
+docstring.
+
+After CP2 lands, the closing docs commit retires "Phase 1b loose
+ends" from this STATUS and migrates the genuinely-Phase-1c-blocked
+items under "Phase 1c prerequisites".
 
 ## Blocking / decisions needed
 

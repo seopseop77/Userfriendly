@@ -53,7 +53,43 @@ no longer mis-labelled as Phase-1b debt.
   `on_upstream_response_start` drains empty (early-exit after upstream
   open). (commit 86acecd)
 
+### Checkpoint 2 — `request_text` per-level shape
+
+- Modified `packages/llm_tracker_sdk/src/llm_tracker_sdk/hook_context.py`
+  — `request_text(level)` now returns `None` for any effective level
+  ≤ L1; raw decoded text only at L2 / L3. Two new accessors:
+  `request_hash()` (hex SHA-256 of `_raw_request_body`,
+  `effective_ceiling() >= L1`) and `request_length()` (byte length,
+  same gate). `import hashlib` is stdlib — no new dependencies.
+  Module docstring carries the per-level shape table; the L2-as-raw
+  decision is documented as deferred to Phase 1c. (commit 86caf03)
+- Modified `packages/llm_tracker/tests/test_hook_context.py` —
+  rewritten to lock the new contract end-to-end. Three groups of
+  tests: `effective_ceiling` (unchanged), `request_text` per-level
+  shape (L0/L1 → None at every mode; L2/L3 → text at high ceilings;
+  invalid UTF-8 → None at L3), and the new `request_hash` /
+  `request_length` accessors (both `None` at L0; both populated at
+  L1 and L3; SHA-256 over raw bytes works on non-UTF-8).
+  (commit 86caf03)
+- Modified `packages/llm_tracker/tests/test_plugin_host.py` —
+  `test_begin_exchange_passes_ctx_to_each_hook` updated: Mode L now
+  expects `request_text(L1) is None` plus `request_hash()` / `request_length()`
+  populated (the L1 escape hatch). (commit 86caf03)
+- Modified `packages/llm_tracker_plugin_keyword_block/tests/test_keyword_block.py`
+  — `_ctx()` helper defaults to `mode="R", user_opted_in=True`. The
+  plugin needs raw text to function; pre-Phase-1c only Mode R + opt-in
+  exposes it. The `test_passes_when_body_unavailable` test still
+  pins the "no signal → pass" branch. The plugin code itself
+  is untouched. (commit 86caf03)
+- Modified `docs/plugins.md` — new §3.1 "What `HookContext` exposes
+  per level" with the per-level shape table and reading rules of
+  thumb. Cross-references design.md §7.1 and the test-only
+  `keyword_block` plugin as the canonical "treat None as no signal"
+  example. (commit 86caf03)
+
 ## Decisions
+
+### CP1
 
 - **Cleanup belongs in the generators that `StreamingResponse`
   iterates, NOT in `forward_request`'s function body**. `forward_request`
@@ -75,7 +111,37 @@ no longer mis-labelled as Phase-1b debt.
 - **No ADR**. ADR-0012 already specifies the lifecycle contract; this is
   a defect-class fix that aligns the implementation with the contract.
 
+### CP2
+
+- **L2 still returns raw text today; do NOT bolt on a placeholder
+  scrubber**. design.md §7.1's L2 promise is "scrubbed body
+  (secrets/PII/paths/emails/IPs removed)"; that requires real
+  scrubber primitives (Phase 1c). A stub that pretends to scrub
+  while letting raw bytes through would be worse than admitting
+  the deferral. The SDK docstring + `docs/plugins.md` §3.1 + this
+  worklog all flag the temporary equivalence between L2 and L3.
+  Tracked under STATUS "Phase 1c prerequisites" after the closing
+  checkpoint.
+- **Hash + length share the same L1 gate**. Both accessors
+  return `None` whenever `effective_ceiling() < L1` and a
+  non-`None` value whenever `>= L1`. design.md §7.1 lists
+  hashes and lengths together at L1, so a split gate would
+  drift from the spec. The unified gate also keeps the SDK
+  surface compact (one rule to remember: "L1 escape hatch").
+- **Update test fixtures, not plugin code, for `keyword_block`**.
+  Per CLAUDE.md §2.3, the plugin's runtime behavior was already
+  correct ("treat `None` as no signal, pass through"); the fixture
+  was Mode L because the previous SDK contract leaked raw text
+  there. Switching the fixture to Mode R + opt-in is the smaller
+  surgical change.
+- **No ADR**. CP2 is a refinement of ADR-0012's contract,
+  documented in the SDK docstring + `docs/plugins.md` §3.1 +
+  cross-reference to design.md §7.1. Same reasoning ADR-0012
+  itself used when deferring `min_content_level` to Phase 1c.
+
 ## Verification
+
+### CP1
 
 ```
 $ .venv/bin/python3.12 -m pytest \
@@ -86,11 +152,25 @@ $ .venv/bin/python3.12 -m pytest \
 
 $ .venv/bin/python3.12 -m pytest packages/llm_tracker/tests -q
 189 passed, 4 warnings in 6.56s
+```
 
-$ .venv/bin/python3.12 -m ruff format <changed files>
-1 file reformatted, 1 file left unchanged
+### CP2
 
-$ .venv/bin/python3.12 -m ruff check <changed files>
+```
+$ .venv/bin/python3.12 -m pytest \
+    packages/llm_tracker/tests/test_hook_context.py \
+    packages/llm_tracker/tests/test_plugin_host.py \
+    packages/llm_tracker_plugin_keyword_block/tests/ -q
+.................................................                        [100%]
+49 passed in 5.64s
+
+$ .venv/bin/python3.12 -m pytest packages -q
+267 passed, 4 warnings in 7.08s
+
+$ .venv/bin/python3.12 -m ruff format <CP2 changed files>
+4 files left unchanged
+
+$ .venv/bin/python3.12 -m ruff check <CP2 changed files>
 All checks passed!
 ```
 
@@ -99,23 +179,30 @@ notices, untouched by this checkpoint.
 
 ## What's left / known limits
 
-- Checkpoint 2 (per-level shape of `HookContext.request_text` + new
-  `request_hash()` / `request_length()` accessors) — still owed.
-- Closing checkpoint (STATUS.md cleanup, worklog handoff, docs commit) —
-  after CP2.
+- Closing checkpoint (STATUS.md cleanup — drop "Phase 1b loose ends",
+  migrate the genuinely-Phase-1c-blocked items under a new "Phase 1c
+  prerequisites" heading, refresh "Next single step") — owed.
+- **L2 = raw text today**. Will switch to scrubbed output when Phase 1c
+  ships scrubber primitives. Pinned by
+  `test_hook_context.py::test_request_text_returns_body_at_l2_when_ceiling_allows`
+  so the eventual change is test-visible.
+- Manifest `min_content_level` field — still deferred to Phase 1c
+  (needs scope_guard).
+- Response-side `ctx` accessors (`response_text`, `tool_call_inputs`)
+  — still deferred to Phase 2 Extractor.
 
 ## Handoff
 
-CP1 closed. Next single step: **start CP2** — refine
-`HookContext.request_text(level=...)` so L1 returns `None`, add
-`request_hash()` and `request_length()` derived from
-`_raw_request_body`, document the per-level shape in
-`docs/plugins.md`, and update the SDK tests to lock the contract.
-The existing `test_hook_context.py::test_request_text_returns_body_when_within_ceiling`
-expects raw text at L1 in Mode L; that test must be rewritten to
-expect `None` for `request_text(L1)` and the populated hex/int from the
-new accessors.
+CP1 + CP2 both closed. Next single step: **closing checkpoint** —
+docs-only commit that retires "Phase 1b loose ends" from STATUS.md
+and migrates the three remaining items (L2 scrubbed shape,
+manifest `min_content_level`, response-side accessors) under a new
+"Phase 1c prerequisites" heading. After that, the next session is
+free to choose between Phase 1c kickoff (scope_guard, with a
+planning interview for TaskDefinition / judge sizing / eval-set
+acceptance criteria) and Phase 2 follow-ons (per-task consent UX,
+`llm_tracker_server` routes, `drift_metrics` contributor plugin).
 
 ## Suggestions (untouched)
 
-- None observed during CP1.
+- None observed during CP1 or CP2.

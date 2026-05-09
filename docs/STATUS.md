@@ -6,48 +6,58 @@
 
 ---
 
-**Last updated**: 2026-05-09 (CP1 of Phase-1b loose-ends — `end_exchange` leak fixed in the forwarder; CP2 next)
+**Last updated**: 2026-05-09 (CP2 of Phase-1b loose-ends — `HookContext` per-level shape landed; closing checkpoint next)
 **Updated by**: Claude Code
 
 ## Current phase
 
-- **Phase**: **Phase-1b loose-ends in flight.** CP1 (`end_exchange` leak fix) landed; CP2 (per-level `request_text` shape + `request_hash`/`request_length` accessors) is the next checkpoint. After CP2, a closing docs commit retires "Phase 1b loose ends" from STATUS.
-- **Active task**: CP2 of `2026-05-09-phase1b-loose-ends`.
+- **Phase**: **Phase-1b loose-ends nearly closed.** CP1 (`end_exchange` leak fix) and CP2 (`HookContext` per-level shape: L1 → None for `request_text`; new `request_hash` / `request_length` accessors) both landed. The closing checkpoint is a docs-only commit that retires "Phase 1b loose ends" from this STATUS and migrates the genuinely-Phase-1c-blocked items under "Phase 1c prerequisites".
+- **Active task**: Closing checkpoint of `2026-05-09-phase1b-loose-ends`.
 
 ## Active worklog
 
-`docs/worklog/2026-05-09-phase1b-loose-ends.md` (CP1 closed; CP2 in progress)
+`docs/worklog/2026-05-09-phase1b-loose-ends.md` (CP1 + CP2 closed; closing checkpoint pending)
 
 ## Recent commits
 
 ```
-86acecd   proxy: pair begin_exchange with end_exchange   (Phase-1b CP1)
+86caf03   sdk: per-level shape for HookContext request accessors  (Phase-1b CP2)
+14b6f7a   docs: open Phase-1b loose-ends worklog; CP1 closed
+86acecd   proxy: pair begin_exchange with end_exchange             (Phase-1b CP1)
 2a21f4d   supabase-sink: CP9 manual e2e shipped
 f2f53b7   proxy: load .env at lifespan + refreshed .env.example
-f420000   supabase-sink: e2e integration test + signed manifest
-4294d10   plugin-host: SHUTDOWN_HOOK_TIMEOUT for sink drain
 ```
 
 ## Where we paused
 
-**Phase-1b loose-ends CP1 closed.** The forwarder now pairs
-`PluginHost.begin_exchange` with `end_exchange` on every return
-path: normal completion, Block-from-`on_request_received`,
-Block-from-`before_forward`, and Abort-from-`on_upstream_response_start`.
-The cleanup runs from the generators that `StreamingResponse` iterates
-(in `_block_response`'s inner `gen()` and `generate()`'s outer
-`try/finally`), because `forward_request` itself returns to Starlette
-before any of the generator code runs. `_exchange_contexts == {}`
-after each path is pinned by
-`tests/proxy/test_exchange_context_lifecycle.py` (3 tests, all green;
-189-test suite still green).
+**Phase-1b loose-ends CP1 + CP2 closed.** Two surgical refinements
+landed:
 
-**Next: CP2** — refine `HookContext.request_text(level=...)` per
-design.md §7.1 (L1 → None; add `request_hash()` / `request_length()`).
-The closing checkpoint after CP2 retires "Phase 1b loose ends" from
-this STATUS and migrates the remaining items (L2 scrubbed shape,
-manifest `min_content_level`, response-side accessors) under a new
-"Phase 1c prerequisites" heading.
+- **CP1 (commit 86acecd)** — the forwarder now pairs
+  `PluginHost.begin_exchange` with `end_exchange` on every return
+  path (normal completion, Block-from-`on_request_received`,
+  Block-from-`before_forward`, Abort-from-`on_upstream_response_start`).
+  The cleanup runs from the generators that `StreamingResponse`
+  iterates because `forward_request` returns to Starlette before
+  the generator code runs. `_exchange_contexts == {}` after each
+  path is pinned by
+  `tests/proxy/test_exchange_context_lifecycle.py` (3 tests).
+- **CP2 (commit 86caf03)** — `HookContext.request_text(level)` now
+  returns `None` for any effective level ≤ L1 per design.md §7.1.
+  Two new accessors fill the L1 escape hatch: `request_hash()`
+  (hex SHA-256 of `_raw_request_body`) and `request_length()`
+  (byte length), both gated on `effective_ceiling() >= L1`. L2
+  still returns raw text today; the scrubbed shape lands with
+  Phase 1c scrubbers and is pinned by a regression test so the
+  switch is visible. `docs/plugins.md` §3.1 documents the
+  per-level table; the test-only `keyword_block` fixture moved to
+  Mode R + opt-in (the plugin needs raw text to function).
+
+**Next: closing checkpoint** — docs-only commit that retires
+"Phase 1b loose ends" from this STATUS and migrates the three
+remaining items (L2 scrubbed shape, manifest `min_content_level`,
+response-side `ctx` accessors) under a new "Phase 1c prerequisites"
+heading. They're no longer Phase-1b debt.
 
 ---
 
@@ -133,27 +143,27 @@ side-quests):
 
 ## Next single step
 
-**CP2 of `2026-05-09-phase1b-loose-ends`** — refine
-`HookContext.request_text(level=...)` so L1 returns `None` (per
-design.md §7.1: L1 = metadata + hash, not raw body) and add two
-new accessors derived from `_raw_request_body`:
+**Closing checkpoint of `2026-05-09-phase1b-loose-ends`** — a
+docs-only commit (scope `docs:`) that:
 
-- `request_hash() -> str | None` — hex SHA-256 when
-  `effective_ceiling() >= L1`, else `None`.
-- `request_length() -> int | None` — `len(_raw_request_body)` when
-  `effective_ceiling() >= L1`, else `None`.
-
-Stdlib `hashlib.sha256` only — no new dependencies. Update
-`docs/plugins.md` with a per-level shape table (or a fresh §3.1).
-Rewrite `tests/test_hook_context.py::test_request_text_returns_body_when_within_ceiling`
-(currently expects raw text at L1 in Mode L) plus add positive-coverage
-tests for the two new accessors at L0 / L1 / L3 ceilings. No ADR —
-this is a refinement of ADR-0012's contract documented in the SDK
-docstring.
-
-After CP2 lands, the closing docs commit retires "Phase 1b loose
-ends" from this STATUS and migrates the genuinely-Phase-1c-blocked
-items under "Phase 1c prerequisites".
+1. Drops the "Phase 1b loose ends (still deferred)" subheading
+   from this STATUS.
+2. Adds a new top-level heading "Phase 1c prerequisites" that
+   collects the three items legitimately blocked on Phase 1c:
+   - L2 scrubbed shape of `request_text` (needs scrubber primitives;
+     pinned by `test_request_text_returns_body_at_l2_when_ceiling_allows`
+     so the shape change is test-visible).
+   - Manifest `min_content_level` field (needs scope_guard).
+   - Response-side `ctx` accessors (`response_text`,
+     `tool_call_inputs`) — needs Phase 2 Extractor.
+3. Updates the active worklog "Handoff" to declare Phase 1b
+   loose-ends workstream closed.
+4. Refreshes "Next single step" to re-state the choice between
+   Phase 1c kickoff (with planning interview for TaskDefinition,
+   judge sizing, eval-set acceptance criteria) and Phase 2
+   follow-ons (per-task consent UX, `llm_tracker_server` routes,
+   `drift_metrics` contributor plugin).
+5. Bumps "Last updated" to today.
 
 ## Blocking / decisions needed
 

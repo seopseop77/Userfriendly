@@ -1,12 +1,11 @@
-"""llm_tracker_server — reference receiver app for Mode R deployments.
+"""llm-tracker central server package.
 
-This is NOT a core component. The core framework (`llm_tracker`) does not depend
-on this package. This app is the receiving side that pairs with the
-`supabase_sink` reference plugin (Mode R only). It exposes ingest/auth APIs,
-backed by Supabase Postgres, deployable to Fly.io.
+The team-operated central server: proxies Claude Code traffic to
+Anthropic, runs server-side plugins, persists exchanges per ADR-0017
+(central-server pivot) and ADR-0018 (per-org RLS).
 
-See ADR-0007 (supersedes ADR-0004) and docs/design.md §13.1.
-See /CLAUDE.md for working conventions.
+See `docs/worklog/2026-05-11-phase3c-plan.md` for the Phase 3c build
+plan.
 """
 
 __version__ = "0.0.1"

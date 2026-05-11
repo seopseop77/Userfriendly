@@ -5,14 +5,27 @@ build-backend = "hatchling.build"
 [project]
 name = "llm-tracker-server"
 version = "0.0.1"
-description = "Reference receiver app for llm-tracker Mode R deployments (pairs with supabase_sink plugin)."
+description = "Central llm-tracker server (FastAPI). Proxies Claude Code traffic, runs server-side plugins, persists exchanges per ADR-0017/0018."
 requires-python = ">=3.11"
 authors = [{ name = "Userfriendly Team" }]
 license = { text = "Proprietary (internal research use)" }
 
 dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
     "pydantic",
-    "pynacl",
+    "pydantic-settings",
+    "python-dotenv",
+    "structlog",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+    "ruff",
+    "mypy",
 ]
 
 [tool.hatch.build.targets.wheel]

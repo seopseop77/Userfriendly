@@ -1,6 +1,7 @@
 """SQLAlchemy ORM models for the central server (PostgreSQL).
 
-Ported one-to-one from `packages/llm_tracker/src/llm_tracker/storage/models.py`
+Four user-data tables (`exchanges`, `events`, `tool_calls`, `audit_log`) are
+ported one-to-one from `packages/llm_tracker/src/llm_tracker/storage/models.py`
 with three deliberate dialect adjustments:
 
 - Timestamp / counter columns that hold epoch-millisecond or large counts
@@ -10,18 +11,26 @@ with three deliberate dialect adjustments:
 - Primary keys remain `String` (ULIDs generated at the application layer).
   Switching to `BIGINT IDENTITY` or `UUID DEFAULT gen_random_uuid()` would
   break the existing ULID-producing call sites in Phase 1/2 code without
-  buying anything CP2 needs. The Phase 3c plan's mention of identity/UUID
-  defaults applies to the new tenancy tables (`orgs`, `api_tokens`) that
-  land in CP3.
+  buying anything the port needs.
 - `audit_log` append-only enforcement uses a PL/pgSQL trigger function
   shipped by migration `0002_audit_log_triggers`. SQLite's per-table
   `RAISE(ABORT)` triggers don't port; the SQL is in the migration file,
   not duplicated here.
 
-`org_id` and RLS land in CP4/CP5 — not in this checkpoint.
+The two tenancy substrate tables (`orgs`, `api_tokens`) land in CP3 and use
+PG-native `UUID` with `gen_random_uuid()` server defaults — these are the
+first tables that genuinely want identity generation at the DB layer (no
+existing call-site contract to break).
+
+`org_id` columns on the four user-data tables and RLS policies land in
+CP4/CP5 — not in this module yet.
 """
 
-from sqlalchemy import BigInteger, ForeignKey, Index, String, Text
+import uuid as uuid_module
+from datetime import datetime
+
+from sqlalchemy import BigInteger, ForeignKey, Index, String, Text, text
+from sqlalchemy.dialects.postgresql import TIMESTAMP, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -98,4 +107,45 @@ class AuditLog(Base):
     __table_args__ = (
         Index("idx_audit_ts", "ts"),
         Index("idx_audit_plugin", "plugin"),
+    )
+
+
+class Org(Base):
+    """Tenancy root (ADR-0018). One row per organisation."""
+
+    __tablename__ = "orgs"
+
+    id: Mapped[uuid_module.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=text("now()"),
+        nullable=False,
+    )
+
+
+class ApiToken(Base):
+    """Per-org bearer token (ADR-0020). Stored as SHA-256 hex of plaintext."""
+
+    __tablename__ = "api_tokens"
+
+    token_hash: Mapped[str] = mapped_column(Text, primary_key=True)
+    org_id: Mapped[uuid_module.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("orgs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=text("now()"),
+        nullable=False,
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=True,
     )

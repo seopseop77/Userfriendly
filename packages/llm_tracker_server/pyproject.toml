@@ -17,6 +17,9 @@ dependencies = [
     "pydantic-settings",
     "python-dotenv",
     "structlog",
+    "sqlalchemy>=2",
+    "asyncpg",
+    "alembic",
 ]
 
 [dependency-groups]

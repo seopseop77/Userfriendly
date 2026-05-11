@@ -23,8 +23,6 @@ dependencies = [
     "aiosqlite",
     "alembic",
     "python-ulid",
-    "keyring",
-    "pynacl",
     "llm-tracker-sdk",
 ]
 

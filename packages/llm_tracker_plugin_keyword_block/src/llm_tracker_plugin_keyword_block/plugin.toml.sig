@@ -1,2 +1,0 @@
-signer    = "minseop"
-signature = "8bb9a22b08ed7d8dc76648c5db72dfaa03eb159e8faca34bc1af8ef099330824b47d390166acd5ffda2593ea2e819e1021ba8c292167da3beb42eadad8a38106"

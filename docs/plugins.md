@@ -211,8 +211,9 @@ The manifest's `allowed_modes` decides where the plugin loads:
 Through Phase 1, plugins run in-process. A determined plugin can bypass
 EgressGuard with raw sockets — policy forbids it, but strict sandboxing is
 Phase 3 (subprocess). Therefore: *do not install plugins you don't trust*.
-Manifest signature verification, code review, and explicit capability
-approval are the primary defense.
+Code review and explicit capability approval are the primary defense; the
+trust root for server-side plugin loading is the deploy pipeline itself
+(git + CI + server filesystem permissions) per ADR-0021.
 
 ## 11. Reference plugins
 

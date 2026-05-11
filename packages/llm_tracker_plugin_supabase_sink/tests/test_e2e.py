@@ -26,7 +26,6 @@ import llm_tracker.plugin_host.host as host_mod
 import pytest
 from llm_tracker.egress_guard.guard import EgressGuard
 from llm_tracker.plugin_host.host import PluginHost
-from llm_tracker.plugin_host.signing import VerifyResult
 from llm_tracker.storage.models import AuditLog, Base
 from llm_tracker_plugin_supabase_sink import SupabaseSinkPlugin
 from llm_tracker_sdk.manifest import PluginManifest
@@ -84,19 +83,14 @@ class _StubEP:
 
 
 def _wire_supabase_sink_only(monkeypatch, *, destinations: list[str] | None = None) -> None:
-    """Monkey-patch entry_points + manifest + verifier so only the
-    supabase_sink class loads, with the manifest we control."""
+    """Monkey-patch entry_points + manifest so only the supabase_sink
+    class loads, with the manifest we control."""
     monkeypatch.setattr(host_mod, "entry_points", lambda **_kw: [_StubEP()])
     manifest = _supabase_sink_manifest(destinations=destinations)
     monkeypatch.setattr(
         PluginHost,
         "_find_manifest",
         staticmethod(lambda _cls: (manifest, "")),
-    )
-    monkeypatch.setattr(
-        PluginHost,
-        "_verify_manifest",
-        lambda self, _cls: (VerifyResult.VERIFIED, "test-signer"),
     )
 
 

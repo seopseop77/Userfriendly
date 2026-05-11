@@ -7,27 +7,11 @@ import llm_tracker.plugin_host.host as host_mod
 import pytest
 from llm_tracker.egress_guard.guard import EgressGuard
 from llm_tracker.plugin_host.host import PluginHost
-from llm_tracker.plugin_host.signing import VerifyResult
 from llm_tracker.storage.models import AuditLog, Base
 from llm_tracker_sdk import BasePlugin, Block, HookContext, Pass
 from llm_tracker_sdk.manifest import PluginManifest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
-
-def _bypass_verifier(monkeypatch) -> None:
-    """Force `_verify_manifest` to VERIFIED for tests that exercise other paths.
-
-    The bundled `keys.toml` is intentionally empty during the cleanup pass,
-    and monkeypatched fake plugins ship no `plugin.toml.sig` file. Tests
-    that target manifest validation, capability policy, or guard wiring
-    need the verifier short-circuited so those paths are reachable.
-    """
-    monkeypatch.setattr(
-        PluginHost,
-        "_verify_manifest",
-        lambda self, _cls: (VerifyResult.VERIFIED, "test-signer"),
-    )
 
 
 @pytest.fixture
@@ -246,8 +230,6 @@ async def test_load_plugins_registers_manifest_with_egress_guard(monkeypatch, se
         "_find_manifest",
         staticmethod(lambda _cls: (fake_manifest, "")),
     )
-    _bypass_verifier(monkeypatch)
-
     guard = EgressGuard(mode="R", session_factory=session_factory)
     host = PluginHost(mode="R", session_factory=session_factory, egress_guard=guard)
     await host.load_plugins()
@@ -278,8 +260,6 @@ async def test_load_plugins_populates_egress_manifests_and_audits_attempt(
         "_find_manifest",
         staticmethod(lambda _cls: (fake_manifest, "")),
     )
-    _bypass_verifier(monkeypatch)
-
     guard = EgressGuard(mode="R", session_factory=session_factory)
     host = PluginHost(mode="R", session_factory=session_factory, egress_guard=guard)
     await host.load_plugins()
@@ -327,8 +307,6 @@ async def test_load_plugins_rejects_egress_http_in_mode_L(monkeypatch, session_f
         "_find_manifest",
         staticmethod(lambda _cls: (fake_manifest, "")),
     )
-    _bypass_verifier(monkeypatch)
-
     guard = EgressGuard(mode="L", session_factory=session_factory)
     host = PluginHost(mode="L", session_factory=session_factory, egress_guard=guard)
     await host.load_plugins()
@@ -359,8 +337,6 @@ async def test_load_plugins_accepts_egress_http_in_mode_R(monkeypatch, session_f
         "_find_manifest",
         staticmethod(lambda _cls: (fake_manifest, "")),
     )
-    _bypass_verifier(monkeypatch)
-
     host = PluginHost(mode="R", session_factory=session_factory)
     await host.load_plugins()
 
@@ -369,129 +345,14 @@ async def test_load_plugins_accepts_egress_http_in_mode_R(monkeypatch, session_f
     assert not any(r.kind == "capability_denied" for r in rows)
 
 
-# -- manifest signature verification (ADR-0008) ---------------------------
-
-
-class _RealHelloWorldEP:
-    """Entry point that loads the real bundled HelloWorldPlugin class.
-
-    Used by the integration test below to exercise the full
-    `entry_points -> _find_manifest -> _verify_manifest` pipeline against
-    the actual `plugin.toml` and `plugin.toml.sig` files that ship with
-    `llm_tracker_plugin_hello_world`.
-    """
-
-    name = "hello_world"
-
-    def load(self):
-        from llm_tracker_plugin_hello_world import HelloWorldPlugin
-
-        return HelloWorldPlugin
-
-
-async def test_load_plugins_verifies_real_hello_world_signature(monkeypatch, session_factory):
-    """The bundled hello_world plugin loads cleanly under real registry+sig.
-
-    ADR-0008 hard-reject contract: this test fails if either the bundled
-    `keys.toml` is missing the signing developer's public key or the
-    plugin's sibling `plugin.toml.sig` no longer matches the manifest.
-    """
-    monkeypatch.setattr(host_mod, "entry_points", lambda **_kw: [_RealHelloWorldEP()])
-
-    host = PluginHost(mode="L", session_factory=session_factory)
-    await host.load_plugins()
-
-    assert len(host._plugins) == 1
-    rows = await _audit_rows(session_factory)
-    assert not any(r.kind == "manifest_rejected" for r in rows)
-    loaded = next((r for r in rows if r.kind == "plugin_loaded"), None)
-    assert loaded is not None
-    assert loaded.plugin == "hello_world"
-    assert loaded.outcome == "ok"
-
-
-async def test_load_plugins_rejects_when_signature_missing(monkeypatch, session_factory):
-    """If `plugin.toml.sig` is absent, load_plugins writes manifest_rejected.
-
-    Driven by monkeypatching `_verify_manifest` to return SIGNATURE_MISSING
-    so we exercise the loader's reject path without touching the real .sig
-    on disk. The verifier's own file-absent path is already covered by
-    `test_signing.py`.
-    """
-    fake_manifest = PluginManifest(
-        name="unsigned",
-        version="0.1.0",
-        capabilities=[],
-        egress_destinations=[],
-        allowed_modes=["L", "A", "R"],
-    )
-    monkeypatch.setattr(host_mod, "entry_points", lambda **_kw: [_AllowedEP()])
-    monkeypatch.setattr(
-        PluginHost,
-        "_find_manifest",
-        staticmethod(lambda _cls: (fake_manifest, "")),
-    )
-    monkeypatch.setattr(
-        PluginHost,
-        "_verify_manifest",
-        lambda self, _cls: (VerifyResult.SIGNATURE_MISSING, None),
-    )
-
-    host = PluginHost(mode="L", session_factory=session_factory)
-    await host.load_plugins()
-
-    assert host._plugins == []
-    rows = await _audit_rows(session_factory)
-    rejected = next((r for r in rows if r.kind == "manifest_rejected"), None)
-    assert rejected is not None
-    assert rejected.plugin == "unsigned"
-    assert rejected.outcome == "denied"
-    assert json.loads(rejected.detail_json) == {"reason": "signature_missing"}
-
-
-async def test_load_plugins_records_signer_when_key_not_in_registry(monkeypatch, session_factory):
-    """SIGNING_KEY_NOT_IN_REGISTRY surfaces the asserted signer in audit detail."""
-    fake_manifest = PluginManifest(
-        name="orphan",
-        version="0.1.0",
-        capabilities=[],
-        egress_destinations=[],
-        allowed_modes=["L", "A", "R"],
-    )
-    monkeypatch.setattr(host_mod, "entry_points", lambda **_kw: [_AllowedEP()])
-    monkeypatch.setattr(
-        PluginHost,
-        "_find_manifest",
-        staticmethod(lambda _cls: (fake_manifest, "")),
-    )
-    monkeypatch.setattr(
-        PluginHost,
-        "_verify_manifest",
-        lambda self, _cls: (VerifyResult.SIGNING_KEY_NOT_IN_REGISTRY, "stranger"),
-    )
-
-    host = PluginHost(mode="L", session_factory=session_factory)
-    await host.load_plugins()
-
-    assert host._plugins == []
-    rows = await _audit_rows(session_factory)
-    rejected = next((r for r in rows if r.kind == "manifest_rejected"), None)
-    assert rejected is not None
-    assert json.loads(rejected.detail_json) == {
-        "reason": "signing_key_not_in_registry",
-        "signer": "stranger",
-    }
-
-
 # -- disable-by-config (ADR-0013) -----------------------------------------
 
 
 async def test_load_plugins_skips_disabled_by_config(monkeypatch, session_factory):
     """`plugins_disabled` denylist short-circuits load with a `plugin_skipped` audit.
 
-    The skip happens after manifest parse (so we have the canonical name)
-    but before signature verify, so the verifier is never reached for a
-    disabled plugin. ADR-0013 §Decision.
+    The skip happens after manifest parse so we have the canonical name.
+    ADR-0013 §Decision.
     """
     fake_manifest = PluginManifest(
         name="disabled_one",
@@ -506,14 +367,6 @@ async def test_load_plugins_skips_disabled_by_config(monkeypatch, session_factor
         "_find_manifest",
         staticmethod(lambda _cls: (fake_manifest, "")),
     )
-
-    # Verifier deliberately *not* monkeypatched: ADR-0013 says a disabled
-    # plugin must be skipped before the verifier runs, so this would raise
-    # if the gate fired in the wrong order.
-    def _explode_if_called(self, _cls):
-        raise AssertionError("verifier should not run for a disabled plugin")
-
-    monkeypatch.setattr(PluginHost, "_verify_manifest", _explode_if_called)
 
     host = PluginHost(
         mode="L",
@@ -556,8 +409,6 @@ async def test_load_plugins_disabled_match_is_manifest_name_not_ep_name(
         "_find_manifest",
         staticmethod(lambda _cls: (fake_manifest, "")),
     )
-    _bypass_verifier(monkeypatch)
-
     # Disabling by entry-point name must NOT take effect.
     host_ep = PluginHost(
         mode="L",
@@ -596,8 +447,6 @@ async def test_loaded_plugins_returns_serialisable_view(monkeypatch, session_fac
         "_find_manifest",
         staticmethod(lambda _cls: (fake_manifest, "")),
     )
-    _bypass_verifier(monkeypatch)
-
     host = PluginHost(mode="R", session_factory=session_factory)
     await host.load_plugins()
 

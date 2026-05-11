@@ -10,16 +10,13 @@ from typing import Any
 import httpx
 from llm_tracker_sdk import Abort, BasePlugin, Block, HookContext, Pass, Transform
 from llm_tracker_sdk.manifest import PluginManifest
-from nacl.signing import VerifyKey
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..egress_guard.client import HostEgressClient
 from ..egress_guard.guard import EgressGuard
 from ..storage.audit import write_audit
-from ..trust import load_bundled_registry
 from .policy import denied_capabilities
-from .signing import VerifyResult, verify_manifest_signature
 
 HOOK_TIMEOUT = 5.0  # seconds; a plugin exceeding this is treated as a fault
 
@@ -37,7 +34,6 @@ class PluginHost:
         mode: str,
         session_factory: async_sessionmaker[AsyncSession],
         egress_guard: EgressGuard | None = None,
-        registry: dict[str, VerifyKey] | None = None,
         plugins_disabled: frozenset[str] | set[str] | None = None,
         http_client: httpx.AsyncClient | None = None,
         user_opted_in: bool = False,
@@ -54,11 +50,6 @@ class PluginHost:
         # operator via `LLMTRACK_USER_OPTED_IN`. Threaded into every
         # `HookContext` produced by `begin_exchange` / `_ctx_for`.
         self._user_opted_in = user_opted_in
-        # Trust registry for manifest signature verification (ADR-0008). Defaults to
-        # the bundled `trust/keys.toml`. Tests pass an explicit registry so the
-        # bundled file (intentionally empty during the cleanup pass) does not
-        # block them.
-        self._registry = registry if registry is not None else load_bundled_registry()
         # Operator-supplied denylist matched on `manifest.name` (ADR-0013).
         # Frozen so reloads can't mutate it under us.
         self._plugins_disabled: frozenset[str] = frozenset(plugins_disabled or ())
@@ -206,28 +197,6 @@ class PluginHost:
         except ValidationError as exc:
             return None, f"invalid manifest: {exc}"
 
-    def _verify_manifest(self, plugin_class: type) -> tuple[VerifyResult, str | None]:
-        """Read manifest bytes byte-exact + sibling `.sig` and run the verifier.
-
-        Reads `plugin.toml` and `plugin.toml.sig` via `importlib.resources`
-        from the plugin's top-level package. Per ADR-0008, the signature
-        covers the byte-exact contents of the manifest (no parse/round-trip).
-        A missing `.sig` returns `SIGNATURE_MISSING`; the verifier never
-        raises on operator-controlled bytes.
-        """
-        pkg_name = plugin_class.__module__.split(".")[0]
-        pkg = importlib.resources.files(pkg_name)
-        try:
-            manifest_bytes = (pkg / "plugin.toml").read_bytes()
-        except FileNotFoundError:
-            # _find_manifest already gated this; defensive only.
-            return VerifyResult.SIGNATURE_INVALID, None
-        try:
-            sig_blob: bytes | None = (pkg / "plugin.toml.sig").read_bytes()
-        except FileNotFoundError:
-            sig_blob = None
-        return verify_manifest_signature(manifest_bytes, sig_blob, self._registry)
-
     # -- lifecycle ----------------------------------------------------------
 
     async def load_plugins(self) -> None:
@@ -259,9 +228,7 @@ class PluginHost:
 
             if manifest.name in self._plugins_disabled:
                 # ADR-0013: operator-controlled denylist gates the plugin
-                # *after* manifest parse (so we have the canonical name)
-                # but *before* signature verify (so a flapping .sig on a
-                # disabled plugin doesn't spam the audit log).
+                # after manifest parse so we have the canonical name.
                 async with self._session_factory() as session:
                     await write_audit(
                         session,
@@ -269,21 +236,6 @@ class PluginHost:
                         plugin=manifest.name,
                         outcome="denied",
                         detail_json=json.dumps({"reason": "disabled_by_config"}),
-                    )
-                continue
-
-            verify_result, signer = self._verify_manifest(plugin_class)
-            if verify_result is not VerifyResult.VERIFIED:
-                async with self._session_factory() as session:
-                    detail: dict[str, str] = {"reason": verify_result.value}
-                    if signer is not None:
-                        detail["signer"] = signer
-                    await write_audit(
-                        session,
-                        kind="manifest_rejected",
-                        plugin=manifest.name,
-                        outcome="denied",
-                        detail_json=json.dumps(detail),
                     )
                 continue
 

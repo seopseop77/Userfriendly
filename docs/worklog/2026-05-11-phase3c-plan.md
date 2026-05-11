@@ -44,6 +44,59 @@ The plan must:
 - Refreshed `docs/STATUS.md` to point at this worklog and set
   "Next single step" to CP1 (commit `f866cb8`).
 
+### CP2 — switch DB layer to PostgreSQL (2026-05-11, commit `b7eed52`)
+
+- Added `sqlalchemy>=2`, `asyncpg`, `alembic` to
+  `packages/llm_tracker_server/pyproject.toml` runtime deps. `uv sync`
+  added `asyncpg==0.31.0`; `sqlalchemy` and `alembic` were already in
+  the lockfile via `packages/llm_tracker`.
+- Extended `Settings` with `database_url: str = ""`
+  (`LLMTRACK_DATABASE_URL`). Empty default keeps `/healthz` booting
+  without a DB; the storage entry points raise `ValueError` if asked
+  for an engine without a URL.
+- Created `packages/llm_tracker_server/src/llm_tracker_server/storage/`:
+  - `engine.py` — `make_engine(url) -> AsyncEngine` +
+    `make_session_factory(engine)`.
+  - `models.py` — `Base` + four ORM models (`Exchange`, `Event`,
+    `ToolCall`, `AuditLog`) ported one-to-one from
+    `llm_tracker.storage.models` with `BigInteger` substituted for
+    `Integer` on every epoch-ms / counter column (PG `INT4` would
+    overflow epoch-ms in 2038). String/ULID PKs preserved — see
+    Decisions §CP2 for why the plan's "BIGINT identity / UUID
+    default" wording was taken as guidance for CP3 tables only.
+  - `__init__.py` — flat re-export so callers can
+    `from llm_tracker_server.storage import Exchange, make_engine,
+    make_session_factory`.
+- Created Alembic env at `packages/llm_tracker_server/alembic/`:
+  - `alembic.ini` — `script_location = %(here)s/alembic`, fallback
+    `sqlalchemy.url` for offline mode only; the env reads
+    `LLMTRACK_DATABASE_URL` at runtime and overrides.
+  - `env.py` — async-engine online mode (asyncpg) + offline mode;
+    imports `llm_tracker_server.storage.models.Base` as
+    `target_metadata`. Mirrors the local-sidecar `llm_tracker/alembic/env.py`.
+  - `script.py.mako` — single-DB template.
+  - `versions/0001_initial_schema.py` — consolidates SQLite-era
+    `350b17be77ae_initial_schema` + `b1c2d3e4f5a6_add_timing_columns`
+    (greenfield server, nothing to migrate forward). All epoch-ms /
+    counter columns are `sa.BigInteger()`; `tool_call_count` has
+    `server_default="0"`.
+  - `versions/0002_audit_log_triggers.py` — replaces the SQLite
+    `RAISE(ABORT)` per-table triggers with a single PL/pgSQL function
+    `audit_log_reject_modify()` bound to two `BEFORE ... FOR EACH
+    ROW` triggers (UPDATE + DELETE). Mirrors ADR-0006 §audit_log.
+- Created `packages/llm_tracker_server/tests/test_storage_smoke.py`:
+  - `pytest.fixture session_factory` runs `alembic upgrade head` /
+    `downgrade base` around each test via a subprocess invocation
+    of `python -m alembic` inside the server package dir, with
+    `LLMTRACK_DATABASE_URL` forwarded.
+  - `test_exchange_round_trip` inserts an `Exchange`, reads it back,
+    asserts every populated field.
+  - `test_audit_log_append_only` confirms the PG trigger rejects
+    `UPDATE` and `DELETE` against `audit_log` with the
+    "append-only" message.
+  - Both tests skip when `LLMTRACK_TEST_DATABASE_URL` is unset, so
+    the wider suite stays green on machines without a local PG.
+
 ### CP1 — bootstrap `llm_tracker_server` package (2026-05-11, commit `7d992ff`)
 
 - Rewrote `packages/llm_tracker_server/pyproject.toml`: dropped the
@@ -485,6 +538,47 @@ So only CP9 and CP14 carry a Phase-3a flag, and it is a soft
   appear) will run under a session that asserts `app.role = 'admin'`
   alongside `app.org_id`.
 
+### CP2
+
+- **String/ULID primary keys preserved on the four ported tables**,
+  not switched to `BIGINT GENERATED ALWAYS AS IDENTITY` or `UUID
+  DEFAULT gen_random_uuid()`. The plan's CP2 entry mentions both,
+  but Phase 1 / Phase 2 code (extractors, supabase-sink parser,
+  storage writers) all produce ULID strings at the application
+  layer. Swapping the column type would have cascaded into those
+  callers without buying anything CP2 actually needs. Read the
+  plan's identity/UUID note as forward-pointing guidance for the
+  CP3 tenancy tables (`orgs.id UUID`, `api_tokens.token_hash` text)
+  rather than retroactive rework of the existing schema.
+- **`Integer` → `BigInteger` on every epoch-ms / counter column.**
+  SQLite's INTEGER is variable-width so the SQLite source compiled
+  fine with `sa.Integer()`; PG `INT4` would overflow epoch-ms by
+  2038. Flagged explicitly in the models module docstring so a
+  future reader doesn't "simplify" it back.
+- **Initial migration consolidates the two SQLite migrations.** The
+  plan listed them as separate ports, but the greenfield server
+  schema has nothing to migrate forward — replaying timing columns
+  as a follow-up migration would just be ceremony. Consolidation
+  matches the plan's `0001_initial_schema` filename anyway.
+- **Audit-log triggers use one PL/pgSQL function + two
+  `BEFORE ... FOR EACH ROW` triggers**, not two trigger bodies. PG
+  trigger functions must return `TRIGGER` and live in a separate
+  CREATE FUNCTION; this is the idiomatic shape and downgrade drops
+  both triggers and the function. ADR-0006 §audit_log is the
+  source of truth — the SQL form is dialect-specific.
+- **The smoke test fixture invokes alembic via `subprocess` rather
+  than the in-process `command.upgrade` API.** Reason: in-process
+  alembic on an async engine fights the test event loop (alembic's
+  online migration spins its own `asyncio.run`). The subprocess
+  shape is identical to how CI / Fly release commands will run it,
+  so it doubles as integration coverage.
+- **`LLMTRACK_TEST_DATABASE_URL` is a *test-only* env var.** The
+  app's runtime URL is `LLMTRACK_DATABASE_URL`. Keeping them
+  distinct lets a developer aim the test fixture at an ephemeral
+  container while the rest of the workspace points at staging /
+  Supabase. The smoke test passes the test URL through into the
+  alembic subprocess as `LLMTRACK_DATABASE_URL`.
+
 ### CP1
 
 - **No `tests/__init__.py` in the server package** — matches the
@@ -540,6 +634,105 @@ So only CP9 and CP14 carry a Phase-3a flag, and it is a soft
   (`0017`, `0018`, `0019`, `0020`) exist in `docs/decisions/`;
   `docs/STATUS.md`, `docs/roadmap.md`, the signing-removal worklog,
   and the supabase-sink CP4 worklog all exist at the cited paths.
+
+### CP2
+
+`uv sync` after the pyproject edit:
+
+```
+Resolved 60 packages in 262ms
+Prepared 2 packages in 266ms
+Uninstalled 1 package in 5ms
+Installed 2 packages in 1ms
+ + asyncpg==0.31.0
+ ~ llm-tracker-server==0.0.1
+```
+
+`sqlalchemy` and `alembic` were already in `uv.lock` via the
+`llm_tracker` package — only `asyncpg` was newly added.
+
+Alembic offline-mode SQL gen against a placeholder URL (proves the
+env loads + the migrations produce valid PG syntax without needing
+a live DB):
+
+```
+$ LLMTRACK_DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/llm_tracker \
+    .venv/bin/python3.12 -m alembic upgrade head --sql
+INFO  [alembic.runtime.migration] Running upgrade -> 0001_initial_schema
+...
+CREATE TABLE exchanges (..., started_at BIGINT NOT NULL, ...);
+CREATE INDEX idx_exchanges_started ON exchanges (started_at);
+...
+INFO  [alembic.runtime.migration] Running upgrade 0001_initial_schema -> 0002_audit_log_triggers
+CREATE OR REPLACE FUNCTION audit_log_reject_modify() RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'audit_log is append-only';
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER audit_log_no_update BEFORE UPDATE ON audit_log
+FOR EACH ROW EXECUTE FUNCTION audit_log_reject_modify();
+CREATE TRIGGER audit_log_no_delete BEFORE DELETE ON audit_log
+FOR EACH ROW EXECUTE FUNCTION audit_log_reject_modify();
+UPDATE alembic_version SET version_num='0002_audit_log_triggers' WHERE ...;
+COMMIT;
+```
+
+Live verification against an ephemeral PostgreSQL 15 container:
+
+```
+$ docker run -d --name llm-tracker-pg-cp2 \
+    -e POSTGRES_USER=cp2 -e POSTGRES_PASSWORD=cp2 \
+    -e POSTGRES_DB=llm_tracker_test \
+    -p 55432:5432 postgres:15
+$ docker exec llm-tracker-pg-cp2 psql -U cp2 -d llm_tracker_test \
+    -c "SELECT version();"
+PostgreSQL 15.17 (Debian 15.17-1.pgdg13+1) on aarch64-unknown-linux-gnu, ...
+
+$ LLMTRACK_TEST_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker_test \
+    .venv/bin/python3.12 -m pytest \
+    packages/llm_tracker_server/tests/test_storage_smoke.py -q
+..                                                                       [100%]
+2 passed in 1.72s
+```
+
+Full suite with the test URL set (both PG smokes ran; rest of the
+suite ignores `LLMTRACK_TEST_DATABASE_URL`):
+
+```
+$ LLMTRACK_TEST_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker_test \
+    .venv/bin/python3.12 -m pytest -q
+...
+251 passed, 4 warnings in 8.13s
+```
+
+Full suite without the test URL (PG smokes skip; this is the path CI
+and other developers will see by default):
+
+```
+$ .venv/bin/python3.12 -m pytest -q
+...
+249 passed, 2 skipped, 4 warnings in 7.13s
+```
+
+The four warnings are the same pre-existing `DeprecationWarning:
+fork()` from `llm_tracker/cli/manage.py` carried over from CP1 —
+unchanged.
+
+Ruff:
+
+```
+$ .venv/bin/python3.12 -m ruff check packages/llm_tracker_server
+All checks passed!
+$ .venv/bin/python3.12 -m ruff format --check packages/llm_tracker_server
+12 files already formatted
+```
+
+Ruff applied a small autofix pass during CP2 — three I001 import-sort
+fixes and a one-line reflow in `test_storage_smoke.py`. No structural
+changes; lockfile clean.
+
+Cleanup: ephemeral container torn down with
+`docker rm -f llm-tracker-pg-cp2`.
 
 ### CP1
 
@@ -616,30 +809,40 @@ the ASGI-transport test, so I skipped the live-port loop.
 
 ## Handoff
 
-CP1 landed cleanly. `HEAD` for source code is now `7d992ff`; the
-§5.3 finalize commit that completes this checkpoint refreshes
-`docs/STATUS.md` and brings the doc tree one commit further.
+CP2 landed cleanly. Source `HEAD` is `b7eed52`; the §5.3 finalize
+commit refreshing `docs/STATUS.md` + this worklog adds one more.
+The 14-checkpoint plan is 2/14 done.
 
-**Next single step**: **CP2 — switch DB layer to PostgreSQL
-(asyncpg + SQLAlchemy)**. Per the plan:
+**Next single step**: **CP3 — `orgs` + `api_tokens` schema (ADR-0018
+substrate).** Per the plan:
 
-- Move Alembic env to the server package
-  (`packages/llm_tracker_server/alembic/`).
-- Add `sqlalchemy`, `asyncpg`, `alembic` to the server's runtime
-  deps.
-- Port the three existing SQLite migrations
-  (`350b17be77ae_initial_schema`, `b1c2d3e4f5a6_add_timing_columns`,
-  `c2d3e4f5a6b7_audit_log_append_only_triggers`) to PostgreSQL
-  dialect — BIGINT identity, `gen_random_uuid()`, an
-  append-only trigger in place of SQLite's per-table triggers.
-- Wire a SQLAlchemy async engine factory at
-  `.../storage/engine.py`; port the four user-data table models
-  (without `org_id` yet — that's CP3+CP4) to
-  `.../storage/models.py`.
-- Verify against a local PostgreSQL 15 container (or a Supabase
-  branch DB); `alembic upgrade head` clean + a smoke
-  insert/select round-trip in `tests/test_storage_smoke.py`.
-- **No `org_id`, no RLS, no auth yet.** Those land in CP3 → CP6.
+- New migration `0003_orgs_and_tokens.py` adding two tables:
+  - `orgs(id UUID PK default gen_random_uuid(), name text NOT NULL,
+    created_at timestamptz default now())`.
+  - `api_tokens(token_hash text PK, org_id UUID NOT NULL REFERENCES
+    orgs(id) ON DELETE CASCADE, name text, created_at timestamptz
+    default now(), revoked_at timestamptz)`.
+- Add `Org` and `ApiToken` models to
+  `packages/llm_tracker_server/src/llm_tracker_server/storage/models.py`.
+  These are the first tables that genuinely want `gen_random_uuid()`
+  defaults — wire the PG `UUID` type via
+  `sqlalchemy.dialects.postgresql.UUID` (or `Uuid` from SA 2.x) and
+  set `server_default=text("gen_random_uuid()")`.
+- New `tests/test_org_token_models.py` pinning the FK +
+  uniqueness constraints; same skipif-without-test-DB pattern as
+  the CP2 smoke test.
+- Still **no `org_id` on the four user-data tables, no RLS, no auth**
+  — those land in CP4, CP5, CP6.
+
+For a future session reviving the dev loop:
+
+```
+docker run -d --name llm-tracker-pg \
+  -e POSTGRES_USER=cp2 -e POSTGRES_PASSWORD=cp2 \
+  -e POSTGRES_DB=llm_tracker_test \
+  -p 55432:5432 postgres:15
+export LLMTRACK_TEST_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker_test
+```
 
 The plan is the contract. Each checkpoint is one commit. Don't
 batch checkpoints into a single commit; each one has its own
@@ -662,4 +865,8 @@ verification surface and ought to be greppable in `git log` later.
    scope_guard server-side" entry or strike entirely.
 4. **`packages/llm_tracker_server/pyproject.toml` `pynacl` line**
    gets removed in CP1's deps refresh (also resolves Suggestion #1
-   of the signing-removal worklog).
+   of the signing-removal worklog). *Resolved in CP1.*
+5. **Dockerfile / Fly deploy will need the alembic CLI shipped in
+   the runtime image** so the release-command migration runner
+   (CP13) works. Trivial to add but worth flagging here so it
+   doesn't surprise CP12.

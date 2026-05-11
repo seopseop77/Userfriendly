@@ -6,23 +6,24 @@
 
 ---
 
-**Last updated**: 2026-05-11 (Claude Code; Phase 3c CP1 landed — `llm_tracker_server` skeleton boots, /healthz green)
-**Updated by**: Claude Code (Phase 3c CP1 checkpoint, source commit 7d992ff)
+**Last updated**: 2026-05-11 (Claude Code; Phase 3c CP2 landed — storage layer on PostgreSQL, two PG smoke tests green)
+**Updated by**: Claude Code (Phase 3c CP2 checkpoint, source commit b7eed52)
 
 ## Current phase
 
-- **Phase**: **Phase 3c implementation begun — CP1 closed.** The
-  `llm_tracker_server` package now has a working FastAPI skeleton
-  (`create_app()` factory, module-level `app`, `GET /healthz`,
-  structlog JSON logging, `LLMTRACK_*` pydantic-settings,
-  `.env` loader). Deps refreshed (`fastapi`, `uvicorn[standard]`,
-  `pydantic-settings`, `structlog`, `python-dotenv`; stale `pynacl`
-  dropped — also closes signing-removal Suggestion #1). Source
-  HEAD now at `7d992ff`. The 14-checkpoint build plan at
-  `docs/worklog/2026-05-11-phase3c-plan.md` is being executed
-  one commit at a time per its dependency order.
-- **Active task**: **CP2 — switch DB layer to PostgreSQL (asyncpg +
-  SQLAlchemy)** is the queued next commit. **ADR-#2 consent
+- **Phase**: **Phase 3c — CP1 + CP2 closed (2/14).** CP1 brought up
+  the `llm_tracker_server` FastAPI skeleton + `/healthz`. CP2 has
+  ported the storage layer to PostgreSQL: SQLAlchemy async engine
+  + asyncpg driver, four user-data ORM models with `BigInteger`
+  for epoch-ms / counter columns, the Alembic env moved into the
+  server package, and two migrations — `0001_initial_schema`
+  (consolidates the SQLite-era initial + timing-column migrations)
+  and `0002_audit_log_triggers` (a PL/pgSQL function + two
+  `BEFORE ... FOR EACH ROW` triggers replacing SQLite's
+  `RAISE(ABORT)` per-table form). Settings gained
+  `LLMTRACK_DATABASE_URL`. Source HEAD now at `b7eed52`.
+- **Active task**: **CP3 — `orgs` + `api_tokens` schema (ADR-0018
+  substrate)** is the queued next commit. **ADR-#2 consent
   decision** remains the most blocking remaining Phase-3a item
   before *any external testing*; operator-only smoke (CP14) is not
   blocked.
@@ -36,70 +37,79 @@ The prior signing-removal worklog
 ## Recent commits
 
 ```
+b7eed52   server: port storage layer to PostgreSQL (CP2)
+3f59576   docs: STATUS + worklog for Phase 3c CP1 checkpoint
 7d992ff   server: bootstrap llm_tracker_server skeleton (CP1)
 f866cb8   docs: STATUS + worklog for Phase 3c plan checkpoint
 ec51a40   docs: Phase 3c build plan (14 checkpoints)
-3211672   docs: ADR-0022 deployment platform (Fly.io + Supabase)
-b9cb236   docs: STATUS + worklog for ADR-0021 code-removal checkpoint
 ```
 
 ## Where we paused
 
-**Phase 3c CP1 — `llm_tracker_server` skeleton — closed.** The
-server package now boots:
+**Phase 3c CP2 — storage layer on PostgreSQL — closed.** The
+server now has a working PG storage stack:
 
-- `create_app(settings: Settings | None = None) -> FastAPI` factory
-  at `packages/llm_tracker_server/src/llm_tracker_server/app.py`,
-  plus a module-level `app = create_app()` so
-  `uvicorn llm_tracker_server.app:app` works directly.
-- `GET /healthz` returns `{"status": "ok", "version": __version__}`
-  — pinned by an `httpx.AsyncClient` + `ASGITransport` test at
-  `packages/llm_tracker_server/tests/test_healthz.py`.
-- `Settings` (env prefix `LLMTRACK_`) carries only `log_level` for
-  CP1; CP2 will add `DATABASE_URL`.
-- structlog configured with `merge_contextvars` + iso `TimeStamper`
-  + JSON renderer. The Anthropic-credential scrubber owed by
-  ADR-0020 is **explicitly deferred** to CP7; the module's
-  docstring carries that forward-reference so a future reader
-  doesn't reinvent it.
-- `python-dotenv` auto-loads `.env` from cwd at app build time
-  (`override=False` — same convention as
-  `packages/llm_tracker/src/llm_tracker/proxy/app.py`).
-- Deps refreshed in `packages/llm_tracker_server/pyproject.toml`:
-  runtime now has `fastapi`, `uvicorn[standard]`, `pydantic`,
-  `pydantic-settings`, `python-dotenv`, `structlog`; dev group has
-  `pytest`, `pytest-asyncio`, `httpx`, `ruff`, `mypy`. The stale
-  `pynacl` dep (signing-removal Suggestion #1) is gone; the rest
-  of the now-unused `keyring`/`cffi`/`pycparser`/`jaraco-*`/
-  `more-itertools` chain was uninstalled by `uv sync` in the same
-  pass.
-- Root `pyproject.toml` `[tool.pytest.ini_options].testpaths` now
-  includes `packages/llm_tracker_server/tests`.
+- New deps in `packages/llm_tracker_server/pyproject.toml` runtime
+  group: `sqlalchemy>=2`, `asyncpg`, `alembic`. `uv sync` only
+  added `asyncpg==0.31.0` — `sqlalchemy` + `alembic` were already
+  in the workspace lockfile via `packages/llm_tracker`.
+- `Settings` gained `database_url: str = ""`
+  (`LLMTRACK_DATABASE_URL`). The empty default keeps `/healthz`
+  booting without a DB; the storage entry points raise
+  `ValueError` if asked for an engine without a URL.
+- New `packages/llm_tracker_server/src/llm_tracker_server/storage/`
+  package: `engine.py` (`make_engine`,
+  `make_session_factory`), `models.py` (four ORM models ported
+  one-to-one from `llm_tracker.storage.models` with
+  `BigInteger` substituted for `Integer` on every epoch-ms /
+  counter column), and a flat `__init__.py` re-export.
+- New Alembic env at `packages/llm_tracker_server/alembic/`:
+  `alembic.ini`, `env.py` (reads `LLMTRACK_DATABASE_URL`),
+  `script.py.mako`, `versions/0001_initial_schema.py`
+  (consolidates SQLite-era initial + timing migrations into one PG
+  port), `versions/0002_audit_log_triggers.py` (PL/pgSQL function
+  `audit_log_reject_modify()` + two `BEFORE ... FOR EACH ROW`
+  triggers — UPDATE + DELETE — replacing SQLite's `RAISE(ABORT)`
+  per-table form).
+- `tests/test_storage_smoke.py` exercises `alembic upgrade head`
+  + `Exchange` round-trip + audit_log trigger rejection of UPDATE
+  / DELETE. Skipped unless `LLMTRACK_TEST_DATABASE_URL` is set so
+  the wider suite stays green on machines without a local PG.
 
-Verification: `pytest packages/llm_tracker_server/tests -q` → 1
-passed in 0.14 s; full suite `pytest -q` → 249 passed, 4 warnings
-(pre-existing `fork()` warnings from `cli/manage.py`, unchanged).
-Ruff: 0 errors (one I001 import-sort autofix applied during CP1).
-`ruff format --check` → 6 files already formatted. See
-`docs/worklog/2026-05-11-phase3c-plan.md §Verification §CP1` for
-full output.
+Verification: PostgreSQL 15.17 container on port 55432 was used
+for live round-trip. `pytest packages/llm_tracker_server/tests/test_storage_smoke.py
+-q` → 2 passed in 1.72 s. Full suite with the test URL set:
+`pytest -q` → 251 passed, 4 warnings. Full suite *without* the
+test URL: → 249 passed, 2 skipped, 4 warnings — the four warnings
+are the pre-existing `fork()` warnings from `cli/manage.py`,
+unchanged. Ruff: 0 errors; 12 files already formatted. See
+`docs/worklog/2026-05-11-phase3c-plan.md §Verification §CP2` for
+the captured outputs (offline-mode SQL gen + live container run
++ docker teardown).
 
-Two CP1-specific deviations from the original plan, both flagged
-in the worklog §Decisions §CP1:
+Three CP2-specific deviations from the original plan, all flagged
+in the worklog §Decisions §CP2:
 
-1. **No `tests/__init__.py`** in the server tests dir. First
-   attempt included one; pytest collection failed because
-   `llm_tracker/tests/__init__.py` already claims the top-level
-   `tests` package namespace. Matches the rootdir-mode layout used
-   by the three plugin packages.
-2. **Description text was rewritten in both `pyproject.toml` and
-   `__init__.py`**. Beyond the strict "deps refresh" framing of CP1,
-   but the prior "Mode R receiver app" wording was actively
-   misleading post-ADR-0017/0019. A one-line correction beat
-   shipping a docstring that lies.
+1. **String/ULID primary keys preserved** on the four ported
+   tables. The plan mentioned BIGINT identity / `gen_random_uuid()`
+   defaults, but Phase 1/2 callers all produce ULID strings at the
+   application layer — the identity/UUID guidance is taken as
+   forward-pointing for the CP3 tenancy tables (`orgs.id UUID`),
+   not retroactive rework. Flagged so a future reader doesn't try
+   to "finish" the swap.
+2. **CP2 consolidates two SQLite migrations into a single PG
+   `0001_initial_schema`.** Greenfield server schema — replaying
+   the timing-columns migration separately would be ceremony with
+   no actual upgrade path to walk.
+3. **The smoke test fixture invokes alembic via `subprocess`
+   rather than the in-process `command.upgrade` API.** Reason:
+   in-process alembic on an async engine fights the test event
+   loop. The subprocess shape doubles as integration coverage for
+   the CI / Fly release-command runner that CP12/CP13 will wire
+   up.
 
-Source HEAD is now `7d992ff`. Documentation HEAD advances with this
-§5.3 finalize commit.
+Source HEAD is now `b7eed52`. Documentation HEAD advances with
+this §5.3 finalize commit.
 
 ### Prior workstream — Phase-3a decisions (closed 2026-05-11)
 
@@ -275,32 +285,39 @@ reframes them server-side**:
 
 ## Next single step
 
-**Phase 3c CP2 — switch DB layer to PostgreSQL (asyncpg +
-SQLAlchemy).** Second commit of the 14-checkpoint plan at
+**Phase 3c CP3 — `orgs` + `api_tokens` schema (ADR-0018
+substrate).** Third commit of the 14-checkpoint plan at
 `docs/worklog/2026-05-11-phase3c-plan.md`:
 
-- Move Alembic env into the server package
-  (`packages/llm_tracker_server/alembic/`).
-- Add `sqlalchemy`, `asyncpg`, `alembic` to the server's runtime
-  deps.
-- Port the three existing SQLite migrations
-  (`350b17be77ae_initial_schema`,
-  `b1c2d3e4f5a6_add_timing_columns`,
-  `c2d3e4f5a6b7_audit_log_append_only_triggers`) to PostgreSQL
-  dialect — BIGINT identity columns, `gen_random_uuid()`, and a
-  Postgres `audit_log` append-only trigger in place of SQLite's.
-- Wire a SQLAlchemy async engine factory at
-  `.../storage/engine.py`; port the four user-data table models
-  (without `org_id` yet — that's CP3+CP4) to
-  `.../storage/models.py`.
-- Verify against a local PostgreSQL 15+ container (or a Supabase
-  branch DB); `alembic upgrade head` clean + a smoke
-  insert/select round-trip in
-  `packages/llm_tracker_server/tests/test_storage_smoke.py`.
+- New migration
+  `packages/llm_tracker_server/alembic/versions/0003_orgs_and_tokens.py`
+  adding two tables:
+  - `orgs(id UUID PK default gen_random_uuid(), name text NOT NULL,
+    created_at timestamptz default now())`.
+  - `api_tokens(token_hash text PK, org_id UUID NOT NULL REFERENCES
+    orgs(id) ON DELETE CASCADE, name text, created_at timestamptz
+    default now(), revoked_at timestamptz)`. Tokens stored hashed
+    (SHA-256 hex); plaintext shown once at issuance per ADR-0020.
+- Add `Org` and `ApiToken` models to
+  `packages/llm_tracker_server/src/llm_tracker_server/storage/models.py`
+  using `sqlalchemy.dialects.postgresql.UUID` (or SA-2 `Uuid`) with
+  `server_default=text("gen_random_uuid()")`. These are the first
+  tables that genuinely want UUID defaults.
+- New `tests/test_org_token_models.py` pinning FK + uniqueness
+  constraints; same skipif-without-test-DB pattern as the CP2
+  smoke test.
+- Still **no `org_id` on the four user-data tables, no RLS, no
+  auth** — those land in CP4, CP5, CP6.
 
-**No `org_id`, no RLS, no auth in CP2.** Those land in CP3 → CP6.
-CP3 onwards are sequenced in the plan — see the plan worklog for
-the dependency chain and Phase-3a flags.
+To revive the dev loop in a new session:
+
+```
+docker run -d --name llm-tracker-pg \
+  -e POSTGRES_USER=cp2 -e POSTGRES_PASSWORD=cp2 \
+  -e POSTGRES_DB=llm_tracker_test \
+  -p 55432:5432 postgres:15
+export LLMTRACK_TEST_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker_test
+```
 
 In parallel, the **ADR-#2 consent decision** remains the most
 blocking remaining Phase-3a item *before any external testing* of
@@ -342,9 +359,10 @@ ready to start.
 - [x] **ADR-0022 deployment platform — Fly.io + Supabase (2026-05-11, commit 3211672)**
 - [x] **Phase 3c build plan — 14 commit-sized checkpoints (2026-05-11, commit ec51a40)**
 - [x] **Phase 3c CP1 — `llm_tracker_server` skeleton + /healthz (2026-05-11, commit 7d992ff)**
+- [x] **Phase 3c CP2 — storage layer on PostgreSQL (2026-05-11, commit b7eed52)**
 - [ ] **Phase 3a — remaining 3 decision ADRs** (#1 fallback / #2 consent / #4 agent language)
 - [ ] Phase 3b — thin local agent (gated on #1 + #4)
-- [ ] Phase 3c — server build-out (1 of 14 checkpoints done; remaining CP2–CP14 per `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0018/0019/0020/0022)
+- [ ] Phase 3c — server build-out (2 of 14 checkpoints done; remaining CP3–CP14 per `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0018/0019/0020/0022)
 - [ ] Phase 1c — `scope_guard` (paused; reframed server-side per ADR-0019; gated on Phase 3c readiness)
 - [ ] Phase 3d — carry-overs: OpenAI/Gemini adapters, analytics interface, response-side policy plugins
 

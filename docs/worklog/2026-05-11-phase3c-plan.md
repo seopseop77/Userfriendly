@@ -44,6 +44,36 @@ The plan must:
 - Refreshed `docs/STATUS.md` to point at this worklog and set
   "Next single step" to CP1 (commit `f866cb8`).
 
+### CP4 — `org_id NOT NULL` on the four user-data tables (2026-05-11, commit `2da7438`)
+
+- New migration
+  `packages/llm_tracker_server/alembic/versions/0004_org_id_on_user_data.py`
+  adds `org_id UUID NOT NULL REFERENCES orgs(id)` to `exchanges`,
+  `events`, `tool_calls`, `audit_log`. Iterates the four tables with
+  a shared `for ...` loop — the column shape is identical on every
+  table and a loop keeps the migration body honest about it. No
+  backfill (greenfield server-side schema; CP9 of supabase-sink is
+  operator demo data and is recreated against the new shape).
+- `packages/llm_tracker_server/src/llm_tracker_server/storage/models.py`
+  gains a matching `org_id: Mapped[uuid.UUID]` column on each of
+  `Exchange`, `Event`, `ToolCall`, `AuditLog`. Typed as
+  `postgresql.UUID(as_uuid=True)` with `ForeignKey("orgs.id")` and
+  `nullable=False`, matching CP3's dialect choice. No SA `relationship`
+  object — RLS policies (CP5) are the cross-org authority, not SA's
+  session-level cascade.
+- `storage/__init__.py` docstring updated to point at CP4 landing
+  the column; CP5/CP6 still own RLS + per-request `SET LOCAL
+  app.org_id`.
+- New `tests/test_org_id_constraint.py` pins both rejections:
+  - `test_exchange_without_org_id_rejected` — insert without
+    `org_id` raises `sa.exc.IntegrityError` (NOT NULL violation).
+  - `test_exchange_with_unknown_org_id_rejected` — insert with a
+    random UUID raises `sa.exc.IntegrityError` (FK violation).
+- `tests/test_storage_smoke.py` updated for CP4: both round-trip
+  and append-only tests now create an `Org` first, flush, and
+  attach `org_id` to the Exchange/AuditLog insert. The Exchange
+  round-trip also re-asserts `org_id` survives the round trip.
+
 ### CP3 — `orgs` + `api_tokens` schema (2026-05-11, commit `373ed11`)
 
 - New migration
@@ -578,6 +608,62 @@ So only CP9 and CP14 carry a Phase-3a flag, and it is a soft
   appear) will run under a session that asserts `app.role = 'admin'`
   alongside `app.org_id`.
 
+### CP4
+
+- **Migration body iterates the four tables in a `for` loop**, not
+  four hand-written `op.add_column(...)` blocks. The column shape is
+  identical on every table — table name is the only varying input —
+  and a loop expresses that more honestly than four duplicated stanzas
+  that would invite a future "let's also widen `events.org_id` to
+  nullable" drift on one table. The loop body is two lines (one
+  `op.add_column`, one `sa.Column(..., ForeignKey, nullable=False)`),
+  so the "explicit Python is cheap" tax stays low. Downgrade iterates
+  in reverse so the per-step `ALTER TABLE` ordering reads naturally.
+- **No SA `relationship()` on either side of the FK.** ADR-0018
+  §"Enforcement" makes RLS the single source of truth for cross-org
+  visibility, not SA's session-level joinedload/cascade. Adding a
+  `relationship(Org, ...)` would let app code traverse `exchange.org`
+  *before* RLS short-circuits the query, which is exactly the bypass
+  the ADR rules out. The column itself is enough for INSERT-side
+  enforcement; SELECT-side enforcement is RLS's job in CP5.
+- **No index on `org_id` at any of the four tables.** Mirrors the CP3
+  decision for `api_tokens.org_id`: the hot query paths land in CP6
+  (auth lookup by `token_hash`, already indexed) and CP9 (per-request
+  INSERT, which only touches the row being written). RLS predicates
+  generated as `org_id = current_setting('app.org_id', true)::uuid`
+  will benefit from a B-tree index once analytics queries arrive;
+  add the index in its own migration when CP10+ writes a query that
+  actually needs it. Pre-indexing four columns for queries we haven't
+  written is exactly the speculative work CLAUDE.md §2.2 rules out.
+- **`Exchange.org_id` placed second in the column order** (right
+  after the PK), not at the end. Read order in `\d exchanges`
+  matters more than schema-evolution diff order here, and putting
+  tenancy beside identity is the natural shape — RLS predicates and
+  session binding read in that order too. The migration applies
+  `ALTER TABLE ... ADD COLUMN` which lands the column at the end on
+  disk anyway; the ORM declaration order only affects `SELECT *`
+  column order, which the storage layer doesn't rely on.
+- **`Exchange` test fixture uses two-step org-then-row insert**
+  (add Org → flush → read assigned UUID → add Exchange) rather than
+  letting an autoflush handle the FK resolution. The autoflush path
+  works, but the explicit `flush()` makes the test's intent visible
+  at a glance and matches the shape CP9's request-handler will use
+  (open transaction, write org-scoped row, commit).
+- **CP2 smoke test updated, not duplicated.** The two existing
+  tests (`test_exchange_round_trip`, `test_audit_log_append_only`)
+  inserted `Exchange`/`AuditLog` without `org_id` and would now fail
+  the NOT NULL constraint. Patching them in place is the minimum
+  surgical change that keeps the CP2 verification intact (round-trip
+  shape, append-only trigger behaviour) while making them tenancy-aware.
+  Splitting "new CP4 test" from "amended CP2 test" preserves the
+  defense-in-depth split the plan asks for: CP4 owns the *constraint*
+  pin; CP2 still owns the round-trip / trigger pins.
+- **Did NOT factor a shared `conftest.py`** in this checkpoint even
+  though CP3's Suggestion #6 flagged it. The third copy now exists;
+  the right time to hoist is when the fixture grows non-trivially
+  (per-org seeding for CP5's RLS isolation test is the obvious
+  trigger). Filing forward as a CP5-prep task.
+
 ### CP3
 
 - **Dialect-specific `postgresql.UUID(as_uuid=True)` +
@@ -720,6 +806,103 @@ So only CP9 and CP14 carry a Phase-3a flag, and it is a soft
   (`0017`, `0018`, `0019`, `0020`) exist in `docs/decisions/`;
   `docs/STATUS.md`, `docs/roadmap.md`, the signing-removal worklog,
   and the supabase-sink CP4 worklog all exist at the cited paths.
+
+### CP4
+
+Alembic offline-mode SQL gen against the CP4 revision (proves the
+DDL is well-formed and the four `ALTER TABLE ... ADD COLUMN ...
+NOT NULL` + `ADD FOREIGN KEY` pairs are encoded as written):
+
+```
+$ cd packages/llm_tracker_server && \
+    LLMTRACK_DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/llm_tracker \
+    .../python3.12 -m alembic upgrade \
+      0003_orgs_and_tokens:0004_org_id_on_user_data --sql
+...
+-- Running upgrade 0003_orgs_and_tokens -> 0004_org_id_on_user_data
+
+ALTER TABLE exchanges ADD COLUMN org_id UUID NOT NULL;
+ALTER TABLE exchanges ADD FOREIGN KEY(org_id) REFERENCES orgs (id);
+ALTER TABLE events ADD COLUMN org_id UUID NOT NULL;
+ALTER TABLE events ADD FOREIGN KEY(org_id) REFERENCES orgs (id);
+ALTER TABLE tool_calls ADD COLUMN org_id UUID NOT NULL;
+ALTER TABLE tool_calls ADD FOREIGN KEY(org_id) REFERENCES orgs (id);
+ALTER TABLE audit_log ADD COLUMN org_id UUID NOT NULL;
+ALTER TABLE audit_log ADD FOREIGN KEY(org_id) REFERENCES orgs (id);
+
+UPDATE alembic_version SET version_num='0004_org_id_on_user_data'
+  WHERE alembic_version.version_num = '0003_orgs_and_tokens';
+COMMIT;
+```
+
+Live verification against the ephemeral PostgreSQL 15.17 container
+on `localhost:55432` (reused from CP2/CP3 — fresh `docker run` this
+session because the container was torn down between sessions). New
+test file in isolation:
+
+```
+$ LLMTRACK_TEST_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker_test \
+    .venv/bin/python3.12 -m pytest \
+    packages/llm_tracker_server/tests/test_org_id_constraint.py \
+    packages/llm_tracker_server/tests/test_storage_smoke.py \
+    packages/llm_tracker_server/tests/test_org_token_models.py -q
+........                                                                 [100%]
+8 passed in 4.30s
+```
+
+Full suite with the test URL set (all eight PG-only smokes run; the
+rest of the suite ignores the test URL):
+
+```
+$ LLMTRACK_TEST_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker_test \
+    .venv/bin/python3.12 -m pytest -q
+...
+257 passed, 4 warnings in 11.52s
+```
+
+Full suite without the test URL (the eight PG smokes skip; this is
+the path CI and other developers will see by default):
+
+```
+$ .venv/bin/python3.12 -m pytest -q
+...
+249 passed, 8 skipped, 4 warnings in 7.08s
+```
+
+The 8 skips are 2 CP2 smokes + 4 CP3 smokes + 2 CP4 smokes — net
++2 on the skip total versus CP3, matching the new test file's two
+cases. 249 unconditional passes is unchanged from CP3, which
+confirms CP4 didn't perturb the non-PG suite. The four warnings are
+the same pre-existing `DeprecationWarning: fork()` from
+`cli/manage.py`, unchanged.
+
+Ruff:
+
+```
+$ .venv/bin/python3.12 -m ruff check packages/llm_tracker_server
+All checks passed!
+$ .venv/bin/python3.12 -m ruff format --check packages/llm_tracker_server
+16 files already formatted
+```
+
+No autofix passes during CP4 — the files were ruff-clean at write
+time.
+
+Defense-in-depth check (manual `psql` smoke against the live
+container after the migration ran via the fixture):
+
+- `INSERT INTO exchanges (id, session_id, started_at, provider,
+  endpoint, tool_call_count, content_level) VALUES (...)` →
+  `null value in column "org_id" of relation "exchanges" violates
+  not-null constraint` (pinned by `test_exchange_without_org_id_rejected`).
+- `INSERT INTO exchanges (..., org_id) VALUES (..., 'aaaaaaaa-...')`
+  with a fabricated UUID → `insert or update on table "exchanges"
+  violates foreign key constraint "exchanges_org_id_fkey"` (pinned
+  by `test_exchange_with_unknown_org_id_rejected`).
+
+Both failure paths surface as `sa.exc.IntegrityError` at the SA
+layer per the test matcher; the matcher narrowing already used by
+CP3 (Decisions §CP3 last bullet) carries over.
 
 ### CP3
 
@@ -979,32 +1162,38 @@ the ASGI-transport test, so I skipped the live-port loop.
 
 ## Handoff
 
-CP3 landed cleanly. Source `HEAD` is `373ed11`; the §5.3 finalize
+CP4 landed cleanly. Source `HEAD` is `2da7438`; the §5.3 finalize
 commit refreshing `docs/STATUS.md` + this worklog adds one more.
-The 14-checkpoint plan is **3/14 done**.
+The 14-checkpoint plan is **4/14 done**.
 
-**Next single step**: **CP4 — `org_id NOT NULL` on the four user-data
-tables (ADR-0018 tenancy).** Per the plan:
+**Next single step**: **CP5 — RLS policies + two-org isolation test
+(ADR-0018 enforcement).** Per the plan:
 
 - New migration
-  `packages/llm_tracker_server/alembic/versions/0004_org_id_on_user_data.py`
-  adding `org_id UUID NOT NULL REFERENCES orgs(id)` to `exchanges`,
-  `events`, `tool_calls`, `audit_log`. No backfill — greenfield
-  server-side schema; the CP9-of-supabase-sink demo rows are
-  operator data and drop/recreate under the new shape.
-- Update the four ORM models in
-  `packages/llm_tracker_server/src/llm_tracker_server/storage/models.py`
-  to carry the same column, typed as `postgresql.UUID(as_uuid=True)`
-  matching CP3's choice. No FK relationship object needed yet —
-  CP5's RLS policies are the authority, not SA's session-level
-  cascade.
-- New `tests/test_org_id_constraint.py` pinning both rejections:
-  inserting without `org_id` fails the NOT NULL constraint;
-  inserting with a UUID that does not appear in `orgs` fails the FK.
-  Same skipif-without-`LLMTRACK_TEST_DATABASE_URL` pattern as CP2/CP3.
-- Still **no RLS policies and no auth** — those land in CP5/CP6.
-  Defense-in-depth comes from the column constraint plus the
-  policy; CP4 is the constraint half.
+  `packages/llm_tracker_server/alembic/versions/0005_rls_policies.py`
+  enabling `ROW LEVEL SECURITY` on `exchanges`, `events`,
+  `tool_calls`, `audit_log`. Per-table policy derives the current
+  org from `current_setting('app.org_id', true)::uuid`. Operator/admin
+  role gets cross-org `SELECT` via an explicit policy branch (no
+  service-role bypass per ADR-0018 §Decision item 2). Document the
+  one-line `SET LOCAL app.org_id = '<uuid>'` invocation that CP6 will
+  add to every request's transaction.
+- New `tests/test_rls_two_org_isolation.py` — create orgs A and B;
+  as A, insert two exchanges; switch session `app.org_id` to B,
+  assert `SELECT` returns zero rows; switch back to A, assert two
+  rows. Skipif-without-`LLMTRACK_TEST_DATABASE_URL` pattern carries
+  over from CP2/CP3/CP4. This is the obvious trigger for the
+  `conftest.py` hoist flagged in CP4 §Decisions last bullet — the
+  fixture will gain per-org seeding here.
+- Still **no auth middleware** — that lands in CP6. CP5 plus CP4
+  together complete the defense-in-depth picture: column FK + NOT
+  NULL is the storage half; RLS predicate is the visibility half.
+- Watch for the `audit_log` append-only trigger interaction: the
+  CP5 policy must not preclude the `INSERT` path the trigger
+  guards. The PL/pgSQL function from `0002_audit_log_triggers`
+  fires on UPDATE/DELETE only, so RLS-on-INSERT remains the only
+  policy that needs to permit the write — but it's worth a manual
+  `psql` check before the test file is written.
 
 For a future session reviving the dev loop:
 
@@ -1043,6 +1232,8 @@ verification surface and ought to be greppable in `git log` later.
    (CP13) works. Trivial to add but worth flagging here so it
    doesn't surprise CP12.
 6. **Share the alembic upgrade/downgrade fixture via a server-package
-   `conftest.py`** once CP4's smoke test lands. CP3 copy-pasted the
-   subprocess wrapper from CP2's `test_storage_smoke.py`; with CP4
-   it becomes three copies, which is the right point to hoist.
+   `conftest.py`** once CP5's RLS test lands. CP3 copy-pasted the
+   subprocess wrapper from CP2's `test_storage_smoke.py`; CP4 added
+   the third copy without hoisting (see CP4 §Decisions last bullet).
+   CP5's per-org seeding gives the fixture a real reason to grow,
+   which is the right shape to hoist into rather than a bare copy.

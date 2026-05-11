@@ -22,8 +22,11 @@ PG-native `UUID` with `gen_random_uuid()` server defaults — these are the
 first tables that genuinely want identity generation at the DB layer (no
 existing call-site contract to break).
 
-`org_id` columns on the four user-data tables and RLS policies land in
-CP4/CP5 — not in this module yet.
+CP4 adds `org_id UUID NOT NULL REFERENCES orgs(id)` on the four user-data
+tables (ADR-0018 tenancy). No SA relationship object is declared — RLS
+policies (CP5) are the authority for cross-org visibility, not SA's
+session-level cascade. RLS policies land in CP5; per-request session
+binding (`SET LOCAL app.org_id`) lands in CP6.
 """
 
 import uuid as uuid_module
@@ -42,6 +45,11 @@ class Exchange(Base):
     __tablename__ = "exchanges"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    org_id: Mapped[uuid_module.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("orgs.id"),
+        nullable=False,
+    )
     session_id: Mapped[str] = mapped_column(String, nullable=False)
     started_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     ended_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -70,6 +78,11 @@ class Event(Base):
     __tablename__ = "events"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    org_id: Mapped[uuid_module.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("orgs.id"),
+        nullable=False,
+    )
     exchange_id: Mapped[str] = mapped_column(String, ForeignKey("exchanges.id"), nullable=False)
     seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
     ts: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -83,6 +96,11 @@ class ToolCall(Base):
     __tablename__ = "tool_calls"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    org_id: Mapped[uuid_module.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("orgs.id"),
+        nullable=False,
+    )
     exchange_id: Mapped[str] = mapped_column(String, ForeignKey("exchanges.id"), nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
     input_hash: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -95,6 +113,11 @@ class AuditLog(Base):
     __tablename__ = "audit_log"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    org_id: Mapped[uuid_module.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("orgs.id"),
+        nullable=False,
+    )
     ts: Mapped[int] = mapped_column(BigInteger, nullable=False)
     kind: Mapped[str] = mapped_column(String, nullable=False)
     plugin: Mapped[str | None] = mapped_column(String, nullable=True)

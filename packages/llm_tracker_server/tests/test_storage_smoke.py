@@ -26,6 +26,7 @@ import sqlalchemy as sa
 from llm_tracker_server.storage import (
     AuditLog,
     Exchange,
+    Org,
     make_engine,
     make_session_factory,
 )
@@ -70,9 +71,14 @@ async def test_exchange_round_trip(session_factory) -> None:
     now_ms = int(time.time() * 1000)
 
     async with session_factory() as session:
+        org = Org(name="smoke-org")
+        session.add(org)
+        await session.flush()
+        org_id = org.id
         session.add(
             Exchange(
                 id=row_id,
+                org_id=org_id,
                 session_id="smoke-session",
                 started_at=now_ms,
                 provider="anthropic",
@@ -90,6 +96,7 @@ async def test_exchange_round_trip(session_factory) -> None:
         assert row.started_at == now_ms
         assert row.provider == "anthropic"
         assert row.content_level == "L3"
+        assert row.org_id == org_id
 
 
 @pytest.mark.skipif(not TEST_DB_URL, reason=SKIP_REASON)
@@ -99,9 +106,14 @@ async def test_audit_log_append_only(session_factory) -> None:
     now_ms = int(time.time() * 1000)
 
     async with session_factory() as session:
+        org = Org(name="audit-smoke-org")
+        session.add(org)
+        await session.flush()
+        org_id = org.id
         session.add(
             AuditLog(
                 id=row_id,
+                org_id=org_id,
                 ts=now_ms,
                 kind="smoke",
                 outcome="ok",

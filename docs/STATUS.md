@@ -6,25 +6,23 @@
 
 ---
 
-**Last updated**: 2026-05-11 (Claude Code; Phase 3c kick-off planning landed — ADR-0022 + 14-checkpoint build plan)
-**Updated by**: Claude Code (Phase 3c plan checkpoint, commits 3211672 + ec51a40)
+**Last updated**: 2026-05-11 (Claude Code; Phase 3c CP1 landed — `llm_tracker_server` skeleton boots, /healthz green)
+**Updated by**: Claude Code (Phase 3c CP1 checkpoint, source commit 7d992ff)
 
 ## Current phase
 
-- **Phase**: **Phase 3c planning checkpoint closed.** ADR-0022
-  records Fly.io + Supabase as the deployment platform; the build
-  plan at `docs/worklog/2026-05-11-phase3c-plan.md` breaks Phase 3c
-  into 14 commit-sized checkpoints anchored on
-  ADR-0018/0019/0020/0022. Five of the seven Phase-3a queued ADRs
-  are now settled (#5/#6/#3/#7 via ADR-0018/0019/0020/0021;
-  deployment platform via ADR-0022). The ADR-0021 code-removal
-  housekeeping from the prior session is unchanged. Codebase is
-  still at commit `b446c3f` for source code; documentation is at
-  `ec51a40` (with this STATUS update bringing it to the §5.3
-  finalize commit).
-- **Active task**: None in code yet — Phase 3c implementation
-  starts next session. **CP1 (bootstrap `llm_tracker_server`
-  package skeleton)** is the queued first commit. **ADR-#2 consent
+- **Phase**: **Phase 3c implementation begun — CP1 closed.** The
+  `llm_tracker_server` package now has a working FastAPI skeleton
+  (`create_app()` factory, module-level `app`, `GET /healthz`,
+  structlog JSON logging, `LLMTRACK_*` pydantic-settings,
+  `.env` loader). Deps refreshed (`fastapi`, `uvicorn[standard]`,
+  `pydantic-settings`, `structlog`, `python-dotenv`; stale `pynacl`
+  dropped — also closes signing-removal Suggestion #1). Source
+  HEAD now at `7d992ff`. The 14-checkpoint build plan at
+  `docs/worklog/2026-05-11-phase3c-plan.md` is being executed
+  one commit at a time per its dependency order.
+- **Active task**: **CP2 — switch DB layer to PostgreSQL (asyncpg +
+  SQLAlchemy)** is the queued next commit. **ADR-#2 consent
   decision** remains the most blocking remaining Phase-3a item
   before *any external testing*; operator-only smoke (CP14) is not
   blocked.
@@ -38,45 +36,70 @@ The prior signing-removal worklog
 ## Recent commits
 
 ```
+7d992ff   server: bootstrap llm_tracker_server skeleton (CP1)
+f866cb8   docs: STATUS + worklog for Phase 3c plan checkpoint
 ec51a40   docs: Phase 3c build plan (14 checkpoints)
 3211672   docs: ADR-0022 deployment platform (Fly.io + Supabase)
 b9cb236   docs: STATUS + worklog for ADR-0021 code-removal checkpoint
-b446c3f   infra: remove signing module and artifacts (ADR-0021)
-223f742   docs: Phase 3a decisions 4/7 (ADRs 0018-0021)
 ```
 
 ## Where we paused
 
-**Phase 3c kick-off planning checkpoint, closed.** Two documentation
-artefacts landed this session:
+**Phase 3c CP1 — `llm_tracker_server` skeleton — closed.** The
+server package now boots:
 
-1. **ADR-0022 (Accepted)** — Fly.io for the containerised FastAPI
-   server, Supabase for managed PostgreSQL. `DATABASE_URL` is the
-   single DB knob; no Supabase SDK in server code; Dockerfile +
-   `fly.toml` as the only platform-specific artefacts. Enterprise
-   self-hosted operators (ADR-0017 §Decision item 1) replace
-   `fly.toml` with their own deployment config; server code stays
-   portable. Committed as `3211672`.
-2. **Phase 3c build plan** at
-   `docs/worklog/2026-05-11-phase3c-plan.md` — 14 commit-sized
-   checkpoints, ordered by dependency, anchored on
-   ADR-0018/0019/0020/0022. Each checkpoint has a one-line change
-   description, file list, and verification step. Phase-3a
-   dependencies flagged: **none** for #1 (fallback — agent-side) or
-   #4 (agent language — Phase 3b); **soft #2 (consent)** on CP9
-   (storage shape: raw vs scrubbed) and CP14 (operator-only smoke
-   is fine; external smoke gated on #2 landing). Committed as
-   `ec51a40`.
+- `create_app(settings: Settings | None = None) -> FastAPI` factory
+  at `packages/llm_tracker_server/src/llm_tracker_server/app.py`,
+  plus a module-level `app = create_app()` so
+  `uvicorn llm_tracker_server.app:app` works directly.
+- `GET /healthz` returns `{"status": "ok", "version": __version__}`
+  — pinned by an `httpx.AsyncClient` + `ASGITransport` test at
+  `packages/llm_tracker_server/tests/test_healthz.py`.
+- `Settings` (env prefix `LLMTRACK_`) carries only `log_level` for
+  CP1; CP2 will add `DATABASE_URL`.
+- structlog configured with `merge_contextvars` + iso `TimeStamper`
+  + JSON renderer. The Anthropic-credential scrubber owed by
+  ADR-0020 is **explicitly deferred** to CP7; the module's
+  docstring carries that forward-reference so a future reader
+  doesn't reinvent it.
+- `python-dotenv` auto-loads `.env` from cwd at app build time
+  (`override=False` — same convention as
+  `packages/llm_tracker/src/llm_tracker/proxy/app.py`).
+- Deps refreshed in `packages/llm_tracker_server/pyproject.toml`:
+  runtime now has `fastapi`, `uvicorn[standard]`, `pydantic`,
+  `pydantic-settings`, `python-dotenv`, `structlog`; dev group has
+  `pytest`, `pytest-asyncio`, `httpx`, `ruff`, `mypy`. The stale
+  `pynacl` dep (signing-removal Suggestion #1) is gone; the rest
+  of the now-unused `keyring`/`cffi`/`pycparser`/`jaraco-*`/
+  `more-itertools` chain was uninstalled by `uv sync` in the same
+  pass.
+- Root `pyproject.toml` `[tool.pytest.ini_options].testpaths` now
+  includes `packages/llm_tracker_server/tests`.
 
-**No source-code changes this session.** Implementation starts next
-session at CP1 (bootstrap `llm_tracker_server` package skeleton).
-Source tree HEAD is still `b446c3f`; documentation HEAD is at this
-STATUS-finalize commit.
+Verification: `pytest packages/llm_tracker_server/tests -q` → 1
+passed in 0.14 s; full suite `pytest -q` → 249 passed, 4 warnings
+(pre-existing `fork()` warnings from `cli/manage.py`, unchanged).
+Ruff: 0 errors (one I001 import-sort autofix applied during CP1).
+`ruff format --check` → 6 files already formatted. See
+`docs/worklog/2026-05-11-phase3c-plan.md §Verification §CP1` for
+full output.
 
-The signing-removal Suggestion #1 (drop stale `pynacl` from
-`packages/llm_tracker_server/pyproject.toml`) is folded into CP1's
-deps refresh — naturally absorbed by the build plan rather than
-needing its own follow-up commit.
+Two CP1-specific deviations from the original plan, both flagged
+in the worklog §Decisions §CP1:
+
+1. **No `tests/__init__.py`** in the server tests dir. First
+   attempt included one; pytest collection failed because
+   `llm_tracker/tests/__init__.py` already claims the top-level
+   `tests` package namespace. Matches the rootdir-mode layout used
+   by the three plugin packages.
+2. **Description text was rewritten in both `pyproject.toml` and
+   `__init__.py`**. Beyond the strict "deps refresh" framing of CP1,
+   but the prior "Mode R receiver app" wording was actively
+   misleading post-ADR-0017/0019. A one-line correction beat
+   shipping a docstring that lies.
+
+Source HEAD is now `7d992ff`. Documentation HEAD advances with this
+§5.3 finalize commit.
 
 ### Prior workstream — Phase-3a decisions (closed 2026-05-11)
 
@@ -252,24 +275,32 @@ reframes them server-side**:
 
 ## Next single step
 
-**Phase 3c CP1 — bootstrap `llm_tracker_server` package skeleton.**
-First commit of the 14-checkpoint plan at
+**Phase 3c CP2 — switch DB layer to PostgreSQL (asyncpg +
+SQLAlchemy).** Second commit of the 14-checkpoint plan at
 `docs/worklog/2026-05-11-phase3c-plan.md`:
 
-- Empty FastAPI app with `GET /healthz`, structlog logging,
-  pydantic-settings reading `LLMTRACK_*` env vars.
-- `packages/llm_tracker_server/pyproject.toml` deps refresh — add
-  `fastapi`, `uvicorn[standard]`, `pydantic-settings`, `structlog`,
-  `python-dotenv`; drop the stale `pynacl` line (also closes
-  Suggestion #1 of the signing-removal worklog).
-- No DB, no plugins, no proxy logic in this checkpoint — those are
-  CP2, CP3+, CP8.
-- Verify: `pip install -e packages/llm_tracker_server[dev]` clean;
-  `uvicorn llm_tracker_server.app:app` boots; `/healthz` returns
-  200.
+- Move Alembic env into the server package
+  (`packages/llm_tracker_server/alembic/`).
+- Add `sqlalchemy`, `asyncpg`, `alembic` to the server's runtime
+  deps.
+- Port the three existing SQLite migrations
+  (`350b17be77ae_initial_schema`,
+  `b1c2d3e4f5a6_add_timing_columns`,
+  `c2d3e4f5a6b7_audit_log_append_only_triggers`) to PostgreSQL
+  dialect — BIGINT identity columns, `gen_random_uuid()`, and a
+  Postgres `audit_log` append-only trigger in place of SQLite's.
+- Wire a SQLAlchemy async engine factory at
+  `.../storage/engine.py`; port the four user-data table models
+  (without `org_id` yet — that's CP3+CP4) to
+  `.../storage/models.py`.
+- Verify against a local PostgreSQL 15+ container (or a Supabase
+  branch DB); `alembic upgrade head` clean + a smoke
+  insert/select round-trip in
+  `packages/llm_tracker_server/tests/test_storage_smoke.py`.
 
-CP2 through CP14 are sequenced in the plan — see the plan worklog
-for the dependency chain and Phase-3a flags.
+**No `org_id`, no RLS, no auth in CP2.** Those land in CP3 → CP6.
+CP3 onwards are sequenced in the plan — see the plan worklog for
+the dependency chain and Phase-3a flags.
 
 In parallel, the **ADR-#2 consent decision** remains the most
 blocking remaining Phase-3a item *before any external testing* of
@@ -310,9 +341,10 @@ ready to start.
 - [x] **ADR-0021 code-removal housekeeping (2026-05-11, commit b446c3f)**
 - [x] **ADR-0022 deployment platform — Fly.io + Supabase (2026-05-11, commit 3211672)**
 - [x] **Phase 3c build plan — 14 commit-sized checkpoints (2026-05-11, commit ec51a40)**
+- [x] **Phase 3c CP1 — `llm_tracker_server` skeleton + /healthz (2026-05-11, commit 7d992ff)**
 - [ ] **Phase 3a — remaining 3 decision ADRs** (#1 fallback / #2 consent / #4 agent language)
 - [ ] Phase 3b — thin local agent (gated on #1 + #4)
-- [ ] Phase 3c — server build-out (14 checkpoints per `docs/worklog/2026-05-11-phase3c-plan.md`; anchored on ADR-0018/0019/0020/0022)
+- [ ] Phase 3c — server build-out (1 of 14 checkpoints done; remaining CP2–CP14 per `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0018/0019/0020/0022)
 - [ ] Phase 1c — `scope_guard` (paused; reframed server-side per ADR-0019; gated on Phase 3c readiness)
 - [ ] Phase 3d — carry-overs: OpenAI/Gemini adapters, analytics interface, response-side policy plugins
 

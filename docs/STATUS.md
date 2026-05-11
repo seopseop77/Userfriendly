@@ -6,54 +6,70 @@
 
 ---
 
-**Last updated**: 2026-05-11 (Claude Code; Phase-3a decisions 4/7 settled — #5/#6/#3/#7 via ADR-0018/0019/0020/0021)
-**Updated by**: Claude Code (user-driven Phase-3a decision interview)
+**Last updated**: 2026-05-11 (Claude Code; ADR-0021 code-removal housekeeping landed — signing module / CLI / registry / `.sig` files all gone)
+**Updated by**: Claude Code (signing-removal checkpoint, commit b446c3f)
 
 ## Current phase
 
-- **Phase**: **Phase-3a decision queue in flight; 4 of 7 ADRs
-  settled.** The user reframed the queue away from the
-  STATUS.md-default priority ("#1 fallback + #3 auth most blocking")
-  toward a **server-first / demo-first** stance: decide the four
-  ADRs that shape the server-side DB schema and request-handling
-  edge (#5 multi-tenancy, #6 mode-taxonomy fate, #3 auth model,
-  #7 signing fate); defer the three thin-agent-related items (#1
-  fallback, #2 consent, #4 agent language) until after a working
-  server build-out demo. Documentation-only checkpoint — no source
-  code changed. The codebase remains at commit 8d4422b
-  (Phase-1b loose-ends CP2 closed).
-- **Active task**: None in code. **ADR-0021 code-removal
-  housekeeping** (signing module / CLI / registry / `.sig` files)
-  is queued as the next checkpoint; **Phase 3c kick-off planning**
-  is queued after that.
+- **Phase**: **ADR-0021 code-removal housekeeping closed.** The
+  signing primitive is now fully retired from the codebase. The
+  prior Phase-3a documentation checkpoint (4 of 7 ADRs settled —
+  #5/#6/#3/#7 via ADR-0018/0019/0020/0021) is unchanged. The
+  housekeeping was self-contained delete-only: no behavior added,
+  no public interface beyond the retired CLI commands changed.
+  Codebase is now at commit b446c3f.
+- **Active task**: None in code. **Phase 3c kick-off planning**
+  (`ralplan`-style consensus plan anchored on ADR-0018/0019/0020) is
+  the queued next step. **ADR-#2 consent decision** is the most
+  blocking remaining Phase-3a item before any external demo and can
+  run in parallel.
 
 ## Active worklog
 
-`docs/worklog/2026-05-11-phase-3a-decisions.md` (open; closes with
-the STATUS-update commit). The earlier pivot worklog
-`docs/worklog/2026-05-11-central-server-pivot.md` is closed.
+`docs/worklog/2026-05-11-signing-removal.md` (closed with this
+STATUS update). The prior Phase-3a decisions worklog
+`docs/worklog/2026-05-11-phase-3a-decisions.md` is closed.
 
 ## Recent commits
 
 ```
-<this>    docs: Phase-3a decisions 4/7 — ADR-0018/0019/0020/0021
+b446c3f   infra: remove signing module and artifacts (ADR-0021)
+223f742   docs: Phase 3a decisions 4/7 (ADRs 0018-0021)
 fbf23a5   docs: STATUS + worklog for ADR-0017 pivot
 8a47b2f   docs: roadmap reflects central server pivot (ADR-0017)
 87142f9   docs: supersede ADR-0001/0006/0007 per ADR-0017
-f74710f   docs: ADR-0017 central server deployment model
 ```
 
 ## Where we paused
 
-**Phase-3a decision interview, documentation-only.** The user
-selected four of the seven queued Phase-3a ADRs as in-scope for
-this session (#5, #6, #3, #7) and explicitly deferred the other
-three (#1, #2, #4). All four decisions are recorded as new ADRs;
-ADR-0008 is marked superseded; ADR-0006's open question is now
-closed by ADR-0019. No code touched.
+**ADR-0021 code-removal housekeeping checkpoint, closed.** The
+signing primitive is gone from the codebase: verifier module +
+`trust/` registry deleted, `generate-key` + `sign-plugin` CLI
+subcommands removed, four `.sig` files deleted, `keyring` + `pynacl`
+deps dropped from `llm_tracker`, signing-only tests retired, and the
+verifier call site in `PluginHost.load_plugins` excised. Plugin
+loading now flows `entry_points → _find_manifest → disable check →
+capability policy → register with EgressGuard → instantiate`, with
+no cryptographic gate in between. 230 tests pass (down from 241;
+the 11-diff is 11 verifier-only + 3 plugin-host signing tests,
+retired without replacement — existing manifest-validation /
+mode-policy / guard-wiring / introspection tests already pin the
+no-signing load path end-to-end). Ruff baseline unchanged (6
+pre-existing, 0 introduced). See worklog "Verification" section.
 
-The four decisions are mutually coherent and converge on a
-**server-first, minimum-infrastructure** posture:
+One follow-up flagged but **not** done in this commit: the server
+package's `packages/llm_tracker_server/pyproject.toml` still lists
+`pynacl` (planned for ADR-0007's TaskDefinition signing, which the
+ADR-0017 pivot superseded). Worth a one-line cleanup once the team
+confirms the server will not bring its own crypto layer. The task
+spec's "Do NOT remove anything beyond this list" fence kept it out
+of scope here.
+
+### Prior workstream — Phase-3a decisions (closed 2026-05-11)
+
+The Phase-3a decision interview (worklog
+`docs/worklog/2026-05-11-phase-3a-decisions.md`) settled four of
+the seven queued ADRs:
 
 1. **ADR-0018 — Multi-tenancy: per-org + Postgres RLS only.**
    Every user-data table carries `org_id NOT NULL`; RLS policies
@@ -210,35 +226,23 @@ reframes them server-side**:
 
 ## Next single step
 
-**ADR-0021 code-removal housekeeping checkpoint.** Small,
-self-contained, clears the deck before Phase 3c:
+**Phase 3c kick-off planning.** A `ralplan`-style consensus plan
+(Planner + Architect + Critic) that breaks down the server
+build-out into commit-sized checkpoints, anchored on the three
+schema/edge ADRs:
 
-1. Delete `packages/llm_tracker_sdk/src/llm_tracker_sdk/signing.py`
-   and any signing helpers in the SDK.
-2. Delete the plugin-host signature verifier (currently
-   `plugin_host.signing.verify_manifest_signature`) and its call
-   site in the plugin loader.
-3. Delete `packages/llm_tracker/src/llm_tracker/trust/keys.toml`
-   and the entire `trust/` module.
-4. Remove `llm-tracker generate-key` and `llm-tracker sign-plugin`
-   Typer subcommands.
-5. Drop the `keyring` / `llm-tracker-signing` OS-keychain
-   dependency if no other code uses it.
-6. Delete `packages/llm_tracker_plugin_supabase_sink/plugin.toml.sig`
-   and any other `.sig` files in the repo.
-7. Remove signature-related audit-log reason codes
-   (`signature_missing` / `signature_invalid` /
-   `signing_key_not_in_registry`).
-8. Update `docs/plugins.md` to remove the signing section.
-9. Update or remove tests that pin signing behaviour. Add a smoke
-   test that confirms plugin loading still works without signing.
+- ADR-0018 (per-org tenancy + RLS) → server-side DB schema with
+  `org_id NOT NULL` on every user-data table.
+- ADR-0019 (single uniform storage shape; L0–L3 survives as
+  plugin-manifest `min_content_level`) → no per-user retention
+  differentiation.
+- ADR-0020 (per-org token + Anthropic credential pass-through) →
+  auth middleware + zero-persistence credential handling.
 
-After that lands, the candidate next-next steps are:
-
-- **Phase 3c kick-off planning** (`ralplan`-style consensus plan
-  anchored on ADR-0018/0019/0020).
-- **ADR-#2 consent decision** (most blocking remaining Phase-3a
-  item before any external demo; legal/privacy input owed).
+In parallel, the **ADR-#2 consent decision** is the most blocking
+remaining Phase-3a item before any external demo. Operator-only
+demo is not blocked. Legal/privacy input may take longer than
+internal ADR drafting; flag to start alongside Phase 3c.
 
 The user-deferred items #1 (fallback) and #4 (agent language) are
 **not on the critical path** under the current server-first
@@ -269,9 +273,9 @@ ready to start.
 - [x] **Phase 2 partial — `supabase_sink` reference plugin (CLOSED 2026-05-08, 9 commits 8712183 → CP9 finalize)**
 - [x] **Phase 1b loose-ends (CLOSED 2026-05-09, commits 86acecd / 14b6f7a / 86caf03 / 8d4422b)**
 - [x] **Architectural pivot to central server documented (2026-05-11, ADR-0017; commits f74710f / 87142f9 / 8a47b2f / fbf23a5)**
-- [x] **Phase 3a decisions 4/7 settled (2026-05-11, ADR-0018/0019/0020/0021; this commit)**
+- [x] **Phase 3a decisions 4/7 settled (2026-05-11, ADR-0018/0019/0020/0021; commit 223f742)**
+- [x] **ADR-0021 code-removal housekeeping (2026-05-11, commit b446c3f)**
 - [ ] **Phase 3a — remaining 3 decision ADRs** (#1 fallback / #2 consent / #4 agent language)
-- [ ] **ADR-0021 code-removal housekeeping** (delete signing module/CLI/registry/.sig files)
 - [ ] Phase 3b — thin local agent (gated on #1 + #4)
 - [ ] Phase 3c — server build-out (migrate existing proxy logic + plugins server-side; anchored on ADR-0018/0019/0020)
 - [ ] Phase 1c — `scope_guard` (paused; reframed server-side per ADR-0019; gated on Phase 3c readiness)

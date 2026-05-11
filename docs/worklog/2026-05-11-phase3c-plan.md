@@ -38,7 +38,10 @@ The plan must:
 
 - Wrote `docs/decisions/0022-deployment-platform-fly-supabase.md` —
   ADR-0022, Accepted, Fly.io + Supabase (commit `3211672`).
-- Wrote this document — the Phase 3c plan (commit pending).
+- Wrote this document — the Phase 3c plan (commit `ec51a40`).
+- Refreshed `docs/STATUS.md` to point at this worklog and set
+  "Next single step" to CP1 (commit pending — the §5.3 atomic-three
+  finalization commit).
 
 ## Phase 3c plan
 

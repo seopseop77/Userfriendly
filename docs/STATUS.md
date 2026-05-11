@@ -6,64 +6,77 @@
 
 ---
 
-**Last updated**: 2026-05-11 (Claude Code; ADR-0021 code-removal housekeeping landed — signing module / CLI / registry / `.sig` files all gone)
-**Updated by**: Claude Code (signing-removal checkpoint, commit b446c3f)
+**Last updated**: 2026-05-11 (Claude Code; Phase 3c kick-off planning landed — ADR-0022 + 14-checkpoint build plan)
+**Updated by**: Claude Code (Phase 3c plan checkpoint, commits 3211672 + ec51a40)
 
 ## Current phase
 
-- **Phase**: **ADR-0021 code-removal housekeeping closed.** The
-  signing primitive is now fully retired from the codebase. The
-  prior Phase-3a documentation checkpoint (4 of 7 ADRs settled —
-  #5/#6/#3/#7 via ADR-0018/0019/0020/0021) is unchanged. The
-  housekeeping was self-contained delete-only: no behavior added,
-  no public interface beyond the retired CLI commands changed.
-  Codebase is now at commit b446c3f.
-- **Active task**: None in code. **Phase 3c kick-off planning**
-  (`ralplan`-style consensus plan anchored on ADR-0018/0019/0020) is
-  the queued next step. **ADR-#2 consent decision** is the most
-  blocking remaining Phase-3a item before any external demo and can
-  run in parallel.
+- **Phase**: **Phase 3c planning checkpoint closed.** ADR-0022
+  records Fly.io + Supabase as the deployment platform; the build
+  plan at `docs/worklog/2026-05-11-phase3c-plan.md` breaks Phase 3c
+  into 14 commit-sized checkpoints anchored on
+  ADR-0018/0019/0020/0022. Five of the seven Phase-3a queued ADRs
+  are now settled (#5/#6/#3/#7 via ADR-0018/0019/0020/0021;
+  deployment platform via ADR-0022). The ADR-0021 code-removal
+  housekeeping from the prior session is unchanged. Codebase is
+  still at commit `b446c3f` for source code; documentation is at
+  `ec51a40` (with this STATUS update bringing it to the §5.3
+  finalize commit).
+- **Active task**: None in code yet — Phase 3c implementation
+  starts next session. **CP1 (bootstrap `llm_tracker_server`
+  package skeleton)** is the queued first commit. **ADR-#2 consent
+  decision** remains the most blocking remaining Phase-3a item
+  before *any external testing*; operator-only smoke (CP14) is not
+  blocked.
 
 ## Active worklog
 
-`docs/worklog/2026-05-11-signing-removal.md` (closed with this
-STATUS update). The prior Phase-3a decisions worklog
-`docs/worklog/2026-05-11-phase-3a-decisions.md` is closed.
+`docs/worklog/2026-05-11-phase3c-plan.md` (active; plan-only).
+The prior signing-removal worklog
+`docs/worklog/2026-05-11-signing-removal.md` is closed.
 
 ## Recent commits
 
 ```
+ec51a40   docs: Phase 3c build plan (14 checkpoints)
+3211672   docs: ADR-0022 deployment platform (Fly.io + Supabase)
+b9cb236   docs: STATUS + worklog for ADR-0021 code-removal checkpoint
 b446c3f   infra: remove signing module and artifacts (ADR-0021)
 223f742   docs: Phase 3a decisions 4/7 (ADRs 0018-0021)
-fbf23a5   docs: STATUS + worklog for ADR-0017 pivot
-8a47b2f   docs: roadmap reflects central server pivot (ADR-0017)
-87142f9   docs: supersede ADR-0001/0006/0007 per ADR-0017
 ```
 
 ## Where we paused
 
-**ADR-0021 code-removal housekeeping checkpoint, closed.** The
-signing primitive is gone from the codebase: verifier module +
-`trust/` registry deleted, `generate-key` + `sign-plugin` CLI
-subcommands removed, four `.sig` files deleted, `keyring` + `pynacl`
-deps dropped from `llm_tracker`, signing-only tests retired, and the
-verifier call site in `PluginHost.load_plugins` excised. Plugin
-loading now flows `entry_points → _find_manifest → disable check →
-capability policy → register with EgressGuard → instantiate`, with
-no cryptographic gate in between. 230 tests pass (down from 241;
-the 11-diff is 11 verifier-only + 3 plugin-host signing tests,
-retired without replacement — existing manifest-validation /
-mode-policy / guard-wiring / introspection tests already pin the
-no-signing load path end-to-end). Ruff baseline unchanged (6
-pre-existing, 0 introduced). See worklog "Verification" section.
+**Phase 3c kick-off planning checkpoint, closed.** Two documentation
+artefacts landed this session:
 
-One follow-up flagged but **not** done in this commit: the server
-package's `packages/llm_tracker_server/pyproject.toml` still lists
-`pynacl` (planned for ADR-0007's TaskDefinition signing, which the
-ADR-0017 pivot superseded). Worth a one-line cleanup once the team
-confirms the server will not bring its own crypto layer. The task
-spec's "Do NOT remove anything beyond this list" fence kept it out
-of scope here.
+1. **ADR-0022 (Accepted)** — Fly.io for the containerised FastAPI
+   server, Supabase for managed PostgreSQL. `DATABASE_URL` is the
+   single DB knob; no Supabase SDK in server code; Dockerfile +
+   `fly.toml` as the only platform-specific artefacts. Enterprise
+   self-hosted operators (ADR-0017 §Decision item 1) replace
+   `fly.toml` with their own deployment config; server code stays
+   portable. Committed as `3211672`.
+2. **Phase 3c build plan** at
+   `docs/worklog/2026-05-11-phase3c-plan.md` — 14 commit-sized
+   checkpoints, ordered by dependency, anchored on
+   ADR-0018/0019/0020/0022. Each checkpoint has a one-line change
+   description, file list, and verification step. Phase-3a
+   dependencies flagged: **none** for #1 (fallback — agent-side) or
+   #4 (agent language — Phase 3b); **soft #2 (consent)** on CP9
+   (storage shape: raw vs scrubbed) and CP14 (operator-only smoke
+   is fine; external smoke gated on #2 landing). Committed as
+   `ec51a40`.
+
+**No source-code changes this session.** Implementation starts next
+session at CP1 (bootstrap `llm_tracker_server` package skeleton).
+Source tree HEAD is still `b446c3f`; documentation HEAD is at this
+STATUS-finalize commit.
+
+The signing-removal Suggestion #1 (drop stale `pynacl` from
+`packages/llm_tracker_server/pyproject.toml`) is folded into CP1's
+deps refresh — naturally absorbed by the build plan rather than
+needing its own follow-up commit.
 
 ### Prior workstream — Phase-3a decisions (closed 2026-05-11)
 
@@ -130,6 +143,19 @@ Items 1, 2, 4 do **not** block Phase 3c (server build-out): the
 server can be built against ADR-0018/0019/0020 schemas and surfaces
 without resolving them. #2 is required before the server is shown
 to anyone outside the operator.
+
+## Phase 3c kick-off — deployment platform (2026-05-11)
+
+| Topic | Status | ADR |
+|---|---|---|
+| Server host + database vendor | **Settled 2026-05-11** | **ADR-0022** |
+
+ADR-0022 commits the project to Fly.io (containerised FastAPI) +
+Supabase (managed PostgreSQL with RLS), with `DATABASE_URL` as the
+single DB knob and the app shipped as a Dockerfile so the
+deployment is not Fly-locked. Reversibility is high — `DATABASE_URL`
+swaps the DB, and `fly.toml` is replaced 1:1 by any other
+orchestrator's manifest.
 
 ---
 
@@ -226,23 +252,30 @@ reframes them server-side**:
 
 ## Next single step
 
-**Phase 3c kick-off planning.** A `ralplan`-style consensus plan
-(Planner + Architect + Critic) that breaks down the server
-build-out into commit-sized checkpoints, anchored on the three
-schema/edge ADRs:
+**Phase 3c CP1 — bootstrap `llm_tracker_server` package skeleton.**
+First commit of the 14-checkpoint plan at
+`docs/worklog/2026-05-11-phase3c-plan.md`:
 
-- ADR-0018 (per-org tenancy + RLS) → server-side DB schema with
-  `org_id NOT NULL` on every user-data table.
-- ADR-0019 (single uniform storage shape; L0–L3 survives as
-  plugin-manifest `min_content_level`) → no per-user retention
-  differentiation.
-- ADR-0020 (per-org token + Anthropic credential pass-through) →
-  auth middleware + zero-persistence credential handling.
+- Empty FastAPI app with `GET /healthz`, structlog logging,
+  pydantic-settings reading `LLMTRACK_*` env vars.
+- `packages/llm_tracker_server/pyproject.toml` deps refresh — add
+  `fastapi`, `uvicorn[standard]`, `pydantic-settings`, `structlog`,
+  `python-dotenv`; drop the stale `pynacl` line (also closes
+  Suggestion #1 of the signing-removal worklog).
+- No DB, no plugins, no proxy logic in this checkpoint — those are
+  CP2, CP3+, CP8.
+- Verify: `pip install -e packages/llm_tracker_server[dev]` clean;
+  `uvicorn llm_tracker_server.app:app` boots; `/healthz` returns
+  200.
 
-In parallel, the **ADR-#2 consent decision** is the most blocking
-remaining Phase-3a item before any external demo. Operator-only
-demo is not blocked. Legal/privacy input may take longer than
-internal ADR drafting; flag to start alongside Phase 3c.
+CP2 through CP14 are sequenced in the plan — see the plan worklog
+for the dependency chain and Phase-3a flags.
+
+In parallel, the **ADR-#2 consent decision** remains the most
+blocking remaining Phase-3a item *before any external testing* of
+the central server. Operator-only smoke (CP14) is not blocked.
+Legal/privacy input may take longer than internal ADR drafting;
+flag to start alongside Phase 3c.
 
 The user-deferred items #1 (fallback) and #4 (agent language) are
 **not on the critical path** under the current server-first
@@ -275,9 +308,11 @@ ready to start.
 - [x] **Architectural pivot to central server documented (2026-05-11, ADR-0017; commits f74710f / 87142f9 / 8a47b2f / fbf23a5)**
 - [x] **Phase 3a decisions 4/7 settled (2026-05-11, ADR-0018/0019/0020/0021; commit 223f742)**
 - [x] **ADR-0021 code-removal housekeeping (2026-05-11, commit b446c3f)**
+- [x] **ADR-0022 deployment platform — Fly.io + Supabase (2026-05-11, commit 3211672)**
+- [x] **Phase 3c build plan — 14 commit-sized checkpoints (2026-05-11, commit ec51a40)**
 - [ ] **Phase 3a — remaining 3 decision ADRs** (#1 fallback / #2 consent / #4 agent language)
 - [ ] Phase 3b — thin local agent (gated on #1 + #4)
-- [ ] Phase 3c — server build-out (migrate existing proxy logic + plugins server-side; anchored on ADR-0018/0019/0020)
+- [ ] Phase 3c — server build-out (14 checkpoints per `docs/worklog/2026-05-11-phase3c-plan.md`; anchored on ADR-0018/0019/0020/0022)
 - [ ] Phase 1c — `scope_guard` (paused; reframed server-side per ADR-0019; gated on Phase 3c readiness)
 - [ ] Phase 3d — carry-overs: OpenAI/Gemini adapters, analytics interface, response-side policy plugins
 

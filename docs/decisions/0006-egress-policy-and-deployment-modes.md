@@ -1,9 +1,18 @@
 # ADR-0006 · Egress policy and deployment modes (L/A/R)
 
-- **Status**: Accepted
+- **Status**: **Superseded by ADR-0017 (2026-05-11).** This ADR was
+  built on the local-sidecar trust boundary: "data egress is off by
+  default and only permitted with explicit approval." With the
+  central server deployment in ADR-0017, every Claude Code request
+  and response transits the team's infrastructure by design — *all
+  traffic is egress*. The L/A/R mode taxonomy no longer describes a
+  meaningful spectrum on the user's machine. What (if anything)
+  survives of these modes in the new model — possibly recast as
+  server-side retention/visibility tiers — is an explicit open
+  question under ADR-0017.
 - **Date**: 2026-05-01
 - **Author**: Claude Cowork (user-approved)
-- **Related**: `docs/design.md §7, §8`
+- **Related**: `docs/design.md §7, §8`, ADR-0017
 
 ## Context
 

@@ -1,9 +1,16 @@
 # ADR-0001 · Language and proxy framework: Python + FastAPI + httpx
 
-- **Status**: Accepted
+- **Status**: **Partially superseded by ADR-0017 (2026-05-11).** The
+  technical stack choice (Python + FastAPI + httpx) is preserved and
+  now applies to the *central server* rather than a local sidecar.
+  The deployment-shape framing in §Context / §Consequences ("local
+  sidecar", "single-user single-agent local traffic") no longer
+  reflects the project's deployment model. The local-agent
+  language/stack is an explicit open question under ADR-0017 and is
+  not bound by this ADR.
 - **Date**: 2026-04-25
 - **Author**: Claude Cowork (user-approved)
-- **Related**: `docs/design.md §2, §6, §11`
+- **Related**: `docs/design.md §2, §6, §11`, ADR-0017
 
 ## Context
 

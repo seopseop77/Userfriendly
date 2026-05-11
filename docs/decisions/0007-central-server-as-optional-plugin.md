@@ -1,9 +1,18 @@
 # ADR-0007 · Demote the central server to an optional plugin (supersedes ADR-0004)
 
-- **Status**: Accepted (supersedes ADR-0004)
+- **Status**: **Superseded by ADR-0017 (2026-05-11).** This ADR
+  demoted the central server to an optional Mode-R upload-sink
+  plugin. ADR-0017 inverts that decision: the central server is now
+  the **core deployment surface**, not an optional sink. The
+  Supabase-receiver pattern documented here remains useful as a
+  *server-side* output sink (writing analytics to Supabase from the
+  central server, rather than from each user's machine), but the
+  framing of "optional plugin layered on top of local sidecar" no
+  longer matches the deployment model. (Originally supersedes
+  ADR-0004.)
 - **Date**: 2026-05-01
 - **Author**: Claude Cowork (user-approved)
-- **Related**: ADR-0004, ADR-0005, ADR-0006
+- **Related**: ADR-0004, ADR-0005, ADR-0006, ADR-0017
 
 ## Context
 

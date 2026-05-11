@@ -6,114 +6,114 @@
 
 ---
 
-**Last updated**: 2026-05-11 (Cowork; architectural pivot to central server documented in ADR-0017 — direction change, no code yet)
-**Updated by**: Claude Cowork
+**Last updated**: 2026-05-11 (Claude Code; Phase-3a decisions 4/7 settled — #5/#6/#3/#7 via ADR-0018/0019/0020/0021)
+**Updated by**: Claude Code (user-driven Phase-3a decision interview)
 
 ## Current phase
 
-- **Phase**: **Architectural pivot in flight (ADR-0017).** The
-  project's deployment model is changing from local-sidecar + in-
-  process plugins to a **team-operated central server + thin local
-  agent**. ADR-0017 is sealed; ADR-0001/0006/0007 are marked
-  superseded; `docs/roadmap.md` is rewritten to add a new Phase 3
-  (Central server build-out). No source code has been changed —
-  the existing codebase at commit 8d4422b (Phase-1b loose-ends
-  closed) is left intact pending Phase 3 implementation.
-- **Active task**: None in code. Seven **Phase-3a decision ADRs**
-  are queued in `docs/roadmap.md §Phase 3a`; they gate any Phase
-  3b/3c implementation work.
+- **Phase**: **Phase-3a decision queue in flight; 4 of 7 ADRs
+  settled.** The user reframed the queue away from the
+  STATUS.md-default priority ("#1 fallback + #3 auth most blocking")
+  toward a **server-first / demo-first** stance: decide the four
+  ADRs that shape the server-side DB schema and request-handling
+  edge (#5 multi-tenancy, #6 mode-taxonomy fate, #3 auth model,
+  #7 signing fate); defer the three thin-agent-related items (#1
+  fallback, #2 consent, #4 agent language) until after a working
+  server build-out demo. Documentation-only checkpoint — no source
+  code changed. The codebase remains at commit 8d4422b
+  (Phase-1b loose-ends CP2 closed).
+- **Active task**: None in code. **ADR-0021 code-removal
+  housekeeping** (signing module / CLI / registry / `.sig` files)
+  is queued as the next checkpoint; **Phase 3c kick-off planning**
+  is queued after that.
 
 ## Active worklog
 
-`docs/worklog/2026-05-11-central-server-pivot.md` (open; closes with
-the STATUS-update commit). Predecessor `docs/worklog/2026-05-09-phase1b-loose-ends.md`
-remains closed.
+`docs/worklog/2026-05-11-phase-3a-decisions.md` (open; closes with
+the STATUS-update commit). The earlier pivot worklog
+`docs/worklog/2026-05-11-central-server-pivot.md` is closed.
 
 ## Recent commits
 
 ```
-<this>    docs: STATUS + worklog for ADR-0017 pivot
+<this>    docs: Phase-3a decisions 4/7 — ADR-0018/0019/0020/0021
+fbf23a5   docs: STATUS + worklog for ADR-0017 pivot
 8a47b2f   docs: roadmap reflects central server pivot (ADR-0017)
 87142f9   docs: supersede ADR-0001/0006/0007 per ADR-0017
 f74710f   docs: ADR-0017 central server deployment model
-8d4422b   docs: Phase-1b loose-ends CP2 closed
 ```
 
 ## Where we paused
 
-**Architectural pivot, documentation-only.** ADR-0017 records a
-project-level direction change agreed with the user: the deployment
-model moves from local-sidecar + in-process plugins to a central
-server operated by the team, with users running only a thin local
-agent that sets `ANTHROPIC_BASE_URL`. No code has been changed in
-this workstream; ADR-0017's §Reversibility argues most of the
-existing Phase 0–2-partial code is reusable on the server side, but
-the migration itself is Phase-3a/3c work and is not started here.
+**Phase-3a decision interview, documentation-only.** The user
+selected four of the seven queued Phase-3a ADRs as in-scope for
+this session (#5, #6, #3, #7) and explicitly deferred the other
+three (#1, #2, #4). All four decisions are recorded as new ADRs;
+ADR-0008 is marked superseded; ADR-0006's open question is now
+closed by ADR-0019. No code touched.
 
-Three motivations cited in ADR-0017 §Context:
+The four decisions are mutually coherent and converge on a
+**server-first, minimum-infrastructure** posture:
 
-1. **Plugin tamper surface.** ADR-0008 signing only covers the
-   manifest; plugin *code* on a user's machine is still
-   user-modifiable. Server-side execution eliminates that surface
-   structurally.
-2. **Local inference cost.** Embedding judge + LLM judge on each
-   user's machine duplicates compute; centralising amortises it.
-3. **Operational simplicity.** One deployment, one audit trail,
-   instant fix cadence.
-
-What the pivot **explicitly costs** (also in ADR-0017
-§Consequences): all Claude Code requests/responses traverse the
-team's infrastructure (raw user prompts and code visible to the
-team); single point of failure; Anthropic ToS exposure as a
-proxy intermediary; the egress/mode/content-level system encoded
-in ADR-0006 loses its primary justification.
+1. **ADR-0018 — Multi-tenancy: per-org + Postgres RLS only.**
+   Every user-data table carries `org_id NOT NULL`; RLS policies
+   are the sole enforcement; no service-role bypass; operator
+   tooling runs through an `admin` role expressed inside RLS.
+   Maps cleanly to enterprise self-hosted (single-org).
+2. **ADR-0019 — L/A/R retired; L0–L3 kept as plugin capability.**
+   The deployment-mode taxonomy disappears. The content-level
+   ladder survives as a plugin-manifest `min_content_level`.
+   Server-side storage is a **single uniform shape**; no per-user
+   retention differentiation in the near term.
+3. **ADR-0020 — Auth: per-org token (agent→server) + Anthropic
+   credential pass-through (server→Anthropic).** Tokens align
+   directly with ADR-0018's per-org RLS context. The server
+   **never persists** the user's Anthropic API key — it forwards
+   it transiently and discards it after each response stream.
+   Zero KMS/Vault build-out; Anthropic-ToS posture is the safest
+   available.
+4. **ADR-0021 — Plugin manifest signing fully retired.** ADR-0008's
+   threat model (user-side `plugin.toml` tampering) disappeared
+   with the pivot to server-side plugin execution. The team
+   decided not to repurpose signing as a deployment-time trust
+   gate (YAGNI for a one-person contributor team). The trust root
+   for plugin loading is now the deploy pipeline itself (git +
+   CI + server filesystem permissions). Code-removal is a
+   separate Phase-3c-prep checkpoint.
 
 **ADRs touched in this workstream**:
 
-- ADR-0017 (new, Accepted) — central server deployment model.
-- ADR-0001 (Python+FastAPI+httpx) — **partially superseded**.
-  Stack choice survives for the central server; local-agent
-  language is an explicit open question under ADR-0017.
-- ADR-0006 (egress + L/A/R modes) — **superseded**. Local trust
-  boundary no longer the model; what survives of the mode taxonomy
-  is an ADR-0017 open question.
-- ADR-0007 (central server as optional plugin) — **superseded**.
-  Inverted by ADR-0017: the central server is the core deployment,
-  not an optional sink.
-- ADR-0008 (manifest signing) — **not superseded**. Original threat
-  (user-side tamper) is eliminated structurally, but the primitive
-  may be re-purposed as deployment-time trust; ADR-0017 leaves the
-  fate open.
+- ADR-0018 (new, Accepted) — multi-tenancy boundary.
+- ADR-0019 (new, Accepted) — mode-taxonomy fate.
+- ADR-0020 (new, Accepted) — auth model.
+- ADR-0021 (new, Accepted) — signing fate (supersedes ADR-0008).
+- ADR-0008 — status changed to **Superseded by ADR-0021**.
+- ADR-0006 — supersession note extended to point at ADR-0019 as
+  the ADR that closes its "what survives of L/A/R" open question.
 
-**Roadmap rewrite**: existing Phase 0/1a/1b/1c/2 entries preserved
-as record-of-built work with per-item annotations where ADR-0017
-invalidates a premise. New top-level **Phase 3 — Central server
-build-out** added with four sub-phases (3a decision ADRs, 3b thin
-local agent, 3c server build-out, 3d carry-overs).
+**Where my recommendation differed from the user's pick**: For
+ADR-#7 I recommended Option B (repurpose signing as
+deployment-time trust). The user picked Option A (full retirement)
+on YAGNI grounds. Decision is final; rationale and counter-argument
+preserved in `docs/worklog/2026-05-11-phase-3a-decisions.md`
+§Decisions.
 
-## Phase 3a — decision ADR queue (gates Phase 3b/3c)
+## Phase 3a — decision ADR queue (4 of 7 settled)
 
-Seven ADRs are owed before Phase 3b/3c can be designed concretely.
-Listed verbatim from `docs/roadmap.md §3a`:
+| # | Topic | Status | ADR |
+|---|---|---|---|
+| 1 | Fallback policy when server unreachable | **Pending** (defers Phase 3b; not on critical path under server-first reframe) | — |
+| 2 | Consent + data-handling policy | **Pending** (most blocking remaining item *before any external testing*; operator-only demo not blocked) | — |
+| 3 | Agent-to-server auth model | **Settled 2026-05-11** | **ADR-0020** |
+| 4 | Local agent language/distribution | **Pending** (defers Phase 3b; not on critical path under server-first reframe) | — |
+| 5 | Multi-tenancy boundary | **Settled 2026-05-11** | **ADR-0018** |
+| 6 | What survives of ADR-0006 L/A/R modes | **Settled 2026-05-11** | **ADR-0019** |
+| 7 | What survives of ADR-0008 signing | **Settled 2026-05-11** — fully retired | **ADR-0021** |
 
-1. **Fallback policy when server unreachable** — fail-open vs
-   fail-closed (ADR-0017 §Open questions; trade-offs documented
-   there).
-2. **Consent + data-handling policy** — what we collect, retention,
-   deletion, lawful basis, user-facing surface. Required before
-   launch.
-3. **Agent-to-server auth model** — shared org token vs per-user
-   token vs OAuth pass-through. Affects Anthropic ToS posture.
-4. **Local agent language/distribution** — Python vs Go vs shell
-   wrapper. Affects install friction.
-5. **Multi-tenancy boundary on the server** — org vs user; RLS vs
-   application-level enforcement.
-6. **What survives of ADR-0006 L/A/R modes** — possibly recast as
-   server-side retention/visibility tiers; or fully retired.
-7. **What survives of ADR-0008 signing** — possibly recast as
-   developer-to-deployment signing.
-
-Items 1 + 2 are the most blocking. 4 + 6 + 7 can run in parallel.
+Items 1, 2, 4 do **not** block Phase 3c (server build-out): the
+server can be built against ADR-0018/0019/0020 schemas and surfaces
+without resolving them. #2 is required before the server is shown
+to anyone outside the operator.
 
 ---
 
@@ -137,6 +137,11 @@ Path 1). All three safety paths verified against real traffic in CP9:
   every fetch with `reason=destination_not_in_allowlist`; 0 new
   rows; 4 `egress_blocked` audit rows; manifest restored +
   re-signed (ed25519 deterministic → byte-identical to CP8).
+
+> **Note (2026-05-11)**: ADR-0021 retires signing entirely. The
+> manifest re-signing path used in CP9 will disappear when the
+> code-removal checkpoint lands. The `supabase_sink` plugin itself
+> stays valid as a server-side analytics output.
 
 **Workstream artefacts** (per CLAUDE.md §10 public-interface
 catalogue):
@@ -183,26 +188,20 @@ side-quests):
   + `SHUTDOWN_HOOK_TIMEOUT` + signed manifest + `.env` lifespan
   loader + manual e2e
 
-## Phase 1c prerequisites
+## Phase 1c prerequisites (reframed under ADR-0019)
 
-These three items are blocked on Phase 1c (scrubber primitives,
-`scope_guard`, the Phase-2 Extractor) — not Phase-1b debt. They're
-documented here so the next session knows what `scope_guard` and the
-Extractor unlock when they land.
+These three items were Phase-1c carry-overs. **ADR-0019 (2026-05-11)
+reframes them server-side**:
 
-- **L2 scrubbed shape of `request_text`**. Today
-  `HookContext.request_text(L2)` returns the raw decoded body — same
-  bytes as L3. Per design.md §7.1 L2 should be the scrubbed body
-  (secrets / PII / paths / emails / IPs removed). The switch needs
-  the Phase-1c scrubber primitives. Pinned by
+- **L2 scrubbed shape of `request_text`**. Scrubber primitives now
+  run on the central server, not per user machine. Pinned by
   `test_hook_context.py::test_request_text_returns_body_at_l2_when_ceiling_allows`
-  so the eventual change is test-visible.
+  so the eventual change is test-visible. Lands in Phase 3c.
 - **Manifest `min_content_level` field** (ADR-0012 §"Open
-  questions"). Plugins should declare the lowest content level they
-  can function at; the host can then short-circuit dispatch when the
-  effective ceiling is below it. Add this when `scope_guard` becomes
-  the first plugin that actually needs it; separate ADR (refines
-  ADR-0012).
+  questions"). ADR-0019 confirms this primitive survives the
+  pivot. Add the schema field + validator + host enforcement
+  during Phase 3c. Separate ADR if the host-side semantics surface
+  anything non-obvious.
 - **Response-side `ctx` accessors** (`response_text`,
   `tool_call_inputs`, etc.). ADR-0012 ships only the request-side
   accessors. Response-side data needs the Phase-2 Extractor to
@@ -211,38 +210,49 @@ Extractor unlock when they land.
 
 ## Next single step
 
-**Prioritise the Phase 3a decision ADR queue with the user.**
-Nothing in Phase 3b (thin agent) or 3c (server build-out) can be
-designed concretely until at least the fallback policy and auth
-model are settled. A short planning interview should:
+**ADR-0021 code-removal housekeeping checkpoint.** Small,
+self-contained, clears the deck before Phase 3c:
 
-- Pick which two of the seven ADRs are most blocking (likely #1
-  fallback policy and #3 auth model, since they constrain the
-  thin-agent design directly).
-- Identify which can be delegated to legal/privacy review and run
-  in parallel (#2 consent + data-handling is the obvious one).
-- Order the rest into a sequence.
+1. Delete `packages/llm_tracker_sdk/src/llm_tracker_sdk/signing.py`
+   and any signing helpers in the SDK.
+2. Delete the plugin-host signature verifier (currently
+   `plugin_host.signing.verify_manifest_signature`) and its call
+   site in the plugin loader.
+3. Delete `packages/llm_tracker/src/llm_tracker/trust/keys.toml`
+   and the entire `trust/` module.
+4. Remove `llm-tracker generate-key` and `llm-tracker sign-plugin`
+   Typer subcommands.
+5. Drop the `keyring` / `llm-tracker-signing` OS-keychain
+   dependency if no other code uses it.
+6. Delete `packages/llm_tracker_plugin_supabase_sink/plugin.toml.sig`
+   and any other `.sig` files in the repo.
+7. Remove signature-related audit-log reason codes
+   (`signature_missing` / `signature_invalid` /
+   `signing_key_not_in_registry`).
+8. Update `docs/plugins.md` to remove the signing section.
+9. Update or remove tests that pin signing behaviour. Add a smoke
+   test that confirms plugin loading still works without signing.
 
-**Phase 1c (`scope_guard`) is paused, not killed.** Reframed: the
-embedding/LLM judges run server-side rather than per user machine.
-The SDK contract (`BasePlugin`, hook lifecycle, `HookContext`,
-`EgressClient`) survives. Re-open the Phase 1c planning interview
-*after* the Phase 3a ADRs settle the server-side trust model — the
-TaskDefinition issuance flow and judge auth depend on the decisions
-queued above.
+After that lands, the candidate next-next steps are:
 
-A Claude Code session resumed by reading STATUS today should
-explicitly stop and re-orient before touching code. STATUS now
-points at a documentation workstream, not an implementation one.
+- **Phase 3c kick-off planning** (`ralplan`-style consensus plan
+  anchored on ADR-0018/0019/0020).
+- **ADR-#2 consent decision** (most blocking remaining Phase-3a
+  item before any external demo; legal/privacy input owed).
+
+The user-deferred items #1 (fallback) and #4 (agent language) are
+**not on the critical path** under the current server-first
+reframe; they re-enter the queue once Phase 3b (thin agent) is
+ready to start.
 
 ## Blocking / decisions needed
 
-The seven Phase-3a ADRs above are all blocking for Phase 3
-implementation. None blocks further documentation work.
-
-- The user-deferred items from prior workstreams (Phase 1c, Phase 2
-  consent UX, manifest HTTPS-only validator) are all subsumed by
-  the pivot — they're folded into Phase 3a items 2, 4, 6, 7.
+- **#2 consent + data-handling**: still owed before *any external
+  testing* of the central server. Not blocking the operator-only
+  demo path. Legal/privacy review may take longer than internal
+  ADR drafting; flag to start in parallel with Phase 3c.
+- **#1 fallback** and **#4 agent language**: deferred to Phase 3b
+  scoping; not blocking anything Phase 3a or 3c.
 
 ## Progress
 
@@ -258,11 +268,13 @@ implementation. None blocks further documentation work.
 - [x] Plugin disable config + `/admin/plugins` introspection (2026-05-07, commits 0a43502, 161505d)
 - [x] **Phase 2 partial — `supabase_sink` reference plugin (CLOSED 2026-05-08, 9 commits 8712183 → CP9 finalize)**
 - [x] **Phase 1b loose-ends (CLOSED 2026-05-09, commits 86acecd / 14b6f7a / 86caf03 / 8d4422b)**
-- [x] **Architectural pivot to central server documented (2026-05-11, ADR-0017; commits f74710f / 87142f9 / 8a47b2f + this STATUS commit)**
-- [ ] **Phase 3a — seven decision ADRs** (fallback / consent / auth / agent language / multi-tenancy / mode fate / signing fate)
-- [ ] Phase 3b — thin local agent (new deliverable per ADR-0017)
-- [ ] Phase 3c — server build-out (migrate existing proxy logic + plugins server-side)
-- [ ] Phase 1c — `scope_guard` (paused; reframed server-side; gated on Phase 3a outcomes)
+- [x] **Architectural pivot to central server documented (2026-05-11, ADR-0017; commits f74710f / 87142f9 / 8a47b2f / fbf23a5)**
+- [x] **Phase 3a decisions 4/7 settled (2026-05-11, ADR-0018/0019/0020/0021; this commit)**
+- [ ] **Phase 3a — remaining 3 decision ADRs** (#1 fallback / #2 consent / #4 agent language)
+- [ ] **ADR-0021 code-removal housekeeping** (delete signing module/CLI/registry/.sig files)
+- [ ] Phase 3b — thin local agent (gated on #1 + #4)
+- [ ] Phase 3c — server build-out (migrate existing proxy logic + plugins server-side; anchored on ADR-0018/0019/0020)
+- [ ] Phase 1c — `scope_guard` (paused; reframed server-side per ADR-0019; gated on Phase 3c readiness)
 - [ ] Phase 3d — carry-overs: OpenAI/Gemini adapters, analytics interface, response-side policy plugins
 
 ---

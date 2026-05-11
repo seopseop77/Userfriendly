@@ -1,12 +1,23 @@
 # ADR-0008 · Plugin signing trust model: per-developer ed25519 keys + bundled registry
 
-- **Status**: Accepted
-- **Date**: 2026-05-05
+- **Status**: **Superseded by ADR-0021 (2026-05-11).** Full retirement
+  of the manifest-signing trust model. The original threat
+  (user-side `plugin.toml` tampering) was eliminated structurally by
+  ADR-0017's pivot to server-side plugin execution; ADR-0021 chose
+  full retirement over deployment-time repurposing on YAGNI grounds.
+  The code-removal checkpoint (signing module / CLI commands /
+  trust registry / `.sig` files / loader verification step) is
+  queued as a Phase-3c-prep housekeeping checkpoint per ADR-0021
+  §Consequences; this status line is the documentation half. The
+  "What remains deferred" subsection below (boot-time cache, key
+  rotation, revocation) is moot.
+- **Date**: 2026-05-05 (decision); 2026-05-11 (superseded)
 - **Author**: Claude Cowork (user-approved; based on a prior conversation
   between the user and Claude)
-- **Related**: ADR-0005 §Open questions (this ADR resolves the
-  "plugin signature trust model" item), ADR-0006, `docs/design.md §6.3`,
-  `docs/plugins.md §10`, `docs/roadmap.md §1b`
+- **Related**: ADR-0021 (supersedes this), ADR-0017, ADR-0005
+  §Open questions (this ADR resolved the "plugin signature trust
+  model" item; ADR-0021 retires the resolution), ADR-0006,
+  `docs/design.md §6.3`, `docs/plugins.md §10`, `docs/roadmap.md §1b`
 
 ## Context
 

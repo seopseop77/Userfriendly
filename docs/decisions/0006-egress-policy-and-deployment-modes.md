@@ -6,13 +6,16 @@
   central server deployment in ADR-0017, every Claude Code request
   and response transits the team's infrastructure by design — *all
   traffic is egress*. The L/A/R mode taxonomy no longer describes a
-  meaningful spectrum on the user's machine. What (if anything)
-  survives of these modes in the new model — possibly recast as
-  server-side retention/visibility tiers — is an explicit open
-  question under ADR-0017.
+  meaningful spectrum on the user's machine. **ADR-0019 (2026-05-11)
+  closes the "what survives of L/A/R" open question**: L/A/R is
+  fully retired; the L0–L3 content-level ladder survives as a
+  per-plugin `min_content_level` capability declared in the plugin
+  manifest. Server-side storage is a single uniform shape (decided
+  in ADR-#2 consent), not a retention-tier reframe.
 - **Date**: 2026-05-01
 - **Author**: Claude Cowork (user-approved)
-- **Related**: `docs/design.md §7, §8`, ADR-0017
+- **Related**: ADR-0017 (supersedes), ADR-0019 (closes the L/A/R
+  open question), `docs/design.md §7, §8`
 
 ## Context
 

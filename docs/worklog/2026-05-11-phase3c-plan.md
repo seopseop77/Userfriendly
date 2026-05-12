@@ -44,6 +44,81 @@ The plan must:
 - Refreshed `docs/STATUS.md` to point at this worklog and set
   "Next single step" to CP1 (commit `f866cb8`).
 
+### CP11 — `.env.example` + developer docs refresh (2026-05-12, commit `a7e21c9`)
+
+- Rewrote `.env.example` against the server's actual surface
+  (`packages/llm_tracker_server/src/llm_tracker_server/config.py`).
+  The new file documents:
+  - `LLMTRACK_DATABASE_URL` — the single storage knob (the
+    `Settings.database_url` field, prefix `LLMTRACK_`); the Alembic
+    `env.py` reads the same variable. Commented-out by default so a
+    fresh `.env` does not accidentally point at a stranger's DB.
+  - `LLMTRACK_LOG_LEVEL` — passes through to structlog. `INFO`
+    default, `DEBUG` surfaces per-hook dispatch + per-request
+    lifecycle for CP14 smoke.
+  - `LLMTRACK_TEST_DATABASE_URL` — the test-fixture gate; the
+    PG-dependent suites under `packages/llm_tracker_server/tests/`
+    skip without it. Marked as optional + disposable.
+  - Per-request headers (bearer token + Anthropic credential)
+    documented as **informational** — they are inbound request
+    headers handled by `AuthMiddleware` + `proxy/credential.py`,
+    not env-driven. Putting them in `.env.example` as env vars
+    would falsely imply the server reads them from env.
+  - `ANTHROPIC_BASE_URL` retained as the operator-side knob (it
+    lives on the client, not the server).
+- Removed every retired knob: `LLMTRACK_MODE` (ADR-0019),
+  `LLMTRACK_USER_OPTED_IN` (ADR-0016 retired; planning §Decisions),
+  `LLMTRACK_PROXY_HOST` / `LLMTRACK_PROXY_PORT` (sidecar concept),
+  `LLMTRACK_DB_URL` (SQLite path; replaced by Postgres URL),
+  `LLMTRACK_PLUGINS_DISABLED` (constructor kwarg exists on
+  `PluginHost`, but `app.py` does not wire it from env — listing
+  it would lie about the surface),
+  `LLMTRACK_PLUGIN_SUPABASE_SINK_URL` /
+  `LLMTRACK_PLUGIN_SUPABASE_SINK_KEY` (plugin-internal config; the
+  server-side plugin load path takes plugin configuration through
+  its own constructor or the plugin's own env namespace, not the
+  framework's `LLMTRACK_*` prefix).
+- Modified `docs/plugins.md`:
+  - §2 schema: added `min_content_level = "L3"` example + commentary
+    that it defaults to L3 and authors opt *down* explicitly.
+  - §3.1 ceiling table: rewrote from the deployment-mode-keyed
+    matrix to the manifest-`min_content_level`-keyed matrix.
+    Preserved the legacy `effective_ceiling(mode,
+    user_opted_in=...)` math as a one-paragraph fallback note for
+    `packages/llm_tracker/` callers, matching the SDK's runtime
+    fallback shape introduced in CP10.
+  - §9 "Mode-aware behavior" → "Mode-aware behavior (legacy)":
+    explained that `allowed_modes` no longer gates load, what
+    replaced it (manifest `min_content_level` for content +
+    `egress_destinations` for network), and that the field still
+    surfaces through `/admin/plugins` so existing manifests stay
+    self-describing.
+  - Added §12 "Running locally — server-side load path": entry-point
+    group (`llm_tracker.plugins`), `importlib.metadata.entry_points`
+    scan, manifest discovery + `manifest_rejected` audit shape,
+    CP10's `_bind_plugin_view` per-plugin ceiling clamp +
+    `HostEgressClient` binding, and a worked local-dev loop
+    (`docker run postgres:15` → `alembic upgrade head` → `uvicorn`
+    → `llm-tracker-server tokens issue --org demo`).
+- Did **not** touch §8 (EgressGuard) text saying "arrives in Phase
+  1b" even though it's stale — out of CP11 scope per CLAUDE.md §2.3.
+  Logged as Suggestion #7 below.
+
+Verification: `.env.example` grepped clean of all retired knob
+substrings (`LLMTRACK_MODE`, `LLMTRACK_USER_OPTED_IN`, `sqlite`,
+`LLMTRACK_PLUGIN_SUPABASE_SINK`, `LLMTRACK_PROXY_HOST`,
+`LLMTRACK_PROXY_PORT`, `LLMTRACK_DB_URL=`). `python -c "from
+llm_tracker_server.app import app; print([r.path for r in
+app.routes])"` boots without `LLMTRACK_DATABASE_URL` and exposes
+`/openapi.json` + `/healthz` — the CP1 boot contract is preserved
+(no DB → no auth-gated routes attach). `ruff check` + `ruff format
+--check` clean on `packages/llm_tracker_sdk` and
+`packages/llm_tracker_server`. No new tests; the change surface
+is documentation only.
+
+Source `HEAD` is `a7e21c9`. Documentation HEAD advances with this
+§5.3 finalize commit.
+
 ### CP10 — `min_content_level` manifest field + host enforcement (2026-05-12, commit `6c3b7b8`)
 
 - Modified `packages/llm_tracker_sdk/src/llm_tracker_sdk/manifest.py`
@@ -1173,6 +1248,72 @@ So only CP9 and CP14 carry a Phase-3a flag, and it is a soft
   appear) will run under a session that asserts `app.role = 'admin'`
   alongside `app.org_id`.
 
+### CP11
+
+- **D1 — Per-request headers are informational in `.env.example`,
+  not env vars.** The per-org bearer token (ADR-0020 Axis 1) and
+  the Anthropic credential pass-through (Axis 2) are inbound HTTP
+  headers; the server reads them from `Request.headers`, not from
+  `Settings`. Putting them in `.env.example` as `LLMTRACK_BEARER=`
+  or `LLMTRACK_ANTHROPIC_API_KEY=` would falsely imply the server
+  picks them up from process env. Documented them as an
+  "informational" block so a fresh operator sees the wire contract
+  in one place without being misled about the mechanism.
+
+- **D2 — Omitted `LLMTRACK_PLUGINS_DISABLED` from the example.**
+  `PluginHost.__init__` still accepts a `plugins_disabled` kwarg
+  (CP8 carry-over), but `app.py` does not wire it from `Settings`
+  — there is no `Settings.plugins_disabled` field and no
+  `plugins_disabled=...` argument at construction. Listing the
+  variable would be a doc-vs-code lie. Wiring it through to env is
+  out of CP11 scope (the manifest discovery → load → audit pipeline
+  in §12 has not changed); a future ticket can decide whether
+  per-deploy disable-by-config returns or whether it stays a
+  constructor-only test affordance.
+
+- **D3 — `.env.example` retains `ANTHROPIC_BASE_URL`.** It is the
+  *only* env var on the client (Claude Code) side that the example
+  influences; removing it would orphan the operator with no
+  documented "point Claude Code at the local server" instruction.
+  Kept under a clearly-labelled "Claude Code wiring" block so it is
+  not confused with a server-side `LLMTRACK_*` setting.
+
+- **D4 — `docs/plugins.md` §3.1 ceiling table replaced wholesale,
+  not layered.** The pre-CP10 table was keyed on deployment mode
+  + opt-in flag — ADR-0019 retired both as runtime concerns. Adding
+  a "however, on the server..." note on top of the old table would
+  have left two competing primary surfaces. Replaced the table to
+  the manifest-`min_content_level`-keyed shape and demoted the
+  legacy math to a single paragraph at the end of the section
+  (mirrors the SDK runtime fallback behavior introduced in CP10).
+
+- **D5 — §9 retitled to "Mode-aware behavior (legacy)" instead of
+  being deleted.** ADR-0019 retired runtime mode enforcement, but
+  `allowed_modes` is still parsed by `PluginManifest` and surfaces
+  through `/admin/plugins` (the CP10 introspection view retains it
+  for backward-compat with pre-pivot manifests). Deleting the
+  section would have left an under-documented field that still
+  appears in every reference manifest; renaming + explaining what
+  replaced it keeps the doc accurate without dropping a
+  discoverable field.
+
+- **D6 — New §12 lives at the end of `plugins.md`, not woven into
+  §5 ("Writing a plugin").** §1–§11 follow a plugin-author flow
+  (what a plugin is → how to write one → how to test it → reference
+  examples). The server-side load-path content is operator-facing,
+  not author-facing — `uvicorn` command + Alembic + `tokens issue`
+  belong outside the authoring narrative. Cross-referenced §2 and
+  §3.1 from §12 for the `min_content_level` surface so an author
+  reading §2 can drop into the deployment context if they need to.
+
+- **D7 — Did not touch §8 "Outbound HTTP (Phase 1b)" stale wording.**
+  The text claims the egress API "arrives in Phase 1b" — it
+  shipped at CP8 of the supabase_sink workstream (ADR-0015) and is
+  in production. CLAUDE.md §2.3 surgical-changes pinned CP11's
+  scope to the two files the plan named; a sweep of "stale Phase-1b
+  language in plugins.md" is a separate doc pass. Logged as
+  Suggestion #7.
+
 ### CP10
 
 - **D1 — Option A: thread `min_content_level` through the SDK
@@ -1901,6 +2042,46 @@ So only CP9 and CP14 carry a Phase-3a flag, and it is a soft
   `docs/STATUS.md`, `docs/roadmap.md`, the signing-removal worklog,
   and the supabase-sink CP4 worklog all exist at the cited paths.
 
+### CP11
+
+No new tests; the change surface is documentation only. Three
+verifications stand in for the missing pytest line:
+
+**Retired knobs absent from `.env.example`:**
+
+```
+$ grep -nE "LLMTRACK_MODE|LLMTRACK_USER_OPTED_IN|sqlite|LLMTRACK_PLUGIN_SUPABASE_SINK|LLMTRACK_PROXY_HOST|LLMTRACK_PROXY_PORT|LLMTRACK_DB_URL=" .env.example
+$ echo $?
+1
+```
+
+(empty output, exit 1 from `grep` — no matches.)
+
+**Server import smoke (CP1 boot contract — runs without
+`LLMTRACK_DATABASE_URL`):**
+
+```
+$ .venv/bin/python3.12 -c "from llm_tracker_server.app import app; print([r.path for r in app.routes])"
+['/openapi.json', '/healthz']
+```
+
+Only the public routes attach when no session factory is available —
+the `if session_factory is not None:` branch in `create_app` skips the
+auth middleware + admin + catch-all proxy, as designed at CP1.
+
+**Ruff clean on the touched packages:**
+
+```
+$ .venv/bin/python3.12 -m ruff check packages/llm_tracker_server packages/llm_tracker_sdk
+All checks passed!
+$ .venv/bin/python3.12 -m ruff format --check packages/llm_tracker_server packages/llm_tracker_sdk
+57 files already formatted
+```
+
+(Touched only `.env.example` + `docs/plugins.md`, neither of which is
+in `ruff`'s purview; the check verifies CP11 did not introduce
+adjacent drift via stray imports or formatting bleed.)
+
 ### CP10
 
 Server-only suite without the PG URL:
@@ -2581,8 +2762,8 @@ the ASGI-transport test, so I skipped the live-port loop.
 ## What's left / known limits
 
 - **The plan is 14 checkpoints; it is not the implementation.** As
-  of CP10, **10 of 14 are committed**; CP11 (`.env.example` +
-  developer docs refresh) is the next.
+  of CP11, **11 of 14 are committed**; CP12 (`Dockerfile` +
+  `.dockerignore`) is the next.
 - **Lifecycle audit rows are dropped under CP9.** The contextvar
   no-ops outside a request, and `audit_log.org_id` is NOT NULL
   with no service-role bypass. The call sites are still in place
@@ -2616,60 +2797,62 @@ the ASGI-transport test, so I skipped the live-port loop.
 
 ## Handoff
 
-CP10 landed cleanly. Source `HEAD` is `6c3b7b8`; the §5.3
+CP11 landed cleanly. Source `HEAD` is `a7e21c9`; the §5.3
 finalize commit refreshing `docs/STATUS.md` + this worklog adds
-one more. The 14-checkpoint plan is **10/14 done**. The
-plugin-visibility ceiling is now manifest-driven: every plugin
-manifest carries a `min_content_level` (default `L3`; declared
-in TOML as `"L0"` / `"L1"` / `"L2"` / `"L3"`) and the
-server-side `PluginHost` re-points `ctx._ceiling` per plugin
-before every hook dispatch via the new `_bind_plugin_view(ctx,
-plugin)` helper. An L1 plugin can no longer reach
-`request_text` even when the data is in memory; the L1 escape
-hatch (`request_hash` + `request_length`) still resolves. An L3
-plugin sees the full body. The SDK's legacy mode/opt-in math is
-preserved for the local-sidecar `packages/llm_tracker/` package:
-`HookContext.effective_ceiling` prefers the manifest-driven
-`_ceiling` when present and falls through to the
-`effective_ceiling(mode, user_opted_in=...)` table otherwise, so
-no local-sidecar callers regressed.
+one more. The 14-checkpoint plan is **11/14 done**.
 
-`/admin/plugins` (ADR-0014) now reports each plugin's declared
-level alongside `allowed_modes` (serialised as the enum's name,
-e.g. `"L3"`), so manifests stay self-describing through
-introspection.
+CP11 was the documentation pass before containerisation. The
+operator-facing surface is now consistent with the code:
 
-CP10 left the CP9 wiring untouched:
+- `.env.example` documents `LLMTRACK_DATABASE_URL` +
+  `LLMTRACK_LOG_LEVEL` + `LLMTRACK_TEST_DATABASE_URL` (the only
+  three env vars the server actually reads) and explains the
+  per-request header contract (per-org bearer + Anthropic
+  credential pass-through) as informational, not env-driven.
+  Every retired knob (`LLMTRACK_MODE`, `LLMTRACK_USER_OPTED_IN`,
+  SQLite path, sidecar host/port, supabase_sink config) is gone.
+- `docs/plugins.md` documents the CP10 `min_content_level` field
+  in the manifest schema (§2), rewrites the §3.1 ceiling table
+  to be manifest-driven instead of mode-driven, marks the
+  `allowed_modes` field as legacy-but-retained (§9), and adds a
+  new §12 "Running locally — server-side load path" covering the
+  entry-point group, manifest discovery, the per-plugin ceiling
+  clamp, and a worked local-dev loop (`docker run postgres:15`
+  → `alembic upgrade head` → `uvicorn` →
+  `llm-tracker-server tokens issue --org demo`).
 
-- Storage helpers, audit context, and the two-session
-  forwarder split are unchanged.
-- The CP9 transitional shape (every `Exchange` INSERT lands
-  with `org_id = request.state.org_id`) continues to apply;
-  CP10 did not change INSERT or audit shapes.
+CP11 left the CP8/CP9/CP10 code wiring untouched: no Python files
+changed. Two open carry-overs remain unaddressed at this
+checkpoint and are not on CP12's path either:
 
-The CP9.5 housekeeping ticket (pure-ASGI `AuthMiddleware`
-replacement so the generator does not need a fresh session
-post-stream) remains open and is not on CP11's path either —
-it's a Phase-3c-end ticket.
+- The CP9.5 housekeeping ticket (pure-ASGI `AuthMiddleware`
+  replacement so the generator does not need a fresh session
+  post-stream) — Phase-3c-end ticket.
+- The stale "Phase 1b" wording in `docs/plugins.md §8`
+  (EgressGuard has shipped at ADR-0015) — captured as
+  Suggestion #7 below.
 
-**Next single step**: **CP11 — `.env.example` + developer docs
-refresh.** Per the plan §"CP11":
+**Next single step**: **CP12 — `Dockerfile` (ADR-0022).** Per
+the plan §"CP12":
 
-- Rewrite `.env.example` for the server's actual surface —
-  `DATABASE_URL`, log level, the (transient) Anthropic header
-  convention, optional per-org token for local development.
-  Remove `LLMTRACK_MODE`, `LLMTRACK_USER_OPTED_IN`, SQLite
-  paths.
-- Add a "running locally" section to `docs/plugins.md` covering
-  the server-side load path (entry-point group, manifest
-  discovery, the new `min_content_level` field surface).
-- No Dockerfile yet — that's CP12.
+- Multi-stage `Dockerfile` at the repo root. Base
+  `python:3.11-slim`; build stage installs
+  `packages/llm_tracker_server` + its deps; runtime stage copies
+  the venv and runs `uvicorn llm_tracker_server.app:app --host
+  0.0.0.0 --port 8080`. Healthcheck hits `/healthz`.
+- `.dockerignore` at the repo root to keep the image small.
+- Per Suggestion #5: ship the `alembic` CLI in the runtime
+  image so CP13's release-command migration runner does not
+  trip on a missing entry point.
+- Verify: `docker build -t llm-tracker-server .` succeeds;
+  `docker run -e LLMTRACK_DATABASE_URL=... -p 8080:8080
+  llm-tracker-server` boots; `curl localhost:8080/healthz`
+  returns 200; final image under ~300 MB.
 
-Phase-3a dependencies: none for CP11. CP12 (Dockerfile) and
-CP13 (Fly + secrets + staging) follow; CP14 (operator-only
-end-to-end smoke) is the final checkpoint and has the soft
-Phase-3a #2 dependency for *external* testing, but the
-operator-only smoke is not blocked.
+Phase-3a dependencies: none for CP12. CP13 (Fly + secrets +
+staging) follows; CP14 (operator-only end-to-end smoke) is the
+final checkpoint and has the soft Phase-3a #2 dependency for
+*external* testing, but the operator-only smoke is not blocked.
 
 For a future session reviving the dev loop:
 
@@ -2719,3 +2902,15 @@ verification surface and ought to be greppable in `git log` later.
    `SET LOCAL ROLE`. Per-org seeding stayed in
    `test_rls_two_org_isolation.py` for the reason captured in
    §Decisions §CP5.
+7. **`docs/plugins.md §8` is stale.** It still describes the egress
+   API as "arrives in Phase 1b" — the API shipped at the CP8
+   commit of the supabase_sink workstream (ADR-0015) and is in
+   production. CLAUDE.md §2.3 surgical-changes pinned CP11's
+   scope to the file's manifest schema + ceiling table + new
+   §12, so this rewrite is a separate pass. Wording fix: change
+   "A safe egress API ... arrives in Phase 1b. For now, plugins
+   that need egress must wait for that phase." to a present-tense
+   description of `ctx.egress.fetch(url, ...)` + a pointer to
+   ADR-0015. Trivial; flag for whichever doc-only pass picks it
+   up (likely the §"Suggestion #2" docs/design.md rewrite after
+   CP14).

@@ -20,7 +20,11 @@ dependencies = [
     "sqlalchemy>=2",
     "asyncpg",
     "alembic",
+    "typer",
 ]
+
+[project.scripts]
+llm-tracker-server = "llm_tracker_server.cli.main:app"
 
 [dependency-groups]
 dev = [

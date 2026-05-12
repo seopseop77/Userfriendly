@@ -26,7 +26,8 @@ CP4 adds `org_id UUID NOT NULL REFERENCES orgs(id)` on the four user-data
 tables (ADR-0018 tenancy). No SA relationship object is declared — RLS
 policies (CP5) are the authority for cross-org visibility, not SA's
 session-level cascade. RLS policies land in CP5; per-request session
-binding (`SET LOCAL app.org_id`) lands in CP6.
+binding (`SET LOCAL ROLE` + `set_config('app.org_id', ...)`) lands in
+CP6's `auth.middleware.AuthMiddleware`.
 """
 
 import uuid as uuid_module

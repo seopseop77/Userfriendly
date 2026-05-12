@@ -9,8 +9,11 @@ ADR-0018 / ADR-0020. CP4 (migration `0004_org_id_on_user_data`) adds the
 (migration `0005_rls_policies`) adds the RLS half of defense-in-depth
 on those same tables -- per-org policy keyed off
 `current_setting('app.org_id', true)` plus an admin policy branch
-keyed off `app.role`. Per-request session binding (`SET LOCAL
-app.org_id`) lands in CP6/CP9.
+keyed off `app.role`. CP6 wires the per-request session binding
+(`SET LOCAL ROLE llm_tracker_app` + `set_config('app.org_id', ...)`)
+in `auth.middleware.AuthMiddleware`; CP9 will route storage INSERTs
+through that same request-scoped session so the RLS context applies
+to writes.
 """
 
 from llm_tracker_server.storage.engine import make_engine, make_session_factory

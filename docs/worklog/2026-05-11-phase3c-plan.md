@@ -44,6 +44,80 @@ The plan must:
 - Refreshed `docs/STATUS.md` to point at this worklog and set
   "Next single step" to CP1 (commit `f866cb8`).
 
+### CP7 — Anthropic credential pass-through + log scrubbing (2026-05-12, commit `e1d34bc`)
+
+- New `packages/llm_tracker_server/src/llm_tracker_server/proxy/`
+  package with three modules:
+  - `credential.py` — `CREDENTIAL_HEADER_NAMES = {"x-api-key",
+    "anthropic-api-key"}` (lowercase; HTTP header lookups are
+    case-insensitive). `is_credential_header(name)` is the
+    case-insensitive predicate. `scrub_credential_processor` is a
+    structlog processor that recursively walks the event dict and
+    replaces any value under a credential-header key with
+    `[REDACTED]`, and *also* replaces any string value beginning with
+    `sk-ant-` regardless of which key carries it — defends against
+    accidental dumps into exception strings, header `repr()`, or a
+    careless future call site. Returns a *new* dict so the original
+    event payload (held only by structlog at this point) is left
+    intact for callers that may still need it.
+  - `forwarder.py` — `forward_request(request, path, *, http_client,
+    upstream_base=UPSTREAM_BASE)`. Reads the inbound body once, builds
+    an outbound header set by stripping hop-by-hop headers (`host`,
+    `content-length`, `transfer-encoding`, `connection`,
+    `accept-encoding`) plus the local-only `authorization` (which was
+    consumed by `AuthMiddleware` and would either be rejected by
+    Anthropic or, worse, logged upstream), then issues
+    `http_client.build_request(...)` + `http_client.send(stream=True)`
+    and yields the upstream chunks back via a `StreamingResponse`.
+    Emits a structured `proxy.forward` log with `method`, `path`, and
+    a boolean `forwarded_credential` flag — the audit signal an
+    operator can grep for without ever materialising the credential
+    bytes.
+  - `__init__.py` — re-exports `CREDENTIAL_HEADER_NAMES`, `REDACTED`,
+    `UPSTREAM_BASE`, `forward_request`, `is_credential_header`,
+    `scrub_credential_processor`. Module docstring also pins CP7's
+    scope: credential passthrough only; CP8 owns the catch-all route
+    wiring + plugin host + SSE Tee port.
+- `packages/llm_tracker_server/src/llm_tracker_server/logging.py` —
+  inserts `scrub_credential_processor` into the structlog chain just
+  before the JSON renderer, so every emitted event passes through the
+  scrubber regardless of which call site wrote it.
+- `packages/llm_tracker_server/pyproject.toml` — promoted `httpx`
+  from `[dependency-groups] dev` to `[project] dependencies`; it is
+  now a runtime dep (the forwarder needs it in production, not just
+  in tests).
+- New `packages/llm_tracker_server/tests/test_credential_passthrough.py`
+  pins nine assertions (none of which require PostgreSQL — the
+  credential surface is DB-free, and the proxy uses `httpx.MockTransport`
+  to capture the outbound request):
+  - `test_outbound_carries_x_api_key` — inbound `x-api-key`
+    reaches the upstream request unchanged; URL and method are
+    correct.
+  - `test_outbound_carries_anthropic_api_key_alternate` — the
+    documented alternate name `anthropic-api-key` also passes
+    through (Anthropic accepts both).
+  - `test_outbound_strips_authorization_bearer` — the llm-tracker
+    Bearer is *not* forwarded; the Anthropic credential alongside it
+    still is.
+  - `test_query_string_is_preserved` — query strings round-trip
+    intact in the outbound URL.
+  - `test_scrub_processor_redacts_credential_header_key` — top-level
+    `x-api-key` / `anthropic-api-key` / mixed-case variants are all
+    redacted; non-credential keys are untouched.
+  - `test_scrub_processor_redacts_nested_credential_header` — a
+    credential key inside a nested `headers` dict is redacted.
+  - `test_scrub_processor_redacts_secret_value_anywhere` — an
+    `sk-ant-...` string under a non-credential key (or inside a
+    nested list) is redacted by the value-prefix rule.
+  - `test_scrub_processor_does_not_mutate_input` — the processor
+    returns a new dict; the caller's event payload is preserved.
+  - `test_configured_logging_chain_redacts_credential_from_stdout` —
+    end-to-end: run `configure_logging("INFO")`, emit a structured
+    log call that includes the credential in three different shapes
+    (top-level key, nested header dict, raw value), capture the
+    rendered JSON, assert the credential bytes never appear and the
+    `forwarded_credential` audit signal does.
+
 ### CP6 — Auth middleware + tokens CLI (2026-05-12, commit `1c0835a`)
 
 - New `packages/llm_tracker_server/src/llm_tracker_server/auth/`
@@ -745,6 +819,82 @@ So only CP9 and CP14 carry a Phase-3a flag, and it is a soft
   appear) will run under a session that asserts `app.role = 'admin'`
   alongside `app.org_id`.
 
+### CP7
+
+- **`forward_request` takes the `http_client` as an injected
+  parameter, not a module-level lazy singleton.** The local-sidecar
+  forwarder in `packages/llm_tracker/src/llm_tracker/proxy/forwarder.py`
+  uses a process-global `_client` populated on first use; that pattern
+  is what makes the existing tests brittle (state leaks across
+  parametrisations). Injecting the client lets the CP7 tests use
+  `httpx.MockTransport` directly and lets CP8 hand the production
+  catch-all a client built inside `lifespan`. The cost is one extra
+  parameter per call; the win is that the credential-passthrough
+  surface is a pure function of its inputs.
+- **The forwarder strips `Authorization` unconditionally** instead of
+  pattern-matching the `Bearer lts_…` prefix. The middleware is the
+  sole authority for what `Authorization` may carry on an authenticated
+  request — by the time the forwarder runs, the only valid value is
+  the llm-tracker Bearer that has already been consumed; forwarding
+  it would either confuse Anthropic (it expects `x-api-key`) or, if
+  Anthropic later started accepting `Bearer`-shaped Authorization,
+  leak our token into Anthropic's request logs. A future case where
+  the user does want to send `Authorization: Bearer <anthropic-token>`
+  (via `ANTHROPIC_AUTH_TOKEN`) can be re-introduced through a separate
+  header (e.g. `x-llmtracker-anthropic-bearer`) — not by relaxing the
+  strip rule.
+- **Scrubber matches by header *name* set + value *prefix*.** The
+  name set (`{"x-api-key", "anthropic-api-key"}`) catches the common
+  case where a structured log explicitly names the header it is about
+  to log. The `sk-ant-` value prefix catches the tail of the leak
+  vector: a future contributor pasting `headers.dict()` into an
+  exception message, or `repr(request)` showing up in a stacktrace,
+  or a debug log emitting `full_headers={...}` under a generic key.
+  Together they cover both axes — the operator who knows what they are
+  logging *and* the operator who doesn't realise what they're logging.
+  Trade-off: the value-prefix rule is bound to Anthropic's current
+  API-key format; if Anthropic rotates the prefix, this rule needs
+  an additive update.
+- **`Authorization: Bearer <anthropic-token>` from the user is not a
+  supported configuration in CP7.** The `ANTHROPIC_AUTH_TOKEN` env
+  knob Claude Code supports would set `Authorization: Bearer <…>`,
+  but our middleware claims that slot. Users must use the `x-api-key`
+  path (which is `ANTHROPIC_API_KEY` upstream). Documented inline in
+  `proxy/credential.py` and surfaces again at CP11 when `.env.example`
+  is refreshed.
+- **No DB write, no audit_log row, no `request.state.org_id` read
+  in CP7.** The CP7 surface is *only* the credential-passthrough
+  edge; CP9 is the checkpoint that wires `org_id`-tagged INSERTs
+  through the per-request session. Doing both at once would have
+  mixed two distinct safety properties (credential never persisted vs.
+  every row scoped to a known org) into one commit and made the
+  later diff harder to audit. The `forwarded_credential` boolean is
+  the only audit signal the proxy emits in this commit.
+- **`scrub_credential_processor` returns a new dict instead of
+  mutating in place.** structlog itself doesn't care either way, but
+  some upstream processors (especially `merge_contextvars` and any
+  test that builds an event dict and inspects it afterwards) hold a
+  reference to the pre-render shape. Returning a new dict makes the
+  processor side-effect-free at the type level and lets the unit
+  test assert non-mutation as a contract.
+- **No catch-all route wired in CP7.** The plan reads the CP7 file
+  list as proxy/__init__.py + forwarder.py + credential.py — no
+  `app.py` change. The forwarder is a callable; CP8 will mount it on
+  `/{path:path}` once the plugin host port lands. Wiring it earlier
+  would have added one line to `app.py` but would have widened the
+  surface of every existing test (the non-`/healthz` non-`/admin/...`
+  paths would suddenly try to proxy to Anthropic instead of returning
+  404). The current shape keeps the existing test surface
+  byte-identical and lets CP8 add the route once.
+- **httpx promoted to a runtime dependency.** It was previously
+  declared only under `[dependency-groups] dev` because nothing in
+  `src/` needed it; CP7 is the first runtime requirement. The
+  dev-group entry is intentionally left in place too — it documents
+  that the test surface still pulls httpx directly (it would be a
+  re-add the moment httpx ever became a runtime-optional dep again).
+  pip/uv de-dupes the two declarations; the install footprint is
+  unchanged.
+
 ### CP6
 
 - **`create_app` takes an injectable `session_factory`.** The
@@ -1096,6 +1246,104 @@ So only CP9 and CP14 carry a Phase-3a flag, and it is a soft
   (`0017`, `0018`, `0019`, `0020`) exist in `docs/decisions/`;
   `docs/STATUS.md`, `docs/roadmap.md`, the signing-removal worklog,
   and the supabase-sink CP4 worklog all exist at the cited paths.
+
+### CP7
+
+Targeted run of the new credential-passthrough test file (no PG
+needed; the credential surface is DB-free):
+
+```
+$ cd packages/llm_tracker_server && \
+    ../../.venv/bin/python3.12 -m pytest tests/test_credential_passthrough.py -v
+...
+9 passed in 0.26s
+```
+
+Full server suite without the test URL set:
+
+```
+$ ../../.venv/bin/python3.12 -m pytest -q
+sssss..........ssssssssss                                                [100%]
+10 passed, 15 skipped in 0.29s
+```
+
+(The 10 unconditional passes are 1 healthz + 9 new CP7 cases; the 15
+skips are the existing CP2 / CP3 / CP4 / CP5 / CP6 PG-only smokes.)
+
+Full repo suite without the test URL set:
+
+```
+$ .venv/bin/python3.12 -m pytest -q
+...
+258 passed, 15 skipped, 4 warnings in 7.71s
+```
+
+The 258 unconditional passes are CP6's 249 + the 9 new CP7 cases —
+unchanged otherwise, confirming CP7 perturbed neither the
+`packages/llm_tracker` historical suite nor the existing server
+suite. The 15 PG-only skips are unchanged from CP6 because CP7 added
+no PG-dependent test (deliberately — the credential surface does not
+touch the database).
+
+Full repo suite with the test URL set (PG container reused from
+CP2–CP6 on `localhost:55432`):
+
+```
+$ LLMTRACK_TEST_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker_test \
+    .venv/bin/python3.12 -m pytest -q
+...
+273 passed, 4 warnings in 26.82s
+```
+
+273 = 264 (CP6) + 9 (CP7). No skips when the URL is set.
+
+Ruff:
+
+```
+$ .venv/bin/python3.12 -m ruff check packages/llm_tracker_server
+All checks passed!
+$ .venv/bin/python3.12 -m ruff format --check packages/llm_tracker_server
+29 files already formatted
+```
+
+(One file — `proxy/forwarder.py` — needed one `ruff format` pass at
+write time, mostly because the `build_request(...)` line was split
+across lines and ruff prefers it on one. The recorded check is
+post-format.)
+
+App-import smoke (CP1 boot contract still intact — `create_app` with
+no DB URL and no session factory still returns a `/healthz`-only
+FastAPI app, and importing the proxy package no longer adds a
+required-at-import-time dep beyond httpx, which is now declared):
+
+```
+$ .venv/bin/python3.12 -c "from llm_tracker_server.app import app; print('OK', type(app).__name__)"
+OK FastAPI
+```
+
+Direct credential-leak smoke (re-running just the end-to-end log
+chain test under verbose pytest output and asserting the rendered
+JSON line manually):
+
+```
+$ ../../.venv/bin/python3.12 -m pytest \
+    tests/test_credential_passthrough.py::test_configured_logging_chain_redacts_credential_from_stdout -v
+PASSED
+```
+
+The test captures stdout through a stdlib `StreamHandler` bound to a
+`StringIO` so the assertion `ANTHROPIC_SECRET not in rendered`
+covers *every* rendered line, not just the JSON payload the test
+parses afterwards. The fixture credential string
+(`sk-ant-api03-abcdef0123456789`) is intentionally short to keep the
+fixture obviously synthetic; it still triggers the `sk-ant-` prefix
+match the scrubber relies on. The plan's CP7 verify line also lists a
+"manual local test against a stub upstream confirms the header
+round-trips and `journalctl`/stdout shows no leakage"; the targeted
+test exercises the same code path (forwarder → httpx outbound → log
+emission → stdout capture) end to end, so the live-port smoke is
+deferred to the CP14 end-to-end checkpoint (which will run uvicorn
+against a real Anthropic endpoint anyway).
 
 ### CP6
 
@@ -1627,8 +1875,8 @@ the ASGI-transport test, so I skipped the live-port loop.
 ## What's left / known limits
 
 - **The plan is 14 checkpoints; it is not the implementation.** As
-  of CP6, 6 of 14 are committed; CP7 (Anthropic credential
-  pass-through + log scrubbing) is the next.
+  of CP7, 7 of 14 are committed; CP8 (port proxy + plugin host
+  server-side; ADR-0017 / ADR-0019) is the next.
 - **Soft Phase-3a dependencies on #2 (consent + data handling)** at
   CP9 and CP14 only. Both flagged inline. Neither blocks the build
   from starting; both gate external exposure.
@@ -1649,48 +1897,57 @@ the ASGI-transport test, so I skipped the live-port loop.
 
 ## Handoff
 
-CP6 landed cleanly. Source `HEAD` is `1c0835a`; the §5.3 finalize
+CP7 landed cleanly. Source `HEAD` is `e1d34bc`; the §5.3 finalize
 commit refreshing `docs/STATUS.md` + this worklog adds one more.
-The 14-checkpoint plan is **6/14 done**. The agent→server identity
-edge of ADR-0020 (Axis 1) is now live: every authenticated request
-arrives as a per-org token, gets hashed, looked up in `api_tokens`,
-and the request-scoped session opens under `llm_tracker_app` with
-`app.org_id` bound. CP5's RLS policies have a real caller. CP7
-plugs the *other* edge — the server-side Anthropic credential
-pass-through.
+The 14-checkpoint plan is **7/14 done**. The server→Anthropic
+credential edge of ADR-0020 (Axis 2) is now live: every outbound
+request to `api.anthropic.com` carries the user's
+`x-api-key` / `anthropic-api-key` through unchanged, while the
+llm-tracker Bearer (Axis 1, consumed by CP6's middleware) is stripped
+before the outbound build. The structlog chain has the credential
+scrubber wired so accidental leakage from any log call is redacted
+by both header-name *and* `sk-ant-` value-prefix rules; the
+end-to-end test asserts the credential bytes never reach stdout
+through the configured pipeline.
 
-**Next single step**: **CP7 — Anthropic credential pass-through +
-log scrubbing (ADR-0020 Axis 2).** Per the plan:
+**Next single step**: **CP8 — Port proxy + plugin host server-side
+(ADR-0017 / ADR-0019).** Per the plan:
 
-- Forward whichever credential header Claude Code natively sends
-  (canonically `x-api-key`; confirm during this checkpoint per
-  ADR-0020 §Open questions) on the outbound httpx call to
-  `api.anthropic.com`. Never persist: no DB column, no log line,
-  no audit detail. structlog processor strips the credential
-  header from every log entry; a unit test asserts the header
-  bytes never appear in a captured log buffer.
-- New files under `src/llm_tracker_server/proxy/`: `__init__.py`,
-  `forwarder.py` (httpx async client + SSE relay; port relevant
-  pieces from `packages/llm_tracker/src/llm_tracker/proxy/`),
-  `credential.py` (extract on inbound, attach to outbound, scrub
-  from logs). `logging.py` gains the scrubbing structlog processor.
-- New `tests/test_credential_passthrough.py` — assert outbound
-  request carries the header; assert no log line ever contains it.
+- Move the FastAPI catch-all route, SSE Tee, hook lifecycle,
+  `PluginHost`, `EgressGuard`, and `HookContext` from
+  `packages/llm_tracker/src/llm_tracker/` to
+  `packages/llm_tracker_server/src/llm_tracker_server/`.
+- Drop the Mode L/A/R enum and `LLMTRACK_MODE` resolution (ADR-0019
+  §Decision item 1). Drop the `LLMTRACK_USER_OPTED_IN` env knob
+  (ADR-0016 superseded by per-org tokens + upcoming ADR-#2).
+- The local-sidecar `packages/llm_tracker/` package stays in tree as
+  historical scaffolding until ADR-#4 (agent language) decides
+  Phase 3b — see plan §"Open follow-ups".
+- Port the Phase 0–1b tests that still apply (capability registry,
+  hook dispatcher ordering, content-level routing, EgressGuard
+  wiring); skip the Mode-keyed policy tests retired by ADR-0019.
 
-Soft dependency only on **#3 (settled by ADR-0020)**; no Phase-3a
-blocker for this checkpoint. The Anthropic credential never crosses
-the persistence boundary, which is the safety property CP7 must
-make load-bearing.
+CP7 left two contracts CP8 will rely on:
 
-A few CP6 contracts that CP7 (and CP9 after it) will rely on:
+- `forward_request(request, path, *, http_client, upstream_base)`
+  is the credential-passthrough callable. CP8 mounts it on
+  `/{path:path}` inside `create_app` and threads the `http_client`
+  through `lifespan` so the catch-all uses one shared httpx client
+  for its lifetime. The function shape stays stable through CP8 —
+  the plugin host integration wraps the call, it does not replace it.
+- `scrub_credential_processor` is already in the structlog chain.
+  CP8's ported `PluginHost`, `EgressGuard`, and hook-lifecycle code
+  will inherit the scrubbing automatically; no further wiring
+  required on the logging side.
+
+A reminder of the CP6 contracts that CP8/CP9 still rely on:
 
 - `request.state.session` is the per-request `AsyncSession` the
   middleware bound with `SET LOCAL ROLE llm_tracker_app` +
-  `SELECT set_config('app.org_id', :uuid, true)`. CP7's proxy
-  layer should reach for that session if it needs DB access during
-  request handling (e.g., to write an `audit_log` row); CP9 will
-  formalise this as the storage entry point.
-- `request.state.org_id` is the resolved org UUID. CP9 will read it
+  `SELECT set_config('app.org_id', :uuid, true)`. CP9 will wire
+  storage INSERTs through this session so RLS sees the matching
+  org axis.
+- `request.state.org_id` is the resolved org UUID. CP9 reads it
   when wiring `org_id` onto INSERT payloads (defense in depth on
   top of the RLS `WITH CHECK`).
 - The `/admin/whoami` route lives in `app.py` until CP10's

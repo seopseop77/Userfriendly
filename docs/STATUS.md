@@ -6,14 +6,14 @@
 
 ---
 
-**Last updated**: 2026-05-12 (Claude Code; Phase 3c CP6 landed — auth middleware + tokens CLI; 5 new HTTP cases green, full suite 264 passed)
-**Updated by**: Claude Code (Phase 3c CP6 checkpoint, source commit 1c0835a)
+**Last updated**: 2026-05-12 (Claude Code; Phase 3c CP7 landed — Anthropic credential pass-through + log scrubbing; 9 new cases green, full repo suite 273 passed with PG / 258 passed without)
+**Updated by**: Claude Code (Phase 3c CP7 checkpoint, source commit e1d34bc)
 
 ## Current phase
 
-- **Phase**: **Phase 3c — CP1 + CP2 + CP3 + CP4 + CP5 + CP6 closed
-  (6/14).** CP1 brought up the `llm_tracker_server` FastAPI skeleton
-  + `/healthz`. CP2 ported the storage layer to PostgreSQL
+- **Phase**: **Phase 3c — CP1 + CP2 + CP3 + CP4 + CP5 + CP6 + CP7
+  closed (7/14).** CP1 brought up the `llm_tracker_server` FastAPI
+  skeleton + `/healthz`. CP2 ported the storage layer to PostgreSQL
   (SQLAlchemy async + asyncpg + Alembic env + two migrations).
   CP3 added the ADR-0018 / ADR-0020 tenancy substrate (`orgs` +
   `api_tokens`). CP4 added the column half of defense-in-depth:
@@ -22,22 +22,26 @@
   half: migration `0005_rls_policies` creates the non-superuser
   `llm_tracker_app` role, enables and FORCEs RLS on the four
   user-data tables, and lays down two PERMISSIVE policies per table
-  (`<table>_org_isolation` + `<table>_admin_access`). CP6 has now
-  added the ADR-0020 Axis-1 edge: a `BaseHTTPMiddleware` parses
+  (`<table>_org_isolation` + `<table>_admin_access`). CP6 added
+  the ADR-0020 Axis-1 edge: a `BaseHTTPMiddleware` parses
   `Authorization: Bearer <token>` (401 on missing/malformed),
   hashes it (SHA-256 hex), looks it up in `api_tokens` filtered to
   non-revoked rows (403 conflated for unknown/revoked), then opens
   a request-scoped session that issues `SET LOCAL ROLE
   llm_tracker_app` + `SELECT set_config('app.org_id', '<uuid>',
   true)` and attaches `request.state.{org_id, session}` for
-  downstream handlers. A small `/admin/whoami` route reads the GUC
-  back off the same session for the test surface. The Typer
-  `llm-tracker-server tokens {issue,revoke,list}` CLI is declared
-  as a `[project.scripts]` console script; `tokens issue` prints
-  the plaintext exactly once and stores only the SHA-256 hex.
-  Source HEAD now at `1c0835a`.
-- **Active task**: **CP7 — Anthropic credential pass-through + log
-  scrubbing (ADR-0020 Axis 2)** is the queued next commit.
+  downstream handlers. CP7 has now added the ADR-0020 Axis-2 edge:
+  a new `proxy/` package whose `forward_request(...)` passes
+  `x-api-key` / `anthropic-api-key` through to `api.anthropic.com`
+  unchanged while stripping the consumed `Authorization` Bearer,
+  and a `scrub_credential_processor` wired into the structlog chain
+  that redacts the credential by header-name set *and* by
+  `sk-ant-` value-prefix regardless of where it appears in any log
+  event. The credential never crosses the persistence boundary:
+  no DB column, no log line, no audit row. Source HEAD now at
+  `e1d34bc`.
+- **Active task**: **CP8 — Port proxy + plugin host server-side
+  (ADR-0017 / ADR-0019)** is the queued next commit.
   **ADR-#2 consent decision** remains the most blocking remaining
   Phase-3a item before *any external testing*; operator-only smoke
   (CP14) is not blocked.
@@ -51,128 +55,124 @@ The prior signing-removal worklog
 ## Recent commits
 
 ```
+e1d34bc   server: add Anthropic credential pass-through + scrubbing (CP7)
+a517bcc   docs: STATUS + worklog for Phase 3c CP6 checkpoint
 1c0835a   server: add auth middleware + tokens CLI (CP6)
 8167e9b   docs: STATUS + worklog for Phase 3c CP5 checkpoint
 0dec2f1   server: add RLS policies + app role (CP5)
-578e8ea   docs: STATUS + worklog for Phase 3c CP4 checkpoint
-2da7438   server: add org_id to user-data tables (CP4)
 ```
 
 ## Where we paused
 
-**Phase 3c CP6 — auth middleware + tokens CLI — closed.** The
-agent→server identity edge of ADR-0020 is now live: every
-authenticated request resolves to a per-org bearer token, drops
-into the non-superuser `llm_tracker_app` role, and binds
-`app.org_id` for the duration of the request. CP5's RLS policies
-have a real caller; CP7 will plug the other ADR-0020 edge (the
-Anthropic credential pass-through to `api.anthropic.com`).
+**Phase 3c CP7 — Anthropic credential pass-through + log scrubbing
+— closed.** The server→Anthropic credential edge of ADR-0020
+(Axis 2) is now live: every outbound request to `api.anthropic.com`
+carries the user's `x-api-key` / `anthropic-api-key` through
+unchanged, the llm-tracker Bearer is stripped before the outbound
+build (it was already consumed by CP6's middleware and Anthropic
+would either reject it or log it), and the structlog chain has the
+credential scrubber wired so accidental leakage from any log call
+is redacted by both header-name set *and* the `sk-ant-` value-prefix
+rule. The credential never crosses the persistence boundary — no
+DB column, no log line, no audit row. CP8 will port the full proxy
++ plugin host + SSE Tee from `packages/llm_tracker/` and mount the
+catch-all route that calls `forward_request`.
 
-- New `packages/llm_tracker_server/src/llm_tracker_server/auth/`
-  package: `tokens.py` (SHA-256 hex hashing, `lookup` /
-  `issue` / `revoke` / `list_for_org`; plaintext is
-  `lts_` + `secrets.token_urlsafe(32)`; `lookup` filters to
-  non-revoked rows so callers cannot tell unknown from revoked),
-  `middleware.py` (`AuthMiddleware(BaseHTTPMiddleware)` — bypasses
-  `/healthz`, parses Bearer, opens one session per request that
-  issues `SET LOCAL ROLE llm_tracker_app` then `SELECT
-  set_config('app.org_id', '<uuid>', true)` and exposes
-  `request.state.{org_id, session}`), `__init__.py` (re-exports
-  the surface).
-- New `packages/llm_tracker_server/src/llm_tracker_server/cli/`
-  package: Typer entry point `app = typer.Typer(...)` with a
-  `tokens` subtree of `issue` / `revoke` / `list`. `_session_scope()`
-  is a shared async CM that loads `.env`, reads
-  `LLMTRACK_DATABASE_URL`, builds an engine + factory, yields a
-  session, disposes the engine on exit. `tokens issue` prints
-  `org_id=`, `token_hash=`, `token=` on stdout and a "store this
-  token now — it cannot be recovered" hint on stderr.
-  `cli/__init__.py` is docstring-only; re-exporting `app` would
-  trigger a `runpy` warning under `python -m
-  llm_tracker_server.cli.main`, and the production console script
-  targets `llm_tracker_server.cli.main:app` directly.
-- `packages/llm_tracker_server/pyproject.toml` — `typer` added to
-  `[project] dependencies`; `[project.scripts]` table introduced
-  with `llm-tracker-server = "llm_tracker_server.cli.main:app"`.
-- `packages/llm_tracker_server/src/llm_tracker_server/app.py` —
-  `create_app(settings=None, session_factory=None)`. If a factory
-  is injected, it is used as-is (test path). If `session_factory
-  is None` and `settings.database_url` is set, the factory wires
-  `make_engine` + `make_session_factory` and disposes the engine
-  on lifespan exit. If a factory is available either way, the
-  factory registers `AuthMiddleware` and a small `/admin/whoami`
-  route that returns `{"org_id": ..., "app_org_id_setting":
-  current_setting('app.org_id', true)}` (read off
-  `request.state.session`). With no DB URL and no injected
-  factory, the app boots `/healthz`-only — the CP1 contract holds.
-- `storage/__init__.py` and `storage/models.py` docstrings
-  updated to reflect CP6 landing the per-request `SET LOCAL ROLE`
-  + `app.org_id` binding (CP9 still owns routing storage INSERTs
-  through the same session).
-- New `tests/test_auth_middleware.py` pins five HTTP cases:
-  missing Authorization → 401; unknown plaintext (never persisted)
-  → 403; valid token → 200 with both `org_id` and
-  `app_org_id_setting` matching `str(UUID(<assigned id>))`;
-  `/healthz` reachable with no Authorization; a revoked token →
-  403 with the same body shape as the unknown case.
+- New `packages/llm_tracker_server/src/llm_tracker_server/proxy/`
+  package: `credential.py` declares
+  `CREDENTIAL_HEADER_NAMES = {"x-api-key", "anthropic-api-key"}`
+  and `scrub_credential_processor`, a structlog processor that
+  recursively redacts any value under a credential-header key
+  *and* any string value beginning with `sk-ant-` regardless of
+  the carrying key; returns a new dict so callers' event payloads
+  aren't mutated in place. `forwarder.py` declares
+  `forward_request(request, path, *, http_client,
+  upstream_base=UPSTREAM_BASE)` — reads inbound body, strips
+  hop-by-hop headers + `authorization` (already consumed by CP6),
+  builds the outbound httpx request, streams the upstream
+  response back; emits a structured `proxy.forward` log with a
+  `forwarded_credential` boolean as the audit signal.
+  `__init__.py` re-exports the surface and pins CP7's scope:
+  credential passthrough only; CP8 owns the catch-all route +
+  plugin host port.
+- `packages/llm_tracker_server/src/llm_tracker_server/logging.py`
+  inserts `scrub_credential_processor` into the structlog chain
+  just before the JSON renderer so every emitted event passes
+  through the scrubber regardless of which call site wrote it.
+- `packages/llm_tracker_server/pyproject.toml` — promoted `httpx`
+  from `[dependency-groups] dev` to `[project] dependencies`
+  (kept the dev-group entry too; pip/uv de-dupes).
+- New `tests/test_credential_passthrough.py` pins nine assertions
+  (none require PostgreSQL — the credential surface is DB-free,
+  and the forwarder uses `httpx.MockTransport` to capture the
+  outbound request):
+  - `test_outbound_carries_x_api_key` — inbound `x-api-key`
+    reaches the upstream request unchanged.
+  - `test_outbound_carries_anthropic_api_key_alternate` — the
+    documented alternate name passes through too.
+  - `test_outbound_strips_authorization_bearer` — the llm-tracker
+    Bearer is *not* forwarded.
+  - `test_query_string_is_preserved` — query strings round-trip.
+  - Four scrubber unit tests (top-level header keys, nested
+    header keys, value-prefix anywhere, no-mutation contract).
+  - `test_configured_logging_chain_redacts_credential_from_stdout`
+    runs `configure_logging("INFO")`, emits a structured log
+    with the credential in three shapes (top-level key, nested
+    headers dict, raw value), captures rendered JSON via a
+    `StringIO` `StreamHandler`, and asserts the credential bytes
+    never appear and the `forwarded_credential` audit signal does.
 
-Verification: PostgreSQL 15.17 container on `localhost:55432`
-reused from CP5. Targeted run of the new file: `pytest … -q` →
-**5 passed** in 5.79 s. Full suite with test URL: `pytest -q` →
-**264 passed**, 4 warnings (23.84 s). Full suite *without* the
-test URL → **249 passed, 15 skipped**, 4 warnings (the prior 10
-PG smokes plus the 5 new CP6 cases skip; 249 unconditional
-passes unchanged from CP5 confirms CP6 did not perturb the non-PG
-suite). Ruff: 0 errors after one auto-fix (`RUF022` `__all__`
-not-sorted on `auth/__init__.py`); one file (`cli/main.py`)
-needed one `ruff format` pass at write time. App-import smoke
-with no DB URL still returns a `FastAPI` object. CLI end-to-end
-smoke against the docker PG (after `alembic upgrade head`):
-`tokens issue --org demo` printed a fresh `org_id`, `token_hash`,
-and plaintext; `tokens list --org demo` showed the active row;
-`tokens revoke --hash <hash>` returned `revoked`. DB was
-downgraded back to base after the smoke.
+Verification: targeted run of the new file → **9 passed** in
+0.26 s. Full repo suite *without* the test URL → **258 passed,
+15 skipped**, 4 warnings (258 = 249 [CP6 baseline] + 9; 15 skips
+unchanged from CP6 because CP7 added no PG-dependent test). Full
+repo suite *with* the test URL → **273 passed** (264 [CP6] + 9).
+Ruff: `check` and `format --check` both clean; one file
+(`proxy/forwarder.py`) needed one `ruff format` pass at write
+time. App-import smoke with no DB URL still returns a `FastAPI`
+object. No `journalctl`/stdout live-port smoke this checkpoint —
+the end-to-end stdout test exercises the same code path
+(forwarder → outbound httpx → log emission → stdout capture);
+the live uvicorn round-trip is deferred to CP14.
 
-Seven CP6-specific decisions, all flagged in the worklog
-§Decisions §CP6; the most load-bearing:
+Eight CP7-specific decisions, all flagged in the worklog
+§Decisions §CP7; the most load-bearing:
 
-1. **`create_app` takes an injectable `session_factory`.**
-   Production defaults to building one from `settings.database_url`;
-   tests inject the CP5 hoisted factory directly so they reuse
-   its per-test alembic upgrade/downgrade cycle. With no factory
-   and no URL, the app still returns a `/healthz`-only surface —
-   the CP1 boot contract still holds.
-2. **Unknown and revoked tokens both resolve to a single 403** with
-   the same body. Distinguishing them at the response surface would
-   let an unauthenticated caller probe whether a plaintext was ever
-   issued. `lookup` filters on `revoked_at IS NULL` internally;
-   revocation is one `UPDATE`, never a DELETE.
-3. **SHA-256 hex, not bcrypt/argon2.** ADR-0020 §"Token issuance"
-   pins SHA-256; the plaintext carries ~256 bits of entropy, so a
-   slow KDF would buy nothing against the actual threat (DB dump
-   recovery). Centralised in `auth.tokens.hash_token` for a future
-   migration.
-4. **`SET LOCAL ROLE` on every request even though the conftest
-   fixture already wraps the test factory with it.** The middleware
-   is the production authority; the conftest wrap only makes the
-   docker-default superuser look like production for tests.
-   `SET LOCAL ROLE` is idempotent within a transaction; running it
-   twice is a no-op and the middleware is not allowed to depend on
-   a test-only invariant.
-5. **`request.state.session` exposed as the per-request session.**
-   The plan required `request.state.org_id` only; adding the
-   session attribute is what lets `/admin/whoami` read the GUC
-   off the same session the middleware bound, which is the
-   assertion the test relies on. CP9 will formalise this as the
-   storage entry point.
-6. **`/admin/whoami` lives in `app.py`** until CP10's
-   `/admin/plugins` arrives and earns its own router module.
-7. **`lts_` plaintext prefix** is a self-documenting tag for
-   operators reading logs; the middleware keys on the SHA-256 hash,
-   not the prefix, so format changes don't invalidate existing
-   tokens.
+1. **`forward_request` takes the `http_client` as an injected
+   parameter.** Avoids the module-level lazy singleton the
+   local-sidecar forwarder uses (which is what makes its tests
+   brittle). Pure-function shape; CP8 will hand it a lifespan-
+   scoped client.
+2. **The forwarder strips `Authorization` unconditionally.** By
+   the time it runs, the only valid value was the consumed
+   llm-tracker Bearer; forwarding it would confuse Anthropic or
+   leak our token. A future `ANTHROPIC_AUTH_TOKEN` path will be
+   re-introduced via a separate header, not by relaxing this rule.
+3. **Scrubber matches by header *name* set + value *prefix*.**
+   Name set covers the careful logger; `sk-ant-` prefix covers
+   the careless one (header `repr()`, stacktrace dumps, generic
+   `details=...` keys). Trade-off: prefix is tied to Anthropic's
+   current API-key format.
+4. **`ANTHROPIC_AUTH_TOKEN` is not a supported configuration in
+   CP7.** Our middleware claims the `Authorization` slot. Users
+   must use `x-api-key` / `ANTHROPIC_API_KEY` upstream; documented
+   in `proxy/credential.py` and surfaces again at CP11.
+5. **No DB write, no audit_log row, no `request.state.org_id`
+   read in CP7.** The org-aware INSERT wiring is CP9's job;
+   bundling them would have mixed two distinct safety properties
+   (credential never persisted vs. row org-scoped) into one
+   commit and made the later diff harder to audit.
+6. **`scrub_credential_processor` returns a new dict.**
+   Side-effect-free at the type level; the unit test asserts
+   non-mutation as a contract.
+7. **No catch-all route wired in CP7.** Plan reads the CP7 file
+   list as proxy/__init__.py + forwarder.py + credential.py only;
+   wiring the route earlier would have widened every existing
+   test's surface. CP8 mounts it once.
+8. **httpx promoted to runtime dep.** First runtime requirement;
+   dev-group entry intentionally left alongside.
 
-Source HEAD is now `1c0835a`. Documentation HEAD advances with
+Source HEAD is now `e1d34bc`. Documentation HEAD advances with
 this §5.3 finalize commit.
 
 ### Prior workstream — Phase-3a decisions (closed 2026-05-11)
@@ -349,33 +349,46 @@ reframes them server-side**:
 
 ## Next single step
 
-**Phase 3c CP7 — Anthropic credential pass-through + log scrubbing
-(ADR-0020 Axis 2).** Seventh commit of the 14-checkpoint plan at
+**Phase 3c CP8 — Port proxy + plugin host server-side
+(ADR-0017 / ADR-0019).** Eighth commit of the 14-checkpoint plan at
 `docs/worklog/2026-05-11-phase3c-plan.md`:
 
-- Forward whichever credential header Claude Code natively sends
-  (canonically `x-api-key`; confirm during this checkpoint per
-  ADR-0020 §Open questions) on the outbound httpx call to
-  `api.anthropic.com`. **Never persist**: no DB column, no log
-  line, no audit detail. A structlog processor strips the
-  credential header from every log entry; a unit test asserts the
-  header bytes never appear in a captured log buffer.
-- New files under
-  `packages/llm_tracker_server/src/llm_tracker_server/proxy/`:
-  `__init__.py`, `forwarder.py` (httpx async client + SSE relay;
-  port the relevant pieces from
-  `packages/llm_tracker/src/llm_tracker/proxy/`),
-  `credential.py` (extract on inbound, attach to outbound, scrub
-  from logs). `logging.py` gains the scrubbing structlog
-  processor.
-- New `tests/test_credential_passthrough.py` — assert outbound
-  request carries the header; assert no log line ever contains it.
+- Move the FastAPI catch-all route, SSE Tee, hook lifecycle,
+  `PluginHost`, `EgressGuard`, and `HookContext` from
+  `packages/llm_tracker/src/llm_tracker/` into
+  `packages/llm_tracker_server/src/llm_tracker_server/`. Wrap
+  CP7's `forward_request` with the plugin-host hook calls
+  (`on_request_received`, `before_forward`,
+  `on_upstream_response_start`, `on_response_chunk`,
+  `on_response_complete`, `on_persisted`), block-response synthesis
+  on `Block` / `Abort`, and the synthetic SSE block stream from
+  ADR-0002 §3.
+- Drop the Mode L/A/R enum and `LLMTRACK_MODE` resolution
+  (ADR-0019 §Decision item 1). Drop the `LLMTRACK_USER_OPTED_IN`
+  env knob (ADR-0016 superseded by per-org tokens + upcoming
+  ADR-#2).
+- The local-sidecar `packages/llm_tracker/` package stays in tree
+  as historical scaffolding until ADR-#4 (agent language) decides
+  Phase 3b.
+- Port the Phase 0–1b tests that still apply (capability
+  registry, hook dispatcher ordering, content-level routing,
+  EgressGuard wiring). Skip the Mode-keyed policy tests retired
+  by ADR-0019.
 
-CP6 left two contracts CP7 will rely on: `request.state.session`
-is the per-request `AsyncSession` already bound to `app.org_id`
-under `llm_tracker_app`, and `request.state.org_id` is the resolved
-org UUID. CP9 will read both when wiring `org_id` onto storage
-INSERTs (defense in depth on top of the RLS `WITH CHECK`).
+CP7 left two contracts CP8 will rely on:
+`forward_request(request, path, *, http_client, upstream_base)`
+is the credential-passthrough callable; CP8 mounts it under the
+catch-all and threads the `http_client` through `lifespan`. The
+structlog chain already has `scrub_credential_processor` wired —
+the ported `PluginHost` / `EgressGuard` / hook-lifecycle code
+inherits the scrubbing automatically.
+
+CP6 left two contracts CP7 already preserved and CP9 will read:
+`request.state.session` is the per-request `AsyncSession` already
+bound to `app.org_id` under `llm_tracker_app`, and
+`request.state.org_id` is the resolved org UUID. CP9 will read
+both when wiring `org_id` onto storage INSERTs (defense in depth
+on top of the RLS `WITH CHECK`).
 
 To revive the dev loop in a new session:
 
@@ -432,9 +445,10 @@ ready to start.
 - [x] **Phase 3c CP4 — `org_id NOT NULL` on user-data tables (2026-05-11, commit 2da7438)**
 - [x] **Phase 3c CP5 — RLS policies + `llm_tracker_app` role (2026-05-12, commit 0dec2f1)**
 - [x] **Phase 3c CP6 — auth middleware + tokens CLI (2026-05-12, commit 1c0835a)**
+- [x] **Phase 3c CP7 — Anthropic credential pass-through + log scrubbing (2026-05-12, commit e1d34bc)**
 - [ ] **Phase 3a — remaining 3 decision ADRs** (#1 fallback / #2 consent / #4 agent language)
 - [ ] Phase 3b — thin local agent (gated on #1 + #4)
-- [ ] Phase 3c — server build-out (6 of 14 checkpoints done; remaining CP7–CP14 per `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0018/0019/0020/0022)
+- [ ] Phase 3c — server build-out (7 of 14 checkpoints done; remaining CP8–CP14 per `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0017/0018/0019/0020/0022)
 - [ ] Phase 1c — `scope_guard` (paused; reframed server-side per ADR-0019; gated on Phase 3c readiness)
 - [ ] Phase 3d — carry-overs: OpenAI/Gemini adapters, analytics interface, response-side policy plugins
 

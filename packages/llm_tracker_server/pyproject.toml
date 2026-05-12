@@ -21,6 +21,7 @@ dependencies = [
     "asyncpg",
     "alembic",
     "typer",
+    "httpx",
 ]
 
 [project.scripts]

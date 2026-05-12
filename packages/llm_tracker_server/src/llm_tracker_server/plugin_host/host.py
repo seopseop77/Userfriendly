@@ -27,7 +27,7 @@ from importlib.metadata import entry_points
 from typing import Any
 
 import httpx
-from llm_tracker_sdk import Abort, BasePlugin, Block, HookContext, Pass, Transform
+from llm_tracker_sdk import Abort, BasePlugin, Block, ContentLevel, HookContext, Pass, Transform
 from llm_tracker_sdk.manifest import PluginManifest
 
 from llm_tracker_server.egress_guard.client import HostEgressClient
@@ -87,6 +87,13 @@ class PluginHost:
         # `loaded_plugins()` for the `/admin/plugins` introspection
         # endpoint (ADR-0014).
         self._manifests: list[PluginManifest] = []
+        # CP10: per-plugin clamp pulled from the manifest's
+        # `min_content_level`. The dispatch loop sets `ctx._ceiling`
+        # per plugin from this map (same pattern as `ctx.egress`).
+        # A plugin missing from the map defaults to L3 so unit tests
+        # that bypass `load_plugins` keep the permissive shape they
+        # had before CP10 landed.
+        self._min_levels: dict[str, ContentLevel] = {}
         # Per-exchange HookContext (ADR-0012). Created by
         # `begin_exchange`, reused across all per-exchange hook
         # dispatches for that exchange, cleared by `end_exchange`.
@@ -235,6 +242,7 @@ class PluginHost:
                 )
             self._plugins.append(plugin)
             self._manifests.append(manifest)
+            self._min_levels[manifest.name] = manifest.min_content_level
             await self._audit_writer(
                 kind="plugin_loaded",
                 plugin=plugin.name,
@@ -260,6 +268,7 @@ class PluginHost:
                 "hooks": list(m.hooks),
                 "capabilities": list(m.capabilities),
                 "allowed_modes": list(m.allowed_modes),
+                "min_content_level": m.min_content_level.name,
             }
             for m in self._manifests
         ]
@@ -286,11 +295,23 @@ class PluginHost:
 
     # -- per-request hooks ------------------------------------------------
 
+    def _bind_plugin_view(self, ctx: HookContext, plugin: BasePlugin) -> None:
+        """Re-point per-plugin views on the shared ctx before dispatch.
+
+        Sets ``ctx.egress`` (ADR-0015 per-plugin client) and
+        ``ctx._ceiling`` (CP10 manifest-driven clamp). Plugins loaded
+        outside ``load_plugins`` (e.g. direct ``host._plugins = [...]``
+        assignment in unit tests) get the permissive default
+        :data:`ContentLevel.L3`.
+        """
+        ctx.egress = plugin.egress
+        ctx._ceiling = self._min_levels.get(plugin.name, ContentLevel.L3)
+
     async def on_request_received(self, exchange_id: str) -> Pass | Block:
         await self._audit("on_request_received", exchange_id)
         ctx = self._ctx_for(exchange_id)
         for plugin in self._plugins:
-            ctx.egress = plugin.egress  # ADR-0015: per-plugin client for this dispatch
+            self._bind_plugin_view(ctx, plugin)
             result = await self._call(
                 plugin,
                 "on_request_received",
@@ -306,7 +327,7 @@ class PluginHost:
         await self._audit("before_forward", exchange_id)
         ctx = self._ctx_for(exchange_id)
         for plugin in self._plugins:
-            ctx.egress = plugin.egress  # ADR-0015
+            self._bind_plugin_view(ctx, plugin)
             result = await self._call(
                 plugin,
                 "before_forward",
@@ -324,7 +345,7 @@ class PluginHost:
         await self._audit("on_upstream_response_start", exchange_id)
         ctx = self._ctx_for(exchange_id)
         for plugin in self._plugins:
-            ctx.egress = plugin.egress  # ADR-0015
+            self._bind_plugin_view(ctx, plugin)
             result = await self._call(
                 plugin,
                 "on_upstream_response_start",
@@ -339,7 +360,7 @@ class PluginHost:
     async def on_response_chunk(self, exchange_id: str, chunk: bytes) -> Pass | Abort:
         ctx = self._ctx_for(exchange_id)
         for plugin in self._plugins:
-            ctx.egress = plugin.egress  # ADR-0015
+            self._bind_plugin_view(ctx, plugin)
             result = await self._call(
                 plugin,
                 "on_response_chunk",
@@ -355,7 +376,7 @@ class PluginHost:
         await self._audit("on_response_complete", exchange_id)
         ctx = self._ctx_for(exchange_id)
         for plugin in self._plugins:
-            ctx.egress = plugin.egress  # ADR-0015
+            self._bind_plugin_view(ctx, plugin)
             await self._call(
                 plugin,
                 "on_response_complete",
@@ -367,7 +388,7 @@ class PluginHost:
         await self._audit("on_persisted", exchange_id)
         ctx = self._ctx_for(exchange_id)
         for plugin in self._plugins:
-            ctx.egress = plugin.egress  # ADR-0015
+            self._bind_plugin_view(ctx, plugin)
             await self._call(
                 plugin,
                 "on_persisted",

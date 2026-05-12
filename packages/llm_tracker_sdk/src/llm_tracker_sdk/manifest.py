@@ -9,6 +9,7 @@ from typing import Annotated
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .capabilities import ALL_CAPABILITIES
+from .levels import ContentLevel
 
 VALID_HOOKS: frozenset[str] = frozenset(
     {
@@ -35,6 +36,13 @@ class PluginManifest(BaseModel):
     egress_destinations: list[Annotated[str, ...]] = []
     allowed_modes: list[str] = Field(..., min_length=1)
     db_namespace: str = ""
+    # ADR-0019 §Open questions: declared content-level ceiling for
+    # this plugin. The server-side host clamps the plugin's
+    # ``HookContext`` view to this value at dispatch time. Default
+    # ``L3`` matches the local-sidecar baseline (pre-CP10 plugins
+    # saw raw bytes by default). Authors opt *down* to L0/L1/L2
+    # when they don't need full bodies.
+    min_content_level: ContentLevel = ContentLevel.L3
 
     @field_validator("hooks")
     @classmethod
@@ -60,12 +68,31 @@ class PluginManifest(BaseModel):
             raise ValueError(f"Unknown modes: {sorted(unknown)}")
         return v
 
+    @field_validator("min_content_level", mode="before")
+    @classmethod
+    def _coerce_content_level(cls, v: object) -> ContentLevel:
+        if isinstance(v, ContentLevel):
+            return v
+        if isinstance(v, str):
+            try:
+                return ContentLevel[v]
+            except KeyError as exc:
+                raise ValueError(
+                    f"Unknown min_content_level {v!r}; must be one of L0/L1/L2/L3"
+                ) from exc
+        if isinstance(v, int):
+            try:
+                return ContentLevel(v)
+            except ValueError as exc:
+                raise ValueError(f"Unknown min_content_level int {v!r}; must be 0/1/2/3") from exc
+        raise ValueError(
+            f"min_content_level must be a string (L0/L1/L2/L3) or int, got {type(v).__name__}"
+        )
+
     @model_validator(mode="after")
     def _egress_requires_capability(self) -> PluginManifest:
         if self.egress_destinations and "egress_http" not in self.capabilities:
-            raise ValueError(
-                "egress_destinations requires the 'egress_http' capability"
-            )
+            raise ValueError("egress_destinations requires the 'egress_http' capability")
         return self
 
     @classmethod

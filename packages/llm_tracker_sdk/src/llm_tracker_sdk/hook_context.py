@@ -55,9 +55,22 @@ class HookContext:
     user_opted_in: bool = False
     egress: EgressClient | None = None
     _raw_request_body: bytes | None = field(default=None, repr=False)
+    # ADR-0019 §Open questions / CP10: per-plugin clamp set by the
+    # server-side host from the plugin manifest's ``min_content_level``.
+    # When non-None it wins over the mode/opt-in math below — the
+    # local-sidecar path (mode L/A/R) leaves it ``None`` so legacy
+    # callers keep their existing ceiling semantics.
+    _ceiling: ContentLevel | None = field(default=None, repr=False)
 
     def effective_ceiling(self) -> ContentLevel:
-        """The highest level this plugin may see, given mode + opt-in."""
+        """The highest level this plugin may see.
+
+        If the host pinned a manifest-driven ``_ceiling`` it wins
+        outright (ADR-0019). Otherwise the legacy mode + opt-in math
+        is used so the local-sidecar host keeps working unchanged.
+        """
+        if self._ceiling is not None:
+            return self._ceiling
         return effective_ceiling(self.mode, user_opted_in=self.user_opted_in)
 
     def request_text(self, level: ContentLevel = ContentLevel.L3) -> str | None:

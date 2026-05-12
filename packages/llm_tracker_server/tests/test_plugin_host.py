@@ -329,6 +329,7 @@ async def test_loaded_plugins_returns_serialisable_view(monkeypatch, captured_au
             "hooks": ["on_init", "on_persisted"],
             "capabilities": ["egress_http"],
             "allowed_modes": ["L", "A", "R"],
+            "min_content_level": "L3",
         }
     ]
 

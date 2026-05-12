@@ -44,6 +44,69 @@ The plan must:
 - Refreshed `docs/STATUS.md` to point at this worklog and set
   "Next single step" to CP1 (commit `f866cb8`).
 
+### CP12 — `Dockerfile` + `.dockerignore` (2026-05-12, commit `92ddff7`)
+
+- Created `Dockerfile` at the repo root — multi-stage build, both
+  stages on `python:3.11-slim`:
+  - **builder**: `python -m venv /opt/venv`; pip-installs
+    `packages/llm_tracker_sdk`, `packages/llm_tracker_server`, and
+    `python-ulid` into the venv. Two of those are explicit
+    workarounds for missing pyproject declarations the server has
+    today (see CP12 §Decisions §D1 + Suggestion #8 below).
+  - **runtime**: non-root `app:app` user; copies the venv from the
+    builder; copies `alembic.ini` + `alembic/` under `/app` so the
+    release-command runner planned for CP13 can call `alembic
+    upgrade head` against the image as-is (dispatches Suggestion #5);
+    `EXPOSE 8080`; `HEALTHCHECK` uses `python -c "urllib.request..."`
+    against `/healthz` so the slim image doesn't need `curl`; final
+    `CMD` is `uvicorn llm_tracker_server.app:app --host 0.0.0.0
+    --port 8080`.
+- Created `.dockerignore` at the repo root — strips `.git`, `docs/`,
+  `var/`, `.omc/`, `.claude/`, all `__pycache__` / cache directories,
+  every workspace package except `llm_tracker_sdk` and
+  `llm_tracker_server`, and all `tests/` directories inside the two
+  packages that *do* go in. The build context goes from ~tens of MB
+  (with the four other plugin packages + local-sidecar + docs +
+  worklogs) down to a few MB of source.
+
+Verification (full transcript in §Verification §CP12 below):
+
+- `docker build -t llm-tracker-server:cp12 .` — clean build on the
+  second attempt (the first attempt died at `# syntax=docker/
+  dockerfile:1.7` because the Docker daemon could not pull the
+  frontend image from `registry-1.docker.io`; the directive is not
+  needed for any 1.7-specific feature here, so it was deleted before
+  the successful build).
+- `docker run -d -p 18080:8080 ... llm-tracker-server:cp12` boots in
+  ~2 s. `curl localhost:18080/healthz` returns `HTTP 200`
+  `{"status":"ok","version":"0.0.1"}`. Structured log line
+  `server.startup` shows `auth_wired: false, plugin_host_wired:
+  false` — the CP1 boot contract (no DB → no auth-gated routes
+  attach) carries through the image.
+- `HEALTHCHECK` transitions `health: starting` → `healthy` after
+  the first 30 s interval; `docker inspect ... .State.Health.Log`
+  shows two consecutive `exit=0` probes. Fly.io reads this
+  natively, so CP13 will not need a separate liveness route.
+- `docker exec llm-tracker-cp12-test alembic --version` →
+  `alembic 1.18.4`. `alembic current` from `/app` fails with
+  `[Errno 111] Connect call failed (..., 5432)` against the
+  alembic.ini fallback URL — expected and informative: the CLI is
+  present and wired against the asyncpg driver; only the DB is
+  missing, which is exactly what CP13's `LLMTRACK_DATABASE_URL`
+  secret will supply.
+- Final image: **80.6 MB compressed content / 379 MB on-disk
+  usage** (`docker images llm-tracker-server:cp12`). The plan's
+  "under ~300 MB" budget is met for the compressed registry size
+  (the metric that drives Fly.io push/pull and most production
+  targets); on-disk usage exceeds 300 MB by ~26 % because the
+  slim base alone is ~130 MB unpacked and the venv adds ~150 MB.
+  Accepted; flagged in §Decisions §D4 below in case CP13/CP14
+  surfaces a reason to revisit (e.g. a Fly.io disk-quota
+  surprise).
+
+Source `HEAD` is `92ddff7`. Documentation HEAD advances with this
+§5.3 finalize commit.
+
 ### CP11 — `.env.example` + developer docs refresh (2026-05-12, commit `a7e21c9`)
 
 - Rewrote `.env.example` against the server's actual surface
@@ -1248,6 +1311,92 @@ So only CP9 and CP14 carry a Phase-3a flag, and it is a soft
   appear) will run under a session that asserts `app.role = 'admin'`
   alongside `app.org_id`.
 
+### CP12
+
+- **D1 — `python-ulid` and `llm-tracker-sdk` are installed by the
+  Dockerfile, not via a `pyproject.toml` edit.** Both are real
+  runtime dependencies of the server today:
+  - `python-ulid` — imported in
+    `llm_tracker_server.storage.audit` and
+    `llm_tracker_server.proxy.forwarder`; the import chain runs at
+    `app.py` import time so any environment without it fails at
+    boot (verified — the first attempt at `docker run` exited 1
+    with `ModuleNotFoundError: No module named 'ulid'`). It is
+    not declared in `packages/llm_tracker_server/pyproject.toml`;
+    in dev it is reachable because the workspace also installs
+    `packages/llm_tracker/`, which declares it transitively.
+  - `llm-tracker-sdk` — imported in
+    `llm_tracker_server.proxy.forwarder` (`Abort`, `Block`,
+    `Transform`) and `llm_tracker_server.content_levels.levels`.
+    Also not declared in the server's `pyproject.toml`; in dev it
+    is resolved by uv's workspace pointer (`tool.uv.sources`),
+    which other workspace packages declare but the server does
+    not.
+  CP12 holds the Dockerfile (per CLAUDE.md §2.3 surgical-changes
+  + §9 note-don't-act). Fixing the manifest would also force a
+  `uv lock` refresh — the existing `uv.lock` entry for
+  `llm-tracker-server` is missing `typer` and `httpx` against
+  the current `pyproject.toml`, so any manifest edit pulls in a
+  lockfile refresh as a transitive blast. That's a separate
+  ticket; flagged as Suggestion #8 below. The Dockerfile carries
+  a comment block explaining the workaround so the next reader
+  doesn't think it's accidental.
+- **D2 — pip install instead of `uv sync` for the image.** Same
+  root cause as D1: the workspace `uv.lock` is stale against the
+  server's `pyproject.toml` (lockfile metadata-requires-dist is
+  missing `typer` and `httpx`, which are listed in the
+  pyproject). `uv sync --frozen --package llm-tracker-server`
+  would therefore fail with a lockfile-out-of-sync error and
+  drag a `uv lock` refresh into CP12. Plain `pip install` reads
+  the package's `pyproject.toml` directly and resolves from PyPI,
+  which is what we want for a deployable image anyway —
+  reproducible without uv on the target.
+- **D3 — Multi-stage build with `python:3.11-slim` for both stages.**
+  Plan-prescribed base. The runtime stage drops the build context
+  and the wheels cache; only `/opt/venv` plus the alembic assets
+  travel into the final image. The non-root `app:app` user is
+  added in the runtime stage; the builder stays as root because
+  pip-installing into a system-managed `/opt/venv` is cleaner
+  without a user-switch midway.
+- **D4 — Image size 80.6 MB compressed / 379 MB on-disk; accepted.**
+  The plan's "under ~300 MB" budget is met for the compressed
+  registry size, which is the metric for Fly.io push/pull and
+  most production deployment targets. On-disk usage exceeds 300
+  MB by ~26 % because `python:3.11-slim` is ~130 MB unpacked and
+  the venv adds ~150 MB. Reducing further would mean dropping
+  `uvicorn[standard]` extras (`uvloop`, `watchfiles`, `httptools`
+  etc.) which the runtime actually wants, or switching to a
+  smaller base (alpine — different libc, would have to validate
+  asyncpg's manylinux wheels work). Both are larger changes than
+  CP12; accepting the current size and flagging here is the
+  right call.
+- **D5 — Alembic CLI + `alembic/` + `alembic.ini` ship in the
+  runtime image.** Dispatches Suggestion #5 from CP11. The
+  release-command migration runner planned for CP13 can run
+  `alembic upgrade head` against the image directly, with the
+  same `LLMTRACK_DATABASE_URL` the app reads — no separate
+  migration image, no separate build context.
+- **D6 — `HEALTHCHECK` uses `python -c urllib.request.urlopen`
+  instead of `curl`.** Keeps the slim image slim — `curl` is not
+  in `python:3.11-slim` by default, and adding it would inflate
+  the runtime stage for a check that the bundled Python can do
+  in one line.
+- **D7 — Initial `# syntax=docker/dockerfile:1.7` directive
+  removed.** The directive forced the Docker daemon to pull the
+  frontend image from `registry-1.docker.io`, which failed with
+  a TLS handshake timeout on the first build. None of the
+  Dockerfile features used here are 1.7-specific (multi-stage,
+  `COPY --from`, `HEALTHCHECK`, `EXPOSE` all date from much
+  older versions), so the directive added a network dependency
+  for no benefit and was deleted before the successful build.
+- **D8 — Pinned-tag `python:3.11-slim` without a digest.** The
+  ADR-0022 reproducibility surface is "rebuild from source, ship
+  via Fly's registry"; pinning the digest would add a small
+  amount of robustness but would force a manual bump every time
+  the upstream image rebases (which `:3.11-slim` does silently).
+  Flagged here as a future hardening step if a CI pipeline ever
+  attaches; not in CP12 scope.
+
 ### CP11
 
 - **D1 — Per-request headers are informational in `.env.example`,
@@ -2042,6 +2191,101 @@ So only CP9 and CP14 carry a Phase-3a flag, and it is a soft
   `docs/STATUS.md`, `docs/roadmap.md`, the signing-removal worklog,
   and the supabase-sink CP4 worklog all exist at the cited paths.
 
+### CP12
+
+No new pytest tests; CP12 is an infrastructure change. The
+verification surface is the local Docker build + run loop.
+
+**Build (clean, second attempt — see §Decisions §D7):**
+
+```
+$ docker build -t llm-tracker-server:cp12 .
+#10 Installing collected packages: websockets, uvloop, ... ,
+    python-ulid, ..., llm-tracker-sdk, fastapi, llm-tracker-server
+#10 Successfully installed Mako-1.3.12 ... python-ulid-3.1.0 ...
+    llm-tracker-sdk-0.0.1 llm-tracker-server-0.0.1 ...
+#16 naming to docker.io/library/llm-tracker-server:cp12 done
+#16 DONE 4.4s
+```
+
+**Image size:**
+
+```
+$ docker images llm-tracker-server:cp12
+IMAGE                     ID             DISK USAGE   CONTENT SIZE
+llm-tracker-server:cp12   ca80e737bc68   379MB        80.6MB
+```
+
+80.6 MB compressed registry content; 379 MB unpacked on-disk.
+Plan budget "under ~300 MB" is met for the compressed metric;
+on-disk exceeds by ~26 % — accepted per §Decisions §D4.
+
+**Boot + `/healthz`:**
+
+```
+$ docker run -d -p 18080:8080 --name llm-tracker-cp12-test llm-tracker-server:cp12
+$ sleep 4 && docker ps --filter name=llm-tracker-cp12-test --format '{{.Status}} | {{.Ports}}'
+Up 4 seconds (health: starting) | 0.0.0.0:18080->8080/tcp
+$ curl -sS -o /tmp/h -w "HTTP %{http_code}\n" http://localhost:18080/healthz && cat /tmp/h
+HTTP 200
+{"status":"ok","version":"0.0.1"}
+```
+
+Structured log on startup (from `docker logs`):
+
+```
+{"version": "0.0.1", "auth_wired": false, "plugin_host_wired": false,
+ "event": "server.startup", "level": "info",
+ "timestamp": "2026-05-12T06:30:55.511999Z"}
+```
+
+`auth_wired: false` + `plugin_host_wired: false` confirms the CP1
+boot contract carries through the image: with no
+`LLMTRACK_DATABASE_URL` attached, only `/healthz` + `/openapi.json`
+attach. The image will pick up the full auth + plugin path when
+CP13's `fly secrets set LLMTRACK_DATABASE_URL=...` lands.
+
+**Docker `HEALTHCHECK` transitions to healthy:**
+
+```
+$ sleep 32 && docker inspect --format \
+    '{{.State.Health.Status}} | {{range .State.Health.Log}}exit={{.ExitCode}} {{end}}' \
+    llm-tracker-cp12-test
+healthy | exit=0 exit=0
+```
+
+Two consecutive 0-exit probes inside the first ~35 s window;
+status moves from `starting` to `healthy`. Fly.io and any other
+orchestrator that reads Docker healthchecks will get liveness
+natively.
+
+**Alembic CLI present (dispatches CP11 Suggestion #5):**
+
+```
+$ docker exec llm-tracker-cp12-test alembic --version
+alembic 1.18.4
+
+$ docker exec -w /app llm-tracker-cp12-test alembic current
+...
+OSError: Multiple exceptions: [Errno 111] Connect call failed
+    ('::1', 5432, 0, 0), [Errno 111] Connect call failed
+    ('127.0.0.1', 5432)
+```
+
+The connection failure is the *informative* part: alembic +
+asyncpg + the driver are wired correctly inside the image; the
+only thing missing is a reachable DB at the alembic.ini fallback
+URL. CP13 supplies the real `LLMTRACK_DATABASE_URL` via Fly
+secrets and the same command will then migrate the Supabase
+database.
+
+**Cleanup:**
+
+```
+$ docker rm -f llm-tracker-cp12-test
+llm-tracker-cp12-test
+```
+
 ### CP11
 
 No new tests; the change surface is documentation only. Three
@@ -2762,8 +3006,8 @@ the ASGI-transport test, so I skipped the live-port loop.
 ## What's left / known limits
 
 - **The plan is 14 checkpoints; it is not the implementation.** As
-  of CP11, **11 of 14 are committed**; CP12 (`Dockerfile` +
-  `.dockerignore`) is the next.
+  of CP12, **12 of 14 are committed**; CP13 (`fly.toml` + secrets +
+  staging deploy) is the next.
 - **Lifecycle audit rows are dropped under CP9.** The contextvar
   no-ops outside a request, and `audit_log.org_id` is NOT NULL
   with no service-role bypass. The call sites are still in place
@@ -2797,33 +3041,40 @@ the ASGI-transport test, so I skipped the live-port loop.
 
 ## Handoff
 
-CP11 landed cleanly. Source `HEAD` is `a7e21c9`; the §5.3
+CP12 landed cleanly. Source `HEAD` is `92ddff7`; the §5.3
 finalize commit refreshing `docs/STATUS.md` + this worklog adds
-one more. The 14-checkpoint plan is **11/14 done**.
+one more. The 14-checkpoint plan is **12/14 done**.
 
-CP11 was the documentation pass before containerisation. The
-operator-facing surface is now consistent with the code:
+CP12 turned the server into a runnable container:
 
-- `.env.example` documents `LLMTRACK_DATABASE_URL` +
-  `LLMTRACK_LOG_LEVEL` + `LLMTRACK_TEST_DATABASE_URL` (the only
-  three env vars the server actually reads) and explains the
-  per-request header contract (per-org bearer + Anthropic
-  credential pass-through) as informational, not env-driven.
-  Every retired knob (`LLMTRACK_MODE`, `LLMTRACK_USER_OPTED_IN`,
-  SQLite path, sidecar host/port, supabase_sink config) is gone.
-- `docs/plugins.md` documents the CP10 `min_content_level` field
-  in the manifest schema (§2), rewrites the §3.1 ceiling table
-  to be manifest-driven instead of mode-driven, marks the
-  `allowed_modes` field as legacy-but-retained (§9), and adds a
-  new §12 "Running locally — server-side load path" covering the
-  entry-point group, manifest discovery, the per-plugin ceiling
-  clamp, and a worked local-dev loop (`docker run postgres:15`
-  → `alembic upgrade head` → `uvicorn` →
-  `llm-tracker-server tokens issue --org demo`).
+- `Dockerfile` — multi-stage `python:3.11-slim` builder/runtime;
+  builder pip-installs `llm_tracker_sdk` + `llm_tracker_server`
+  + `python-ulid` into `/opt/venv`; runtime drops to a non-root
+  `app:app` user, copies the venv + `alembic.ini` + `alembic/`
+  under `/app`, exposes `:8080`, runs uvicorn, and uses a
+  `python -c urllib.request.urlopen` HEALTHCHECK against
+  `/healthz`. Final image: 80.6 MB compressed / 379 MB
+  on-disk.
+- `.dockerignore` — strips git, docs, var, cache dirs, every
+  workspace package except sdk + server, and tests from the
+  two packages that ship.
 
-CP11 left the CP8/CP9/CP10 code wiring untouched: no Python files
-changed. Two open carry-overs remain unaddressed at this
-checkpoint and are not on CP12's path either:
+CP12 surfaced two `pyproject.toml` manifest gaps in
+`packages/llm_tracker_server/`: `python-ulid` is imported by
+`storage/audit.py` + `proxy/forwarder.py` but not declared, and
+`llm-tracker-sdk` is imported by `proxy/forwarder.py` +
+`content_levels/levels.py` but not declared. In dev both are
+provided transitively by the workspace's `llm_tracker` package
+and uv's workspace pointer; in a server-only install the boot
+fails at `ModuleNotFoundError: No module named 'ulid'`. CP12
+works around both by pip-installing them explicitly in the
+Dockerfile; the proper manifest fix is captured as Suggestion
+#8 below and is also entangled with a stale `uv.lock` (the
+server entry's `metadata.requires-dist` is missing `typer` and
+`httpx` against the current `pyproject.toml`).
+
+Two open carry-overs remain unaddressed and are not on CP13's
+critical path either:
 
 - The CP9.5 housekeeping ticket (pure-ASGI `AuthMiddleware`
   replacement so the generator does not need a fresh session
@@ -2832,27 +3083,47 @@ checkpoint and are not on CP12's path either:
   (EgressGuard has shipped at ADR-0015) — captured as
   Suggestion #7 below.
 
-**Next single step**: **CP12 — `Dockerfile` (ADR-0022).** Per
-the plan §"CP12":
+**Next single step**: **CP13 — `fly.toml` + secrets + staging
+deploy (ADR-0022).** Per the plan §"CP13":
 
-- Multi-stage `Dockerfile` at the repo root. Base
-  `python:3.11-slim`; build stage installs
-  `packages/llm_tracker_server` + its deps; runtime stage copies
-  the venv and runs `uvicorn llm_tracker_server.app:app --host
-  0.0.0.0 --port 8080`. Healthcheck hits `/healthz`.
-- `.dockerignore` at the repo root to keep the image small.
-- Per Suggestion #5: ship the `alembic` CLI in the runtime
-  image so CP13's release-command migration runner does not
-  trip on a missing entry point.
-- Verify: `docker build -t llm-tracker-server .` succeeds;
-  `docker run -e LLMTRACK_DATABASE_URL=... -p 8080:8080
-  llm-tracker-server` boots; `curl localhost:8080/healthz`
-  returns 200; final image under ~300 MB.
+- `fly.toml` at the repo root declaring the http service,
+  internal port 8080, `/healthz` health check, single region
+  (`iad`).
+- `fly secrets set LLMTRACK_DATABASE_URL=...` against a
+  freshly-provisioned Supabase project (pooled connection
+  string, IPv4 add-on enabled if needed).
+- Decide migration runner: Fly **release command** vs CI step.
+  Plan recommends the release command for the demo scale —
+  `release_command = "alembic upgrade head"` runs in a
+  one-shot ephemeral machine before the rolling deploy, with
+  the same image and the same secrets, which is exactly what
+  CP12 set up. Per CP12 §D5 the alembic CLI + scripts are
+  already in the runtime image.
+- Provision a demo org + token via the in-image CLI:
+  `flyctl ssh console -C 'llm-tracker-server tokens issue
+  --org demo'`.
+- Verify: `fly deploy` succeeds; `fly status` shows the app
+  healthy; `curl https://<app>.fly.dev/healthz` returns 200;
+  one `tokens issue` invocation returns a bearer token.
 
-Phase-3a dependencies: none for CP12. CP13 (Fly + secrets +
-staging) follows; CP14 (operator-only end-to-end smoke) is the
-final checkpoint and has the soft Phase-3a #2 dependency for
-*external* testing, but the operator-only smoke is not blocked.
+Phase-3a dependencies: none for CP13. CP14 (operator-only
+end-to-end smoke) follows; it is the final checkpoint and has
+the soft Phase-3a #2 dependency for *external* testing, but the
+operator-only smoke is not blocked.
+
+Two coupled work items the user may want to fold in before or
+alongside CP13 (both are Suggestion-tier, not gating):
+
+- Fix the `packages/llm_tracker_server/pyproject.toml` manifest
+  gaps (`python-ulid`, `llm-tracker-sdk`) + run `uv lock` to
+  refresh the lockfile. If accepted, the Dockerfile's explicit
+  pip install of `python-ulid` becomes redundant and can be
+  removed; the SDK install can use `--no-deps` against the
+  server (or even drop the SDK install line entirely, since
+  pip will resolve it from the server's declared deps + the
+  matching `--find-links` style). See Suggestion #8.
+- The CP9.5 pure-ASGI `AuthMiddleware` replacement. Untouched
+  by CP12; same priority as before.
 
 For a future session reviving the dev loop:
 
@@ -2914,3 +3185,35 @@ verification surface and ought to be greppable in `git log` later.
    ADR-0015. Trivial; flag for whichever doc-only pass picks it
    up (likely the §"Suggestion #2" docs/design.md rewrite after
    CP14).
+8. **`packages/llm_tracker_server/pyproject.toml` undeclared
+   runtime deps + stale `uv.lock`.** Surfaced by CP12's
+   server-only Docker install (see CP12 §Decisions §D1 + §D2):
+   - `python-ulid` is imported in `storage/audit.py` and
+     `proxy/forwarder.py` but missing from `dependencies`. In
+     dev it is reachable transitively via `packages/llm_tracker`;
+     a server-only install fails at boot with
+     `ModuleNotFoundError: No module named 'ulid'`.
+   - `llm-tracker-sdk` is imported in `proxy/forwarder.py`
+     (`Abort`, `Block`, `Transform`) and
+     `content_levels/levels.py` but is not declared either as
+     a dependency or via `[tool.uv.sources]`. Other workspace
+     packages (e.g. `packages/llm_tracker_plugin_hello_world/
+     pyproject.toml`) demonstrate the canonical shape:
+     `dependencies = ["llm-tracker-sdk"]` plus
+     `[tool.uv.sources]  llm-tracker-sdk = { workspace = true }`.
+   - The workspace `uv.lock` entry for `llm-tracker-server` has
+     `metadata.requires-dist` missing both `typer` and `httpx`
+     against the current `pyproject.toml` (and missing the two
+     deps above by virtue of those not being in `pyproject.toml`
+     either). A fresh `uv sync --frozen --package
+     llm-tracker-server` will refuse to install. Any manifest
+     edit therefore needs to be paired with `uv lock` to
+     resynchronise.
+   Recommended fix (one commit): add `python-ulid` +
+   `llm-tracker-sdk` to `dependencies`, add `[tool.uv.sources]
+   llm-tracker-sdk = { workspace = true }`, run `uv lock`, drop
+   the explicit `python-ulid` line and the comment block from
+   the Dockerfile (the workspace SDK install line stays — pip
+   does not see `[tool.uv.sources]` and the SDK is not on
+   PyPI). Trivial; flagged here as a Phase-3c housekeeping
+   ticket that can land independently of CP13/CP14.

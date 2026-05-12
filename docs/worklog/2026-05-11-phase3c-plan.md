@@ -44,6 +44,63 @@ The plan must:
 - Refreshed `docs/STATUS.md` to point at this worklog and set
   "Next single step" to CP1 (commit `f866cb8`).
 
+### CP5 — RLS policies + `llm_tracker_app` role (2026-05-12, commit `0dec2f1`)
+
+- New migration
+  `packages/llm_tracker_server/alembic/versions/0005_rls_policies.py`
+  does three things in order:
+  1. `CREATE ROLE llm_tracker_app NOLOGIN` (guarded by `DO $$ IF NOT
+     EXISTS`) plus `GRANT USAGE ON SCHEMA public` and
+     `GRANT SELECT, INSERT, UPDATE, DELETE` on the four user-data
+     tables and the two substrate tables. The role is non-superuser
+     and has no BYPASSRLS — that is the whole point. Production
+     deploys add LOGIN; tests `SET LOCAL ROLE` into it.
+  2. `ALTER TABLE … ENABLE ROW LEVEL SECURITY` + `FORCE ROW LEVEL
+     SECURITY` on each of `exchanges`, `events`, `tool_calls`,
+     `audit_log`.
+  3. Two PERMISSIVE policies per table (OR-combined):
+     - `<table>_org_isolation` (FOR ALL): `org_id = NULLIF(
+       current_setting('app.org_id', true), '')::uuid` on both USING
+       and WITH CHECK.
+     - `<table>_admin_access` (FOR ALL): `NULLIF(current_setting(
+       'app.role', true), '') = 'admin'` on both USING and WITH
+       CHECK.
+- `packages/llm_tracker_server/src/llm_tracker_server/storage/__init__.py`
+  docstring extended to point at CP5 landing RLS (and to note that
+  per-request `SET LOCAL app.org_id` is still CP6's responsibility).
+- New `packages/llm_tracker_server/tests/conftest.py` hoists the
+  alembic upgrade/downgrade subprocess + `session_factory` fixture
+  out of three copy-pasted bodies (CP2 / CP3 / CP4) and wraps the
+  raw SQLAlchemy sessionmaker in an async context manager that
+  issues `SET LOCAL ROLE llm_tracker_app` on every session. Without
+  that wrap, the docker-default `POSTGRES_USER=cp2` superuser would
+  bypass RLS unconditionally and the isolation test would never
+  fail (see Decisions §CP5).
+- New `packages/llm_tracker_server/tests/test_rls_two_org_isolation.py`
+  pins five visibility assertions plus one write-path assertion:
+  - `test_two_org_isolation` — bound to org A, insert 2 exchanges;
+    bound to org B, `SELECT count(*)` returns 0; bound back to org
+    A, count = 2; admin (no `app.org_id`, `app.role = 'admin'`),
+    count = 2; unbound, count = 0 (default-closed).
+  - `test_cross_org_write_rejected` — bound to org A, attempting to
+    insert a row with `org_id = B` raises
+    `sa.exc.ProgrammingError` with message containing
+    `row-level security`.
+- `packages/llm_tracker_server/tests/test_storage_smoke.py` updated:
+  both round-trip and append-only tests now `SELECT set_config(
+  'app.org_id', :v, true)` after the `Org` flush, before touching
+  user-data tables. The shape is identical to what CP6's auth
+  middleware will issue.
+- `packages/llm_tracker_server/tests/test_org_id_constraint.py`
+  updated: each insert runs under `set_config('app.role', 'admin',
+  true)` so the admin policy branch admits the WITH CHECK and the
+  test focuses on the column-level constraints it was written to
+  pin (NOT NULL, FK). RLS as a separate gate is covered by the new
+  isolation test.
+- `packages/llm_tracker_server/tests/test_org_token_models.py`
+  updated only at the import/fixture surface — `orgs` and
+  `api_tokens` have no RLS, so no per-test setting is needed.
+
 ### CP4 — `org_id NOT NULL` on the four user-data tables (2026-05-11, commit `2da7438`)
 
 - New migration
@@ -608,6 +665,90 @@ So only CP9 and CP14 carry a Phase-3a flag, and it is a soft
   appear) will run under a session that asserts `app.role = 'admin'`
   alongside `app.org_id`.
 
+### CP5
+
+- **Created `llm_tracker_app` as a non-superuser role inside the
+  migration itself**, rather than as a deployment-time step. The
+  failing-first-attempt smoke (recorded in §Verification §CP5)
+  showed that `FORCE ROW LEVEL SECURITY` is not enough on its own:
+  Postgres superusers bypass RLS unconditionally, and the
+  docker-default `POSTGRES_USER=cp2` is a superuser. The choice was
+  between (a) documenting "tests must connect as a non-superuser"
+  externally and hoping every contributor wires it correctly, or
+  (b) baking the role into the schema. (b) makes the test
+  environment look like production (where the app server logs in as
+  a non-superuser anyway) and removes a class of "works for me"
+  failures. The migration guards the `CREATE ROLE` with
+  `DO $$ IF NOT EXISTS` so re-running against a managed PG (or a
+  Supabase project that pre-provisions the role) is a no-op.
+- **`NULLIF(current_setting('app.org_id', true), '')::uuid` instead
+  of the plan's bare `current_setting('app.org_id', true)::uuid`.**
+  Once a custom GUC has been touched by any prior transaction in
+  the session, Postgres returns `''` (empty string) — not NULL —
+  for `current_setting(name, true)` in subsequent transactions
+  where it is unset. Casting `''` to UUID raises
+  `invalid input syntax for type uuid`, which would tear down the
+  "no setting at all → zero rows" assertion in
+  `test_two_org_isolation` (the failure showed up on first run; see
+  §Verification §CP5 §"First-attempt failures"). `NULLIF(..., '')`
+  collapses both shapes into NULL and the `org_id = NULL`
+  comparison evaluates to NULL (treated as false), so the
+  default-closed semantics hold cleanly. Same shape applied to
+  `app.role` for consistency — even though `'' = 'admin'` already
+  evaluates to false there, the symmetric form is easier to read
+  and matches the pattern the auth middleware should use.
+- **Two PERMISSIVE policies per table, not one combined CASE-style
+  policy.** The PG idiom for "either of these is sufficient" is two
+  PERMISSIVE policies that the planner OR-combines. The
+  CASE-inside-a-single-policy form (`USING (CASE WHEN admin THEN
+  true ELSE org_id = … END)`) is harder to read, easier to break
+  during a future refactor, and obscures from `pg_policies` reads
+  that admin is a separate enforcement path. The downside is two
+  rows in `pg_policies` per table; well worth it for the read
+  clarity.
+- **`FORCE ROW LEVEL SECURITY` even though tests now use a
+  non-owner role.** Two reasons. First, a future deploy where the
+  app role is also the table owner (e.g., a Supabase project where
+  the app's own role owns the schema for migration purposes) would
+  silently lose RLS without FORCE. Belt-and-braces is cheap. Second,
+  it makes the policy intent unambiguous in `\d+ <table>`: "Force
+  row security: yes" is one line that tells a reviewer "no, you
+  cannot bypass this by being the owner."
+- **Admin policy branch is `FOR ALL`, not `FOR SELECT`.** The plan's
+  prose said "cross-org SELECT" but the ADR doesn't constrain
+  admin's write access. `FOR ALL` keeps the two policies symmetric
+  (both per-org and admin admit reads and writes) and matches the
+  shape CP6+ admin tooling will want — an admin INSERT into an org
+  the operator does not nominally "belong to" is exactly the kind
+  of operation operator tooling needs. If we later decide admin
+  writes need a stricter shape, the migration to tighten it is one
+  `DROP POLICY` + one `CREATE POLICY`.
+- **Hoisted the alembic fixture into `conftest.py` AND wrapped the
+  session factory in the same step.** The CP4 worklog suggested
+  hoisting the fixture in CP5; the RLS test forced the question of
+  *what shape* the hoisted fixture should yield. Yielding a raw
+  sessionmaker preserved the existing test API but pushed
+  `SET LOCAL ROLE llm_tracker_app` into every test body — a
+  cross-cutting "every session does this first" piece of setup that
+  belongs in the fixture, not the test. The async-context-manager
+  wrapper is six lines of conftest.py and keeps test bodies
+  focused on the assertion under test.
+- **Did not add a `conftest.py`-side per-org seeding helper.** That
+  shape was floated by CP4 §Decisions last bullet (and Suggestion
+  #6). After writing the RLS test it became clear that "create org
+  A and org B, return their IDs" is a single 5-line block inside
+  exactly one test — pushing it into the fixture would over-fit a
+  shared surface to a single caller. Per-test seeding stays in the
+  test file. The hoisted fixture's only cross-cutting concern is
+  the role drop, which every PG-touching test needs.
+- **Skip-cause refactor**: tests still carry `@pytest.mark.skipif(
+  not TEST_DB_URL, …)` decorators alongside the fixture-side
+  `pytest.skip()`. The decorator fires *before* fixture setup, which
+  means a developer on a machine without PG never sees the
+  `_run_alembic("upgrade")` subprocess attempt and never sees its
+  error output. Slightly redundant on paper, very useful in
+  practice.
+
 ### CP4
 
 - **Migration body iterates the four tables in a `for` loop**, not
@@ -806,6 +947,113 @@ So only CP9 and CP14 carry a Phase-3a flag, and it is a soft
   (`0017`, `0018`, `0019`, `0020`) exist in `docs/decisions/`;
   `docs/STATUS.md`, `docs/roadmap.md`, the signing-removal worklog,
   and the supabase-sink CP4 worklog all exist at the cited paths.
+
+### CP5
+
+Alembic offline-mode SQL gen against the CP5 revision (proves the
+DDL is well-formed and the role-creation + grant + enable/force +
+two-policy-per-table sequence lands as written):
+
+```
+$ LLMTRACK_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker_test \
+    .venv/bin/python3.12 -m alembic upgrade \
+      0004_org_id_on_user_data:0005_rls_policies --sql
+...
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'llm_tracker_app') THEN CREATE ROLE llm_tracker_app NOLOGIN; END IF; END $$;
+GRANT USAGE ON SCHEMA public TO llm_tracker_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON exchanges, events, tool_calls, audit_log, orgs, api_tokens TO llm_tracker_app;
+ALTER TABLE exchanges ENABLE ROW LEVEL SECURITY;
+ALTER TABLE exchanges FORCE ROW LEVEL SECURITY;
+CREATE POLICY exchanges_org_isolation ON exchanges AS PERMISSIVE FOR ALL TO PUBLIC USING (org_id = NULLIF(current_setting('app.org_id', true), '')::uuid) WITH CHECK (org_id = NULLIF(current_setting('app.org_id', true), '')::uuid);
+CREATE POLICY exchanges_admin_access ON exchanges AS PERMISSIVE FOR ALL TO PUBLIC USING (NULLIF(current_setting('app.role', true), '') = 'admin') WITH CHECK (NULLIF(current_setting('app.role', true), '') = 'admin');
+ALTER TABLE events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE events FORCE ROW LEVEL SECURITY;
+…  ( same pair of CREATE POLICY for events, tool_calls, audit_log )
+UPDATE alembic_version SET version_num='0005_rls_policies' WHERE alembic_version.version_num = '0004_org_id_on_user_data';
+COMMIT;
+```
+
+Live verification against the same PostgreSQL 15.17 container on
+`localhost:55432` reused from CP2/CP3/CP4. Targeted PG-only run
+(the new isolation test + the three CP2/CP3/CP4 PG smokes):
+
+```
+$ LLMTRACK_TEST_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker_test \
+    .venv/bin/python3.12 -m pytest \
+    packages/llm_tracker_server/tests/test_rls_two_org_isolation.py \
+    packages/llm_tracker_server/tests/test_storage_smoke.py \
+    packages/llm_tracker_server/tests/test_org_id_constraint.py \
+    packages/llm_tracker_server/tests/test_org_token_models.py -q
+..........                                                               [100%]
+10 passed in 11.98s
+```
+
+Full suite with the test URL set:
+
+```
+$ LLMTRACK_TEST_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker_test \
+    .venv/bin/python3.12 -m pytest -q
+...
+259 passed, 4 warnings in 19.50s
+```
+
+Full suite without the test URL (CI / no-PG developer machines):
+
+```
+$ .venv/bin/python3.12 -m pytest -q
+...
+249 passed, 10 skipped, 4 warnings in 7.77s
+```
+
+The 10 skips are 2 CP2 + 4 CP3 + 2 CP4 + 2 CP5 PG smokes — net +2
+on the skip total versus CP4, matching the new isolation file's two
+cases. 249 unconditional passes is unchanged from CP4, which
+confirms CP5 did not perturb the non-PG suite. The four warnings
+are the same pre-existing `fork()` deprecations from
+`cli/manage.py`.
+
+Ruff:
+
+```
+$ .venv/bin/python3.12 -m ruff check packages/llm_tracker_server
+All checks passed!
+$ .venv/bin/python3.12 -m ruff format --check packages/llm_tracker_server
+17 files already formatted
+```
+
+(The two new files needed one `ruff format` pass at write time; the
+recorded `--check` is post-format.)
+
+#### First-attempt failures (worth keeping)
+
+Two failures showed up before the CP5 code landed in its current
+shape; recording them so the next reader (or future-me debugging an
+analogous issue) sees the root cause and the chosen fix, not just
+the green test output:
+
+1. **`FORCE ROW LEVEL SECURITY` alone did not bind a superuser.**
+   First-attempt migration enabled and FORCEd RLS but did not
+   create the non-superuser app role. Tests ran as the
+   docker-default `POSTGRES_USER=cp2`, which is a superuser, and
+   Postgres superusers bypass RLS *regardless of FORCE*. Symptom:
+   `test_cross_org_write_rejected` produced
+   `Failed: DID NOT RAISE <class 'sqlalchemy.exc.ProgrammingError'>`
+   — the cross-org INSERT silently succeeded. Fix: the migration
+   now also creates `llm_tracker_app` (NOLOGIN, non-superuser) and
+   the `conftest.py` fixture wraps every session to issue
+   `SET LOCAL ROLE llm_tracker_app` on entry. Captured as Decision
+   §CP5 first bullet.
+2. **`current_setting('app.org_id', true)` returned `''`, not NULL,
+   on later transactions.** Once a custom GUC has been touched in
+   any earlier transaction (LOCAL or SESSION), Postgres treats the
+   parameter name as defined and returns `''` in subsequent
+   transactions where it is unset. Casting `''` to UUID raises
+   `invalid input syntax for type uuid`. Symptom:
+   `test_two_org_isolation` failed at the "no setting at all
+   → zero rows" step with that uuid-cast error. Fix:
+   `NULLIF(current_setting('app.org_id', true), '')::uuid` (and
+   the symmetric form for `app.role`). Captured as Decision §CP5
+   second bullet.
 
 ### CP4
 
@@ -1140,8 +1388,8 @@ the ASGI-transport test, so I skipped the live-port loop.
 
 ## What's left / known limits
 
-- **The plan is 14 checkpoints; it is not the implementation.** Next
-  session executes CP1.
+- **The plan is 14 checkpoints; it is not the implementation.** As
+  of CP5, 5 of 14 are committed; CP6 (auth middleware) is the next.
 - **Soft Phase-3a dependencies on #2 (consent + data handling)** at
   CP9 and CP14 only. Both flagged inline. Neither blocks the build
   from starting; both gate external exposure.
@@ -1162,38 +1410,41 @@ the ASGI-transport test, so I skipped the live-port loop.
 
 ## Handoff
 
-CP4 landed cleanly. Source `HEAD` is `2da7438`; the §5.3 finalize
+CP5 landed cleanly. Source `HEAD` is `0dec2f1`; the §5.3 finalize
 commit refreshing `docs/STATUS.md` + this worklog adds one more.
-The 14-checkpoint plan is **4/14 done**.
+The 14-checkpoint plan is **5/14 done**. Defense-in-depth on the
+four user-data tables is now complete end-to-end: CP4 owns the
+column half (`org_id NOT NULL REFERENCES orgs(id)`); CP5 owns the
+visibility half (RLS policies + `llm_tracker_app` role).
 
-**Next single step**: **CP5 — RLS policies + two-org isolation test
-(ADR-0018 enforcement).** Per the plan:
+**Next single step**: **CP6 — auth middleware (ADR-0020 Axis 1).**
+Per the plan:
 
-- New migration
-  `packages/llm_tracker_server/alembic/versions/0005_rls_policies.py`
-  enabling `ROW LEVEL SECURITY` on `exchanges`, `events`,
-  `tool_calls`, `audit_log`. Per-table policy derives the current
-  org from `current_setting('app.org_id', true)::uuid`. Operator/admin
-  role gets cross-org `SELECT` via an explicit policy branch (no
-  service-role bypass per ADR-0018 §Decision item 2). Document the
-  one-line `SET LOCAL app.org_id = '<uuid>'` invocation that CP6 will
-  add to every request's transaction.
-- New `tests/test_rls_two_org_isolation.py` — create orgs A and B;
-  as A, insert two exchanges; switch session `app.org_id` to B,
-  assert `SELECT` returns zero rows; switch back to A, assert two
-  rows. Skipif-without-`LLMTRACK_TEST_DATABASE_URL` pattern carries
-  over from CP2/CP3/CP4. This is the obvious trigger for the
-  `conftest.py` hoist flagged in CP4 §Decisions last bullet — the
-  fixture will gain per-org seeding here.
-- Still **no auth middleware** — that lands in CP6. CP5 plus CP4
-  together complete the defense-in-depth picture: column FK + NOT
-  NULL is the storage half; RLS predicate is the visibility half.
-- Watch for the `audit_log` append-only trigger interaction: the
-  CP5 policy must not preclude the `INSERT` path the trigger
-  guards. The PL/pgSQL function from `0002_audit_log_triggers`
-  fires on UPDATE/DELETE only, so RLS-on-INSERT remains the only
-  policy that needs to permit the write — but it's worth a manual
-  `psql` check before the test file is written.
+- FastAPI middleware that extracts `Authorization: Bearer <token>`,
+  hashes it (SHA-256 hex), looks up `api_tokens`, sets
+  `request.state.org_id`, and issues the CP5-shaped
+  `SET LOCAL ROLE llm_tracker_app` + `SET LOCAL app.org_id = '<uuid>'`
+  pair on the per-request transaction. 401 on missing/malformed
+  Authorization, 403 on unknown/revoked token.
+- New `llm-tracker-server tokens {issue,revoke,list}` Typer CLI;
+  `pyproject.toml` adds `typer` and declares the console script.
+- New `tests/test_auth_middleware.py` — three cases: missing
+  Authorization → 401; unknown token → 403; valid token →
+  `request.state.org_id` set and the downstream handler sees the
+  correct `app.org_id`. With CP5's wrapped `session_factory`
+  fixture in place, the test should be able to share the same
+  fixture surface; the CP6 middleware essentially does what the
+  wrapper does (role drop + GUC set), so the test can assert the
+  middleware's behaviour by reading `current_setting('app.org_id')`
+  from inside the handler under test.
+
+The CP5 invocation shape — `SET LOCAL ROLE llm_tracker_app;` then
+`SELECT set_config('app.org_id', :uuid, true)` — is the contract the
+middleware needs to match. Documented in
+`alembic/versions/0005_rls_policies.py`'s module docstring (§"Per-
+request invocation"). Don't introduce a service-role bypass; ADR-
+0018 §Decision item 2 + this worklog §Decisions §CP5 first bullet
+together close that door.
 
 For a future session reviving the dev loop:
 
@@ -1237,3 +1488,9 @@ verification surface and ought to be greppable in `git log` later.
    the third copy without hoisting (see CP4 §Decisions last bullet).
    CP5's per-org seeding gives the fixture a real reason to grow,
    which is the right shape to hoist into rather than a bare copy.
+   *Resolved in CP5.* `conftest.py` now owns `_run_alembic` and the
+   `session_factory` fixture, and additionally wraps the
+   sessionmaker so every session drops to `llm_tracker_app` via
+   `SET LOCAL ROLE`. Per-org seeding stayed in
+   `test_rls_two_org_isolation.py` for the reason captured in
+   §Decisions §CP5.

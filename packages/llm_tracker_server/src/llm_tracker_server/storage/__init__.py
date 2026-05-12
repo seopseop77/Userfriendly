@@ -1,4 +1,4 @@
-"""Storage layer: SQLAlchemy async engine + PostgreSQL models.
+"""Storage layer: SQLAlchemy async engine + PostgreSQL models + INSERT helpers.
 
 Schema is greenfield-server per Phase 3c plan: the four user-data tables
 (`exchanges`, `events`, `tool_calls`, `audit_log`) are ported one-to-one
@@ -11,12 +11,18 @@ on those same tables -- per-org policy keyed off
 `current_setting('app.org_id', true)` plus an admin policy branch
 keyed off `app.role`. CP6 wires the per-request session binding
 (`SET LOCAL ROLE llm_tracker_app` + `set_config('app.org_id', ...)`)
-in `auth.middleware.AuthMiddleware`; CP9 will route storage INSERTs
+in `auth.middleware.AuthMiddleware`. CP9 routes storage INSERTs
+(`record_exchange_timing`, `record_exchange_blocked`, `write_audit`)
 through that same request-scoped session so the RLS context applies
-to writes.
+to writes; ``org_id`` is set explicitly on every row (defense in depth).
 """
 
+from llm_tracker_server.storage.audit import write_audit
 from llm_tracker_server.storage.engine import make_engine, make_session_factory
+from llm_tracker_server.storage.exchanges import (
+    record_exchange_blocked,
+    record_exchange_timing,
+)
 from llm_tracker_server.storage.models import (
     ApiToken,
     AuditLog,
@@ -37,4 +43,7 @@ __all__ = [
     "ToolCall",
     "make_engine",
     "make_session_factory",
+    "record_exchange_blocked",
+    "record_exchange_timing",
+    "write_audit",
 ]

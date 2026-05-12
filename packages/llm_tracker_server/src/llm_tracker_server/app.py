@@ -30,6 +30,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from llm_tracker_server import __version__
+from llm_tracker_server.audit_context import session_bound_audit_writer
 from llm_tracker_server.auth import AuthMiddleware
 from llm_tracker_server.config import Settings
 from llm_tracker_server.egress_guard import EgressGuard
@@ -68,18 +69,25 @@ def create_app(
             if session_factory is not None:
                 upstream_client = httpx.AsyncClient(http2=False, timeout=None)
                 egress_client = httpx.AsyncClient(timeout=None)
-                # CP8 ships the EgressGuard + PluginHost with no-op
-                # audit writers. CP9 will swap the no-op for a
-                # request-scoped, org-tagged writer.
-                egress_guard = EgressGuard()
+                # CP9: the audit writer reads the per-request session
+                # + org_id from a contextvar bound by the forwarder's
+                # `bind_request_context` block, so audit rows land
+                # under the same RLS axis as the storage writes.
+                egress_guard = EgressGuard(audit_writer=session_bound_audit_writer)
                 plugin_host = PluginHost(
                     egress_guard=egress_guard,
                     http_client=egress_client,
+                    audit_writer=session_bound_audit_writer,
                 )
                 await plugin_host.on_init()
                 app.state.plugin_host = plugin_host
                 app.state.egress_guard = egress_guard
                 app.state.upstream_client = upstream_client
+                # CP9: forwarder's response generator opens a fresh
+                # session from here for post-stream writes (the auth
+                # middleware's session is committed before the body
+                # streams under BaseHTTPMiddleware ordering).
+                app.state.session_factory = session_factory
 
             log.info(
                 "server.startup",

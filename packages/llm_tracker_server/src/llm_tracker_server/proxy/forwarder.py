@@ -1,31 +1,44 @@
 """Server-side transparent HTTP forwarder + plugin-host hook lifecycle.
 
 CP7 brought up the credential pass-through surface; CP8 wraps that
-surface with the 8-hook plugin lifecycle ported from the local
-sidecar:
+surface with the 8-hook plugin lifecycle; CP9 wires the storage layer
+(ADR-0018 + ADR-0020):
 
-* :meth:`PluginHost.on_request_received` (before any upstream call)
-* :meth:`PluginHost.before_forward` (last chance to ``Block`` or
-  ``Transform`` the outbound headers/body)
-* :meth:`PluginHost.on_upstream_response_start` (after the upstream
-  responds, before any byte streams back to the client)
-* :meth:`PluginHost.on_response_chunk` (per chunk; ``Abort`` cuts
-  the stream)
-* :meth:`PluginHost.on_response_complete` (clean upstream EOF)
-* :meth:`PluginHost.on_persisted` (after storage layer wrote the
-  exchange row -- CP9 wires the storage write itself)
+* The per-request :class:`AsyncSession` opened by
+  :class:`~llm_tracker_server.auth.AuthMiddleware` (already bound to
+  ``app.org_id`` via ``SET LOCAL ROLE llm_tracker_app`` +
+  ``set_config('app.org_id', ...)``) is the session every *pre-stream*
+  storage INSERT runs against — so the CP5 RLS policy
+  ``<table>_org_isolation`` fires for the blocked-row writes too.
+* The ``Block`` short-circuit paths
+  (:meth:`PluginHost.on_request_received` / :meth:`before_forward`)
+  and the :meth:`on_upstream_response_start` ``Abort`` path each
+  persist an :class:`~llm_tracker_server.storage.Exchange` row tagged
+  with ``blocked_by = result.plugin`` + ``org_id`` *before* returning
+  the synthetic SSE block stream.
+* The happy path persists its row inside the response generator. The
+  generator opens a **fresh** :class:`AsyncSession` from
+  ``request.app.state.session_factory`` and rebinds
+  ``set_config('app.org_id', ...)`` on it before any write. Reusing
+  the middleware's session here is not viable: under
+  :class:`starlette.middleware.base.BaseHTTPMiddleware` the
+  middleware's terminal ``session.commit()`` runs *before* the outer
+  ASGI layer iterates the streamed body, so the request-scoped
+  session is closed by the time the generator's
+  ``record_exchange_timing`` would fire (see ADR-0017 worklog §D11 /
+  CP9 §"Decisions").
+* Every audit-emitting hook dispatched on this request reaches the
+  ``audit_log`` table through the request-scoped
+  :func:`bind_request_context` block (see :mod:`audit_context`). The
+  binding tracks whichever session is currently "live" for this phase
+  of the request — the middleware's session pre-stream, the
+  generator-owned session during streaming.
 
-``plugin_host`` is optional: when ``None`` the forwarder behaves
-exactly like CP7 (transparent pass-through, credential passthrough,
-strip-Authorization). Tests that don't need the hook lifecycle can
-keep the CP7 call shape.
-
-Persistence (``record_exchange_timing`` /
-``record_exchange_blocked``) is **not** wired in CP8. CP9 is the
-checkpoint that opens the per-request session and writes the
-``org_id``-tagged exchange row; until then the forwarder hands the
-plugin host the timing values via ``on_response_complete`` /
-``on_persisted`` but writes nothing itself.
+``plugin_host`` is optional and ``request.state`` may be missing the
+session/org_id keys when ``forward_request`` is called directly from a
+test without :class:`AuthMiddleware`: in that case the storage writes
++ audit binding are skipped silently and the forwarder behaves exactly
+like the CP7/CP8 transparent shape.
 """
 
 from __future__ import annotations
@@ -33,16 +46,23 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator
+from contextlib import AsyncExitStack, nullcontext
 
 import httpx
+import sqlalchemy as sa
 import structlog
 from fastapi.responses import StreamingResponse
 from llm_tracker_sdk import Abort, Block, Transform
 from starlette.requests import Request
 from ulid import ULID
 
+from llm_tracker_server.audit_context import bind_request_context
 from llm_tracker_server.plugin_host.host import PluginHost
 from llm_tracker_server.proxy.sse import block_response
+from llm_tracker_server.storage.exchanges import (
+    record_exchange_blocked,
+    record_exchange_timing,
+)
 
 from .credential import is_credential_header
 
@@ -92,8 +112,8 @@ async def _drain(queue: asyncio.Queue[bytes | None]) -> None:
 
     Phase-2 will replace this with the Extractor (parse SSE events
     into the structured ``events`` / ``tool_calls`` records). For
-    CP8 the queue exists so the plumbing is in place; the consumer
-    side is empty.
+    CP8/CP9 the queue exists so the plumbing is in place; the
+    consumer side is empty.
     """
     while await queue.get() is not None:
         pass
@@ -114,6 +134,12 @@ async def forward_request(
     the synthetic SSE block stream from :mod:`~.sse`. ``Transform``
     (only valid out of ``before_forward``) lets plugins replace
     headers or the body before the upstream request is built.
+
+    When ``request.state`` carries a ``session`` + ``org_id`` (set by
+    :class:`~llm_tracker_server.auth.AuthMiddleware`), the pre-stream
+    storage + audit writes use that session. The streaming generator
+    opens a fresh session bound to the same ``app.org_id`` axis for
+    post-completion writes — see the module docstring.
     """
     t0_mono = time.monotonic()
     t0_epoch_ms = int(time.time() * 1000)
@@ -124,101 +150,177 @@ async def forward_request(
     body = await request.body()
     headers = _outbound_headers(request.headers)
 
-    if plugin_host is not None:
-        plugin_host.begin_exchange(exchange_id, request_body=body)
+    # `AuthMiddleware` populates these; tests that exercise the
+    # forwarder directly skip the middleware and therefore the
+    # request-scoped storage + audit binding.
+    session = getattr(request.state, "session", None)
+    org_id = getattr(request.state, "org_id", None)
+    has_request_scope = session is not None and org_id is not None
+    # `session_factory` is plumbed onto `app.state` by `create_app` when
+    # a real session factory is wired. The streaming generator uses it
+    # to open a fresh post-stream session; pre-stream writes still use
+    # the auth middleware's session. Guarded via `.scope.get("app")`
+    # so unit tests that build a bare ``Request`` (no `app` in scope)
+    # keep working under the CP7/CP8 transparent shape.
+    state = getattr(request.scope.get("app"), "state", None)
+    session_factory = getattr(state, "session_factory", None)
+    outer_bind = bind_request_context(session, org_id) if has_request_scope else nullcontext()
 
-        result = await plugin_host.on_request_received(exchange_id)
-        if isinstance(result, Block):
-            # CP9 will record an `exchanges` row with `blocked_by =
-            # result.plugin` here. CP8 emits only the SSE response;
-            # the audit row for the block already lives in the hook
-            # dispatch path via the host's audit writer.
-            return block_response(result.reason, exchange_id, plugin_host)
+    with outer_bind:
+        if plugin_host is not None:
+            plugin_host.begin_exchange(exchange_id, request_body=body)
 
-    # The `forwarded_credential` boolean is the audit signal: it tells
-    # an operator whether the request carried an Anthropic credential
-    # at all, without ever materialising the value. The scrubber in
-    # `credential` is the safety net if a future call site goes wrong;
-    # this log call is intentionally already clean.
-    log.info(
-        "proxy.forward",
-        method=request.method,
-        path=path,
-        forwarded_credential=any(is_credential_header(k) for k in headers),
+            result = await plugin_host.on_request_received(exchange_id)
+            if isinstance(result, Block):
+                if has_request_scope:
+                    await record_exchange_blocked(
+                        session,
+                        exchange_id=exchange_id,
+                        org_id=org_id,
+                        endpoint=path,
+                        blocked_by=result.plugin,
+                        started_at_ms=t0_epoch_ms,
+                    )
+                return block_response(result.reason, exchange_id, plugin_host)
+
+        # The `forwarded_credential` boolean is the audit signal: it
+        # tells an operator whether the request carried an Anthropic
+        # credential at all, without ever materialising the value. The
+        # scrubber in `credential` is the safety net if a future call
+        # site goes wrong; this log call is intentionally already clean.
+        log.info(
+            "proxy.forward",
+            method=request.method,
+            path=path,
+            forwarded_credential=any(is_credential_header(k) for k in headers),
+        )
+
+        if plugin_host is not None:
+            result = await plugin_host.before_forward(exchange_id)
+            if isinstance(result, Block):
+                if has_request_scope:
+                    await record_exchange_blocked(
+                        session,
+                        exchange_id=exchange_id,
+                        org_id=org_id,
+                        endpoint=path,
+                        blocked_by=result.plugin,
+                        started_at_ms=t0_epoch_ms,
+                    )
+                return block_response(result.reason, exchange_id, plugin_host)
+            if isinstance(result, Transform):
+                # ADR-0011: merge plugin headers into the request,
+                # plugin wins on conflict. Body replace is whole-body
+                # when set.
+                if result.headers is not None:
+                    headers.update(result.headers)
+                if result.body is not None:
+                    body = result.body
+
+        url = f"{upstream_base.rstrip('/')}/{path.lstrip('/')}"
+        if query := request.url.query:
+            url = f"{url}?{query}"
+
+        upstream_req = http_client.build_request(request.method, url, headers=headers, content=body)
+        upstream = await http_client.send(upstream_req, stream=True)
+
+        if plugin_host is not None:
+            result = await plugin_host.on_upstream_response_start(exchange_id)
+            if isinstance(result, Abort):
+                await upstream.aclose()
+                if has_request_scope:
+                    await record_exchange_blocked(
+                        session,
+                        exchange_id=exchange_id,
+                        org_id=org_id,
+                        endpoint=path,
+                        blocked_by=result.plugin,
+                        started_at_ms=t0_epoch_ms,
+                    )
+                return block_response(result.reason, exchange_id, plugin_host)
+
+        internal: asyncio.Queue[bytes | None] = asyncio.Queue()
+        timing: dict[str, float] = {}
+
+    # Whether we'll open a fresh post-stream session. Skipped when there
+    # is no plugin_host (CP7 transparent shape) or no session factory
+    # (CP8 unit tests pass `plugin_host` with a captured audit writer
+    # and no DB).
+    has_post_stream_storage = (
+        has_request_scope and session_factory is not None and plugin_host is not None
     )
 
-    if plugin_host is not None:
-        result = await plugin_host.before_forward(exchange_id)
-        if isinstance(result, Block):
-            return block_response(result.reason, exchange_id, plugin_host)
-        if isinstance(result, Transform):
-            # ADR-0011: merge plugin headers into the request, plugin
-            # wins on conflict. Body replace is whole-body when set.
-            if result.headers is not None:
-                headers.update(result.headers)
-            if result.body is not None:
-                body = result.body
-
-    url = f"{upstream_base.rstrip('/')}/{path.lstrip('/')}"
-    if query := request.url.query:
-        url = f"{url}?{query}"
-
-    upstream_req = http_client.build_request(request.method, url, headers=headers, content=body)
-    upstream = await http_client.send(upstream_req, stream=True)
-
-    if plugin_host is not None:
-        result = await plugin_host.on_upstream_response_start(exchange_id)
-        if isinstance(result, Abort):
-            await upstream.aclose()
-            return block_response(result.reason, exchange_id, plugin_host)
-
-    internal: asyncio.Queue[bytes | None] = asyncio.Queue()
-    timing: dict[str, float] = {}
-
     async def generate() -> AsyncGenerator[bytes, None]:
-        # Outer try/finally guarantees `end_exchange` runs even when
-        # the post-completion plugin hooks raise. The inner
-        # try/finally still owns upstream/queue cleanup.
+        # `AsyncExitStack` keeps the generator readable in both the
+        # storage-wired and the storage-skipped shapes: in the former
+        # the stack enters the fresh-session async-CM + the audit
+        # context binding; in the latter the stack is empty and the
+        # body runs unchanged.
         try:
-            drain_task = asyncio.create_task(_drain(internal))
-            completed = False
-            first_byte = True
-            try:
-                # `async for ... else` runs the `else` only when the
-                # loop ended naturally -- a `break` (Abort on chunk)
-                # skips it. This is what gates the completion hooks
-                # below: a truncated stream is not a completed one.
-                async for chunk in upstream.aiter_bytes():
-                    if first_byte:
-                        timing["t1"] = time.monotonic()
-                    if plugin_host is not None:
-                        chunk_result = await plugin_host.on_response_chunk(exchange_id, chunk)
-                        if isinstance(chunk_result, Abort):
-                            break
-                    await internal.put(chunk)
-                    if first_byte:
-                        timing["t2"] = time.monotonic()
-                        first_byte = False
-                    yield chunk
-                else:
-                    completed = True
-            finally:
-                await internal.put(None)
-                await drain_task
-                await upstream.aclose()
+            async with AsyncExitStack() as stack:
+                fresh = None
+                if has_post_stream_storage:
+                    fresh = await stack.enter_async_context(session_factory())
+                    # Defensive: both knobs are idempotent if the
+                    # caller's session factory already wrapped them
+                    # (the test conftest does `SET LOCAL ROLE` itself).
+                    # In production the raw `async_sessionmaker` does
+                    # neither, so issuing them here is required.
+                    await fresh.execute(sa.text("SET LOCAL ROLE llm_tracker_app"))
+                    await fresh.execute(
+                        sa.text("SELECT set_config('app.org_id', :v, true)"),
+                        {"v": str(org_id)},
+                    )
+                    stack.enter_context(bind_request_context(fresh, org_id))
 
-            if completed and plugin_host is not None:
-                await plugin_host.on_response_complete(exchange_id)
-                # CP9 wires the actual `record_exchange_timing` call
-                # here (per-request session, org_id from
-                # `request.state.org_id`). The timing values are kept
-                # locally so the diff CP9 needs is minimal.
-                _ = (t0_mono, t0_epoch_ms, timing)
-                # design.md §6.3.2: on_persisted fires *after* the DB
-                # write so plugins can read the exchange row back.
-                # CP9 swaps the order so this hook fires only after
-                # the row has actually landed.
-                await plugin_host.on_persisted(exchange_id)
+                drain_task = asyncio.create_task(_drain(internal))
+                completed = False
+                first_byte = True
+                try:
+                    # `async for ... else` runs the `else` only when
+                    # the loop ended naturally -- a `break` (Abort on
+                    # chunk) skips it. This gates the completion hooks
+                    # below: a truncated stream is not a completed one.
+                    async for chunk in upstream.aiter_bytes():
+                        if first_byte:
+                            timing["t1"] = time.monotonic()
+                        if plugin_host is not None:
+                            chunk_result = await plugin_host.on_response_chunk(exchange_id, chunk)
+                            if isinstance(chunk_result, Abort):
+                                break
+                        await internal.put(chunk)
+                        if first_byte:
+                            timing["t2"] = time.monotonic()
+                            first_byte = False
+                        yield chunk
+                    else:
+                        completed = True
+                finally:
+                    await internal.put(None)
+                    await drain_task
+                    await upstream.aclose()
+
+                if completed and plugin_host is not None:
+                    await plugin_host.on_response_complete(exchange_id)
+                    if fresh is not None and "t1" in timing and "t2" in timing:
+                        t_up = t0_epoch_ms + int((timing["t1"] - t0_mono) * 1000)
+                        t_cli = t0_epoch_ms + int((timing["t2"] - t0_mono) * 1000)
+                        await record_exchange_timing(
+                            fresh,
+                            exchange_id=exchange_id,
+                            org_id=org_id,
+                            endpoint=path,
+                            t_request_received_ms=t0_epoch_ms,
+                            t_upstream_first_byte_ms=t_up,
+                            t_client_first_byte_ms=t_cli,
+                        )
+                    # design.md §6.3.2: on_persisted fires *after* the
+                    # DB write so plugins can read the exchange row
+                    # back.
+                    await plugin_host.on_persisted(exchange_id)
+
+                if fresh is not None:
+                    await fresh.commit()
         finally:
             if plugin_host is not None:
                 plugin_host.end_exchange(exchange_id)

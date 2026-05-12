@@ -7,60 +7,35 @@ defense-in-depth (RLS policies are the second half and land in CP5):
 - Inserting an `Exchange` with an `org_id` that does not exist in `orgs`
   -> FK violation.
 
-Skipped unless `LLMTRACK_TEST_DATABASE_URL` is set, mirroring the CP2/CP3
-fixture shape. The alembic upgrade/downgrade subprocess wrapper is
-copy-pasted again rather than hoisted into a shared `conftest.py` -- with
-this third copy the duplication is now at the point where a `conftest.py`
-hoist is the right next move (filed in CP3's Suggestion #6).
+After CP5 these inserts also hit RLS WITH CHECK. To keep the test
+focused on column-level enforcement (the CP4 concern), each insert
+runs under the `admin` policy branch -- `app.role = 'admin'` makes the
+WITH CHECK admit any `org_id`, leaving NOT NULL and FK as the only
+remaining gates. Admin's "policy branch, not service-role bypass"
+shape is precisely what ADR-0018 §"Enforcement" mandates; the test
+shape mirrors how operator tooling will look in CP6+.
+
+Skipped unless `LLMTRACK_TEST_DATABASE_URL` is set. The alembic
+upgrade/downgrade fixture lives in `conftest.py` (hoisted in CP5).
 """
 
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
 import time
 import uuid
-from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
-from llm_tracker_server.storage import (
-    Exchange,
-    make_engine,
-    make_session_factory,
-)
+from llm_tracker_server.storage import Exchange
 
 TEST_DB_URL = os.environ.get("LLMTRACK_TEST_DATABASE_URL", "")
 SKIP_REASON = "LLMTRACK_TEST_DATABASE_URL not set; PG smoke test skipped"
 
-SERVER_ROOT = Path(__file__).resolve().parents[1]
 
-
-def _run_alembic(direction: str) -> None:
-    env = os.environ.copy()
-    env["LLMTRACK_DATABASE_URL"] = TEST_DB_URL
-    target = "head" if direction == "upgrade" else "base"
-    subprocess.run(
-        [sys.executable, "-m", "alembic", direction, target],
-        cwd=SERVER_ROOT,
-        env=env,
-        check=True,
-    )
-
-
-@pytest.fixture
-async def session_factory():
-    if not TEST_DB_URL:
-        pytest.skip(SKIP_REASON)
-    _run_alembic("upgrade")
-    engine = make_engine(TEST_DB_URL)
-    factory = make_session_factory(engine)
-    try:
-        yield factory
-    finally:
-        await engine.dispose()
-        _run_alembic("downgrade")
+async def _assume_admin(session) -> None:
+    """Bypass RLS via the explicit admin policy branch (ADR-0018 §Enforcement)."""
+    await session.execute(sa.text("SELECT set_config('app.role', 'admin', true)"))
 
 
 @pytest.mark.skipif(not TEST_DB_URL, reason=SKIP_REASON)
@@ -70,6 +45,7 @@ async def test_exchange_without_org_id_rejected(session_factory) -> None:
     now_ms = int(time.time() * 1000)
 
     async with session_factory() as session:
+        await _assume_admin(session)
         session.add(
             Exchange(
                 id=row_id,
@@ -93,6 +69,7 @@ async def test_exchange_with_unknown_org_id_rejected(session_factory) -> None:
     bogus_org_id = uuid.uuid4()
 
     async with session_factory() as session:
+        await _assume_admin(session)
         session.add(
             Exchange(
                 id=row_id,

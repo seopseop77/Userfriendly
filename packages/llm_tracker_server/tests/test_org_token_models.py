@@ -9,60 +9,28 @@ Pins the ADR-0018 / ADR-0020 substrate:
   rejected; `ON DELETE CASCADE` removes tokens when their org is dropped.
 
 Skipped unless `LLMTRACK_TEST_DATABASE_URL` is set, so the wider suite
-stays green on machines without a local PostgreSQL. Mirrors the
-`test_storage_smoke.py` fixture shape: alembic upgrade/downgrade is
-invoked via subprocess so the async engine doesn't fight alembic's own
-event loop.
+stays green on machines without a local PostgreSQL. CP5 hoisted the
+alembic upgrade/downgrade fixture into `conftest.py`; this file used
+to carry its own copy.
+
+`orgs` and `api_tokens` carry no RLS (ADR-0018 §"Enforcement" --
+"every user-data table"); they are the tenancy substrate, not user
+data. So unlike the four user-data tables, these tests do not set
+`app.org_id`.
 """
 
 from __future__ import annotations
 
 import hashlib
 import os
-import subprocess
-import sys
 import uuid
-from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
-from llm_tracker_server.storage import (
-    ApiToken,
-    Org,
-    make_engine,
-    make_session_factory,
-)
+from llm_tracker_server.storage import ApiToken, Org
 
 TEST_DB_URL = os.environ.get("LLMTRACK_TEST_DATABASE_URL", "")
 SKIP_REASON = "LLMTRACK_TEST_DATABASE_URL not set; PG smoke test skipped"
-
-SERVER_ROOT = Path(__file__).resolve().parents[1]
-
-
-def _run_alembic(direction: str) -> None:
-    env = os.environ.copy()
-    env["LLMTRACK_DATABASE_URL"] = TEST_DB_URL
-    target = "head" if direction == "upgrade" else "base"
-    subprocess.run(
-        [sys.executable, "-m", "alembic", direction, target],
-        cwd=SERVER_ROOT,
-        env=env,
-        check=True,
-    )
-
-
-@pytest.fixture
-async def session_factory():
-    if not TEST_DB_URL:
-        pytest.skip(SKIP_REASON)
-    _run_alembic("upgrade")
-    engine = make_engine(TEST_DB_URL)
-    factory = make_session_factory(engine)
-    try:
-        yield factory
-    finally:
-        await engine.dispose()
-        _run_alembic("downgrade")
 
 
 @pytest.mark.skipif(not TEST_DB_URL, reason=SKIP_REASON)

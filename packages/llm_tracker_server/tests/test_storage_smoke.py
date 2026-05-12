@@ -5,63 +5,42 @@ PostgreSQL instance. Skipped when `LLMTRACK_TEST_DATABASE_URL` is not
 set so the wider suite stays green on developer machines without a
 local PG and on CI without a Postgres service.
 
+After CP5 the four user-data tables run under RLS (`exchanges`,
+`events`, `tool_calls`, `audit_log`). Every INSERT/SELECT into those
+tables here sets `app.org_id` first so the per-org policy admits the
+write -- the same shape CP6's auth middleware will issue in
+production.
+
 To run locally:
 
     LLMTRACK_TEST_DATABASE_URL=postgresql+asyncpg://localhost:5432/llm_tracker_test \\
       .venv/bin/python3.12 -m pytest \\
       packages/llm_tracker_server/tests/test_storage_smoke.py -q
+
+The alembic upgrade/downgrade fixture lives in `conftest.py` (hoisted
+in CP5).
 """
 
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
 import time
 import uuid
-from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
-from llm_tracker_server.storage import (
-    AuditLog,
-    Exchange,
-    Org,
-    make_engine,
-    make_session_factory,
-)
+from llm_tracker_server.storage import AuditLog, Exchange, Org
 
 TEST_DB_URL = os.environ.get("LLMTRACK_TEST_DATABASE_URL", "")
 SKIP_REASON = "LLMTRACK_TEST_DATABASE_URL not set; PG smoke test skipped"
 
-SERVER_ROOT = Path(__file__).resolve().parents[1]
 
-
-def _run_alembic(direction: str) -> None:
-    """Run `alembic upgrade head` / `downgrade base` against the test DB."""
-    env = os.environ.copy()
-    env["LLMTRACK_DATABASE_URL"] = TEST_DB_URL
-    target = "head" if direction == "upgrade" else "base"
-    subprocess.run(
-        [sys.executable, "-m", "alembic", direction, target],
-        cwd=SERVER_ROOT,
-        env=env,
-        check=True,
+async def _bind_org(session, org_id) -> None:
+    """Issue the per-request `SET LOCAL app.org_id` that CP6 will issue."""
+    await session.execute(
+        sa.text("SELECT set_config('app.org_id', :v, true)"),
+        {"v": str(org_id)},
     )
-
-
-@pytest.fixture
-async def session_factory():
-    if not TEST_DB_URL:
-        pytest.skip(SKIP_REASON)
-    _run_alembic("upgrade")
-    engine = make_engine(TEST_DB_URL)
-    factory = make_session_factory(engine)
-    try:
-        yield factory
-    finally:
-        await engine.dispose()
-        _run_alembic("downgrade")
 
 
 @pytest.mark.skipif(not TEST_DB_URL, reason=SKIP_REASON)
@@ -75,6 +54,7 @@ async def test_exchange_round_trip(session_factory) -> None:
         session.add(org)
         await session.flush()
         org_id = org.id
+        await _bind_org(session, org_id)
         session.add(
             Exchange(
                 id=row_id,
@@ -90,6 +70,7 @@ async def test_exchange_round_trip(session_factory) -> None:
         await session.commit()
 
     async with session_factory() as session:
+        await _bind_org(session, org_id)
         result = await session.execute(sa.select(Exchange).where(Exchange.id == row_id))
         row = result.scalar_one()
         assert row.session_id == "smoke-session"
@@ -110,6 +91,7 @@ async def test_audit_log_append_only(session_factory) -> None:
         session.add(org)
         await session.flush()
         org_id = org.id
+        await _bind_org(session, org_id)
         session.add(
             AuditLog(
                 id=row_id,
@@ -122,6 +104,7 @@ async def test_audit_log_append_only(session_factory) -> None:
         await session.commit()
 
     async with session_factory() as session:
+        await _bind_org(session, org_id)
         with pytest.raises(Exception, match="append-only"):
             await session.execute(
                 sa.update(AuditLog).where(AuditLog.id == row_id).values(outcome="tampered")
@@ -129,6 +112,7 @@ async def test_audit_log_append_only(session_factory) -> None:
             await session.commit()
 
     async with session_factory() as session:
+        await _bind_org(session, org_id)
         with pytest.raises(Exception, match="append-only"):
             await session.execute(sa.delete(AuditLog).where(AuditLog.id == row_id))
             await session.commit()

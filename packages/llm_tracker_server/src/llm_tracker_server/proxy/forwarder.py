@@ -1,25 +1,48 @@
-"""Server-side transparent HTTP forwarder (CP7).
+"""Server-side transparent HTTP forwarder + plugin-host hook lifecycle.
 
-Forwards inbound requests to ``api.anthropic.com`` carrying the
-Anthropic credential header (``x-api-key`` / ``anthropic-api-key``)
-through unchanged. The llm-tracker bearer (``Authorization``) is
-consumed by ``AuthMiddleware`` upstream and is **never** forwarded --
-Anthropic would either reject it or, worse, log it.
+CP7 brought up the credential pass-through surface; CP8 wraps that
+surface with the 8-hook plugin lifecycle ported from the local
+sidecar:
 
-CP8 will replace this thin shim with the full proxy port (plugin host,
-SSE Tee, hook lifecycle, block-response synthesis). CP7's only job is
-the credential passthrough surface plus a structured ``proxy.forward``
-log entry whose payload the scrubber in ``credential`` keeps clean.
+* :meth:`PluginHost.on_request_received` (before any upstream call)
+* :meth:`PluginHost.before_forward` (last chance to ``Block`` or
+  ``Transform`` the outbound headers/body)
+* :meth:`PluginHost.on_upstream_response_start` (after the upstream
+  responds, before any byte streams back to the client)
+* :meth:`PluginHost.on_response_chunk` (per chunk; ``Abort`` cuts
+  the stream)
+* :meth:`PluginHost.on_response_complete` (clean upstream EOF)
+* :meth:`PluginHost.on_persisted` (after storage layer wrote the
+  exchange row -- CP9 wires the storage write itself)
+
+``plugin_host`` is optional: when ``None`` the forwarder behaves
+exactly like CP7 (transparent pass-through, credential passthrough,
+strip-Authorization). Tests that don't need the hook lifecycle can
+keep the CP7 call shape.
+
+Persistence (``record_exchange_timing`` /
+``record_exchange_blocked``) is **not** wired in CP8. CP9 is the
+checkpoint that opens the per-request session and writes the
+``org_id``-tagged exchange row; until then the forwarder hands the
+plugin host the timing values via ``on_response_complete`` /
+``on_persisted`` but writes nothing itself.
 """
 
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import AsyncGenerator
 
 import httpx
 import structlog
 from fastapi.responses import StreamingResponse
+from llm_tracker_sdk import Abort, Block, Transform
 from starlette.requests import Request
+from ulid import ULID
+
+from llm_tracker_server.plugin_host.host import PluginHost
+from llm_tracker_server.proxy.sse import block_response
 
 from .credential import is_credential_header
 
@@ -40,8 +63,8 @@ _HOP_BY_HOP: frozenset[str] = frozenset(
 )
 
 # Headers the server consumes locally and must NOT pass through. The
-# llm-tracker bearer is the only one today; CP8/CP9 may add more (e.g.
-# a future `X-LLMTracker-*` family).
+# llm-tracker bearer is the only one today; CP9+ may add more (e.g. a
+# future `X-LLMTracker-*` family).
 _LOCAL_ONLY: frozenset[str] = frozenset({"authorization"})
 
 # Response headers httpx will regenerate or that would confuse a
@@ -64,16 +87,53 @@ def _outbound_headers(headers: httpx.Headers | dict[str, str]) -> dict[str, str]
     return out
 
 
+async def _drain(queue: asyncio.Queue[bytes | None]) -> None:
+    """No-op consumer for the internal tee queue.
+
+    Phase-2 will replace this with the Extractor (parse SSE events
+    into the structured ``events`` / ``tool_calls`` records). For
+    CP8 the queue exists so the plumbing is in place; the consumer
+    side is empty.
+    """
+    while await queue.get() is not None:
+        pass
+
+
 async def forward_request(
     request: Request,
     path: str,
     *,
     http_client: httpx.AsyncClient,
     upstream_base: str = UPSTREAM_BASE,
+    plugin_host: PluginHost | None = None,
 ) -> StreamingResponse:
-    """Forward a Starlette request to Anthropic, streaming the response back."""
+    """Forward a Starlette request to Anthropic, streaming the response back.
+
+    When ``plugin_host`` is provided, the full 8-hook lifecycle runs
+    around the upstream call; ``Block`` / ``Abort`` short-circuit to
+    the synthetic SSE block stream from :mod:`~.sse`. ``Transform``
+    (only valid out of ``before_forward``) lets plugins replace
+    headers or the body before the upstream request is built.
+    """
+    t0_mono = time.monotonic()
+    t0_epoch_ms = int(time.time() * 1000)
+    exchange_id = str(ULID())
+
+    # Read the request body once, up-front, so plugins running in
+    # `on_request_received` can see it through `HookContext.request_text()`.
     body = await request.body()
     headers = _outbound_headers(request.headers)
+
+    if plugin_host is not None:
+        plugin_host.begin_exchange(exchange_id, request_body=body)
+
+        result = await plugin_host.on_request_received(exchange_id)
+        if isinstance(result, Block):
+            # CP9 will record an `exchanges` row with `blocked_by =
+            # result.plugin` here. CP8 emits only the SSE response;
+            # the audit row for the block already lives in the hook
+            # dispatch path via the host's audit writer.
+            return block_response(result.reason, exchange_id, plugin_host)
 
     # The `forwarded_credential` boolean is the audit signal: it tells
     # an operator whether the request carried an Anthropic credential
@@ -87,6 +147,18 @@ async def forward_request(
         forwarded_credential=any(is_credential_header(k) for k in headers),
     )
 
+    if plugin_host is not None:
+        result = await plugin_host.before_forward(exchange_id)
+        if isinstance(result, Block):
+            return block_response(result.reason, exchange_id, plugin_host)
+        if isinstance(result, Transform):
+            # ADR-0011: merge plugin headers into the request, plugin
+            # wins on conflict. Body replace is whole-body when set.
+            if result.headers is not None:
+                headers.update(result.headers)
+            if result.body is not None:
+                body = result.body
+
     url = f"{upstream_base.rstrip('/')}/{path.lstrip('/')}"
     if query := request.url.query:
         url = f"{url}?{query}"
@@ -94,12 +166,62 @@ async def forward_request(
     upstream_req = http_client.build_request(request.method, url, headers=headers, content=body)
     upstream = await http_client.send(upstream_req, stream=True)
 
-    async def generate() -> AsyncGenerator[bytes, None]:
-        try:
-            async for chunk in upstream.aiter_bytes():
-                yield chunk
-        finally:
+    if plugin_host is not None:
+        result = await plugin_host.on_upstream_response_start(exchange_id)
+        if isinstance(result, Abort):
             await upstream.aclose()
+            return block_response(result.reason, exchange_id, plugin_host)
+
+    internal: asyncio.Queue[bytes | None] = asyncio.Queue()
+    timing: dict[str, float] = {}
+
+    async def generate() -> AsyncGenerator[bytes, None]:
+        # Outer try/finally guarantees `end_exchange` runs even when
+        # the post-completion plugin hooks raise. The inner
+        # try/finally still owns upstream/queue cleanup.
+        try:
+            drain_task = asyncio.create_task(_drain(internal))
+            completed = False
+            first_byte = True
+            try:
+                # `async for ... else` runs the `else` only when the
+                # loop ended naturally -- a `break` (Abort on chunk)
+                # skips it. This is what gates the completion hooks
+                # below: a truncated stream is not a completed one.
+                async for chunk in upstream.aiter_bytes():
+                    if first_byte:
+                        timing["t1"] = time.monotonic()
+                    if plugin_host is not None:
+                        chunk_result = await plugin_host.on_response_chunk(exchange_id, chunk)
+                        if isinstance(chunk_result, Abort):
+                            break
+                    await internal.put(chunk)
+                    if first_byte:
+                        timing["t2"] = time.monotonic()
+                        first_byte = False
+                    yield chunk
+                else:
+                    completed = True
+            finally:
+                await internal.put(None)
+                await drain_task
+                await upstream.aclose()
+
+            if completed and plugin_host is not None:
+                await plugin_host.on_response_complete(exchange_id)
+                # CP9 wires the actual `record_exchange_timing` call
+                # here (per-request session, org_id from
+                # `request.state.org_id`). The timing values are kept
+                # locally so the diff CP9 needs is minimal.
+                _ = (t0_mono, t0_epoch_ms, timing)
+                # design.md §6.3.2: on_persisted fires *after* the DB
+                # write so plugins can read the exchange row back.
+                # CP9 swaps the order so this hook fires only after
+                # the row has actually landed.
+                await plugin_host.on_persisted(exchange_id)
+        finally:
+            if plugin_host is not None:
+                plugin_host.end_exchange(exchange_id)
 
     response_headers = {
         k: v for k, v in upstream.headers.items() if k.lower() not in _RESPONSE_HOP_BY_HOP

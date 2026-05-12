@@ -1,0 +1,63 @@
+# Keep the Docker build context small. The image only needs
+# packages/llm_tracker_sdk + packages/llm_tracker_server.
+
+# VCS / docker meta
+.git
+.gitignore
+.gitattributes
+.dockerignore
+Dockerfile
+
+# Docs (the image runs a server; docs are repo-only)
+docs/
+README.md
+CLAUDE.md
+
+# Python build / cache artefacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment files (must never enter the image)
+.env
+.env.*
+!.env.example
+
+# Editor + OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Runtime / local state
+var/
+logs/
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+
+# OMC / Claude Code working state
+.omc/
+.claude/
+.mcp.json
+
+# Workspace packages the server does not need at runtime
+packages/llm_tracker/
+packages/llm_tracker_plugin_hello_world/
+packages/llm_tracker_plugin_keyword_block/
+packages/llm_tracker_plugin_supabase_sink/
+packages/llm_tracker_plugin_token_counter/
+
+# Tests are not shipped in the image
+packages/llm_tracker_sdk/tests/
+packages/llm_tracker_server/tests/

@@ -44,6 +44,86 @@ The plan must:
 - Refreshed `docs/STATUS.md` to point at this worklog and set
   "Next single step" to CP1 (commit `f866cb8`).
 
+### CP6 — Auth middleware + tokens CLI (2026-05-12, commit `1c0835a`)
+
+- New `packages/llm_tracker_server/src/llm_tracker_server/auth/`
+  package with three modules:
+  - `tokens.py` — pure helpers. `hash_token(plaintext) -> sha256 hex`
+    is the only hashing primitive used by both the middleware lookup
+    path and the CLI issuance path. `generate_plaintext()` mints
+    `lts_` + `secrets.token_urlsafe(32)`. `lookup(session, plaintext)`
+    returns an `ApiToken` row or `None`, filtered by
+    `revoked_at IS NULL` so an active and revoked status look the
+    same to callers. `issue(session, *, org_name, token_name=None)`
+    returns `(plaintext, org_id, token_hash)` and creates the `Org`
+    on demand. `revoke(session, *, token_hash)` is rowcount-based and
+    idempotent-safe (re-revoke returns `False`). `list_for_org` joins
+    `api_tokens` + `orgs` for the CLI.
+  - `middleware.py` — `AuthMiddleware(BaseHTTPMiddleware)`. Bypasses
+    `/healthz` (configurable; defaults to `{"/healthz"}`); parses
+    `Authorization: Bearer <token>` returning 401 on missing or
+    malformed scheme; hashes the plaintext, opens a request-scoped
+    session, issues `SET LOCAL ROLE llm_tracker_app` then `SELECT
+    set_config('app.org_id', '<uuid>', true)`, and attaches
+    `request.state.org_id` + `request.state.session` for downstream
+    handlers. On `lookup` miss returns 403 with the "unknown or
+    revoked token" message (statuses conflated so the response
+    cannot probe revocation state). Commits the session after the
+    downstream handler returns.
+  - `__init__.py` — re-exports the helpers + the middleware class
+    for the rest of the package.
+- New `packages/llm_tracker_server/src/llm_tracker_server/cli/` with
+  a Typer entry point:
+  - `main.py` declares `app = typer.Typer(...)` with a `tokens`
+    subtree of `issue`, `revoke`, `list`. `_session_scope()` is a
+    shared async context manager that loads `.env`, reads
+    `LLMTRACK_DATABASE_URL`, builds an engine + factory, yields a
+    session, and disposes the engine on exit. `tokens issue` prints
+    `org_id=`, `token_hash=`, `token=` on stdout and a "store this
+    token now — it cannot be recovered" hint on stderr; the
+    plaintext is shown only on a successful commit.
+  - `__init__.py` is a docstring-only file. Re-exporting `app` from
+    `.main` would trigger a `runpy` warning under
+    `python -m llm_tracker_server.cli.main`; the production console
+    script targets `llm_tracker_server.cli.main:app` directly, so the
+    re-export gains nothing.
+- `packages/llm_tracker_server/pyproject.toml` — added `typer` to
+  `[project] dependencies` and declared the console script
+  `llm-tracker-server = "llm_tracker_server.cli.main:app"` under a
+  new `[project.scripts]` table.
+- `packages/llm_tracker_server/src/llm_tracker_server/app.py` —
+  `create_app` now takes an optional `session_factory` parameter. If
+  one is passed, it is used as-is (the test path injects the CP5
+  `conftest.py` factory). If `session_factory is None` *and*
+  `settings.database_url` is set, the factory wires `make_engine` +
+  `make_session_factory` and disposes the engine on lifespan exit.
+  If a factory is available (either path), the factory registers
+  `AuthMiddleware` and a small `/admin/whoami` route that returns
+  `{"org_id": str(request.state.org_id), "app_org_id_setting":
+  current_setting('app.org_id', true)}` (read off
+  `request.state.session`). With no DB URL and no injected factory,
+  the app boots `/healthz`-only, preserving the CP1 contract.
+- `packages/llm_tracker_server/src/llm_tracker_server/storage/__init__.py`
+  and `.../storage/models.py` docstrings updated to point at CP6
+  landing the per-request `SET LOCAL ROLE` + `app.org_id` binding
+  (was previously deferred to CP6/CP9; CP9 still owns routing
+  storage INSERTs through the same session).
+- New `packages/llm_tracker_server/tests/test_auth_middleware.py`
+  pins five HTTP cases against a real PostgreSQL:
+  - `test_missing_authorization_returns_401` — no Bearer →
+    401 before any DB lookup.
+  - `test_unknown_token_returns_403` — a freshly generated
+    plaintext (never persisted) → 403.
+  - `test_valid_token_binds_org_axis` — seed an `Org` + `ApiToken`,
+    hit `/admin/whoami` with the plaintext Bearer, assert 200 and
+    that both `org_id` and `app_org_id_setting` in the JSON match
+    `str(uuid.UUID(<assigned id>))`.
+  - `test_healthz_is_public` — `/healthz` returns 200 with no
+    Authorization even when auth is wired.
+  - `test_revoked_token_returns_403` — seed a token with
+    `revoked_at = now()`, assert 403 with the same shape as the
+    unknown-token case.
+
 ### CP5 — RLS policies + `llm_tracker_app` role (2026-05-12, commit `0dec2f1`)
 
 - New migration
@@ -665,6 +745,75 @@ So only CP9 and CP14 carry a Phase-3a flag, and it is a soft
   appear) will run under a session that asserts `app.role = 'admin'`
   alongside `app.org_id`.
 
+### CP6
+
+- **`create_app` takes an injectable `session_factory`.** The
+  alternative — letting `create_app` always build the factory from
+  `Settings().database_url` — would have forced the test to either
+  (a) point the in-process factory at the same docker PG the
+  conftest fixture is using, with no way to share the
+  fixture's per-test alembic upgrade/downgrade cycle, or (b) ship a
+  mock factory and skip the SQL path entirely, which would have
+  removed the assertion that `current_setting('app.org_id', true)`
+  actually round-trips. Injection lets the test reuse the CP5
+  hoisted `session_factory` directly; production still defaults to
+  `make_session_factory(make_engine(database_url))` when no factory
+  is provided. The shape also keeps the CP1 boot contract: with no
+  DB URL and no injected factory, `create_app()` still returns a
+  `/healthz`-only app, so `python -c "from llm_tracker_server.app
+  import app"` still works on a fresh checkout.
+- **Conflated "unknown token" and "revoked token" into one 403.**
+  The middleware returns the same `{"detail": "unknown or revoked
+  token"}` body in both cases. Distinguishing them at the response
+  surface would let an unauthenticated caller probe whether a given
+  plaintext was ever issued (and is now revoked) vs never seen at
+  all — a low-grade enumeration vector against the token namespace.
+  Internally `lookup` filters on `revoked_at IS NULL` directly,
+  which is the single source of truth for "is this token currently
+  valid?"; revocation is one UPDATE rather than a DELETE so the row
+  remains auditable.
+- **SHA-256 hex, not a slower KDF.** ADR-0020 §"Token issuance"
+  pins the hash primitive to SHA-256. The plaintext is high-entropy
+  (32 bytes from `secrets.token_urlsafe`, ~256 bits), so brute-force
+  recovery from a DB dump is computationally infeasible at SHA-256
+  speed; spending bcrypt/argon2 CPU per request would buy nothing
+  against this threat model and would slow every authenticated
+  request. The hash function is centralised in `auth.tokens.hash_token`
+  so a future migration to a slower KDF is one diff (and matches
+  the contract `api_tokens.token_hash TEXT PRIMARY KEY` ADR-0018
+  pinned in CP3).
+- **`SET LOCAL ROLE` on every request even though `conftest.py`
+  already wraps the test factory with the same statement.** The
+  middleware is the authority for production; the conftest wrapper
+  only exists to make the docker-default `cp2` superuser look like
+  the production `llm_tracker_app` role for tests. Running the
+  statement twice in a row inside the same transaction is a no-op
+  (`SET LOCAL` is idempotent within its transaction scope), so the
+  duplicate is harmless. The alternative — letting the middleware
+  rely on something the test fixture does — would mean the
+  production code path silently depends on a test-only invariant.
+- **`request.state.session` exposed as the per-request session.**
+  The plan only required `request.state.org_id`. Adding the session
+  attribute is what lets the `/admin/whoami` handler read
+  `current_setting('app.org_id', true)` off the same session the
+  middleware bound — which is the assertion the test relies on to
+  prove the GUC actually applies to downstream handlers. CP9 will
+  formalise this attribute as the storage entry point; the contract
+  the middleware writes here matches the one CP9 will read.
+- **`/admin/whoami` route lives in `app.py`, not in a dedicated
+  admin router module.** It is currently the only admin route and
+  splitting it off would add a `routes/` package whose only job is
+  to host one three-line endpoint. CP10's `/admin/plugins`
+  introspection (and any other admin routes) will be the right
+  point to hoist a shared router; CP6's surface is too thin to
+  warrant the structure.
+- **`lts_` plaintext prefix.** Purely a self-documenting tag for
+  operators reading logs of revocation requests ("this looks like an
+  `llm-tracker-server` token, not a Stripe key"). The middleware
+  keys on the SHA-256 hash, not the prefix, so a future format
+  change does not break anything; existing tokens stay valid until
+  they are revoked or rotated.
+
 ### CP5
 
 - **Created `llm_tracker_app` as a non-superuser role inside the
@@ -947,6 +1096,95 @@ So only CP9 and CP14 carry a Phase-3a flag, and it is a soft
   (`0017`, `0018`, `0019`, `0020`) exist in `docs/decisions/`;
   `docs/STATUS.md`, `docs/roadmap.md`, the signing-removal worklog,
   and the supabase-sink CP4 worklog all exist at the cited paths.
+
+### CP6
+
+Live PostgreSQL 15.17 container on `localhost:55432`, reused from
+CP2–CP5. Targeted run of the new auth-middleware test file:
+
+```
+$ LLMTRACK_TEST_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker_test \
+    .venv/bin/python3.12 -m pytest \
+    packages/llm_tracker_server/tests/test_auth_middleware.py -q
+.....                                                                    [100%]
+5 passed in 5.79s
+```
+
+Full suite with the test URL set (the 5 new CP6 cases land on top
+of CP5's 10 PG smokes):
+
+```
+$ LLMTRACK_TEST_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker_test \
+    .venv/bin/python3.12 -m pytest -q
+...
+264 passed, 4 warnings in 23.84s
+```
+
+Full suite without the test URL (CI / no-PG developer machines):
+
+```
+$ .venv/bin/python3.12 -m pytest -q
+...
+249 passed, 15 skipped, 4 warnings in 7.48s
+```
+
+The 15 skips are 2 CP2 + 4 CP3 + 2 CP4 + 2 CP5 + 5 CP6 PG smokes
+— net +5 on the skip total vs. CP5, matching the new
+`test_auth_middleware.py` file's five cases. 249 unconditional
+passes is unchanged from CP5, confirming CP6 did not perturb the
+non-PG suite. The four warnings are the same pre-existing `fork()`
+deprecations from `cli/manage.py`.
+
+Ruff:
+
+```
+$ .venv/bin/python3.12 -m ruff check packages/llm_tracker_server
+All checks passed!
+$ .venv/bin/python3.12 -m ruff format packages/llm_tracker_server
+25 files left unchanged
+```
+
+(One file — `cli/main.py` — needed one `ruff format` pass at write
+time; the recorded check is post-format. One `RUF022` `__all__`
+not-sorted nit on `auth/__init__.py` auto-fixed with
+`ruff check --fix`.)
+
+App-import smoke (CP1 boot contract still intact with no DB URL):
+
+```
+$ .venv/bin/python3.12 -c "from llm_tracker_server.app import app; print(app)"
+<fastapi.applications.FastAPI object at 0x...>
+```
+
+CLI end-to-end smoke against the docker PG (after `alembic upgrade
+head`):
+
+```
+$ LLMTRACK_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker_test \
+    .venv/bin/python3.12 -m llm_tracker_server.cli.main tokens issue --org demo
+org_id=e9481e70-e182-4974-b768-ed204ec83b45
+token_hash=985ed80d34d85e903d22837782de66e82adf4e2b35550393eda1cb3e6fef79e6
+token=lts_5pEmSRI1eh-k3nwlt7cAPgVMMagJtJVH73krLRcg6Zo
+Store this token now -- it cannot be recovered.
+
+$ ... tokens list --org demo
+985ed80d34d8...  org=demo  name=-  status=active
+
+$ ... tokens revoke --hash 985ed80d34d85e903d22837782de66e82adf4e2b35550393eda1cb3e6fef79e6
+revoked
+```
+
+DB was downgraded to base after the smoke so the next run starts
+clean.
+
+The plan's CP6 verification line also lists a `curl
+http://localhost:8080/admin/whoami` round-trip against a live
+uvicorn process. The pytest `test_valid_token_binds_org_axis` case
+exercises the exact same code path through `httpx.ASGITransport`
+(routes, middleware, session binding, handler), so the live-port
+loop would have duplicated the test rather than added coverage. The
+manual `curl` is therefore deferred to the CP14 end-to-end smoke
+which will run uvicorn against the staged Supabase URL anyway.
 
 ### CP5
 
@@ -1389,7 +1627,8 @@ the ASGI-transport test, so I skipped the live-port loop.
 ## What's left / known limits
 
 - **The plan is 14 checkpoints; it is not the implementation.** As
-  of CP5, 5 of 14 are committed; CP6 (auth middleware) is the next.
+  of CP6, 6 of 14 are committed; CP7 (Anthropic credential
+  pass-through + log scrubbing) is the next.
 - **Soft Phase-3a dependencies on #2 (consent + data handling)** at
   CP9 and CP14 only. Both flagged inline. Neither blocks the build
   from starting; both gate external exposure.
@@ -1410,41 +1649,52 @@ the ASGI-transport test, so I skipped the live-port loop.
 
 ## Handoff
 
-CP5 landed cleanly. Source `HEAD` is `0dec2f1`; the §5.3 finalize
+CP6 landed cleanly. Source `HEAD` is `1c0835a`; the §5.3 finalize
 commit refreshing `docs/STATUS.md` + this worklog adds one more.
-The 14-checkpoint plan is **5/14 done**. Defense-in-depth on the
-four user-data tables is now complete end-to-end: CP4 owns the
-column half (`org_id NOT NULL REFERENCES orgs(id)`); CP5 owns the
-visibility half (RLS policies + `llm_tracker_app` role).
+The 14-checkpoint plan is **6/14 done**. The agent→server identity
+edge of ADR-0020 (Axis 1) is now live: every authenticated request
+arrives as a per-org token, gets hashed, looked up in `api_tokens`,
+and the request-scoped session opens under `llm_tracker_app` with
+`app.org_id` bound. CP5's RLS policies have a real caller. CP7
+plugs the *other* edge — the server-side Anthropic credential
+pass-through.
 
-**Next single step**: **CP6 — auth middleware (ADR-0020 Axis 1).**
-Per the plan:
+**Next single step**: **CP7 — Anthropic credential pass-through +
+log scrubbing (ADR-0020 Axis 2).** Per the plan:
 
-- FastAPI middleware that extracts `Authorization: Bearer <token>`,
-  hashes it (SHA-256 hex), looks up `api_tokens`, sets
-  `request.state.org_id`, and issues the CP5-shaped
-  `SET LOCAL ROLE llm_tracker_app` + `SET LOCAL app.org_id = '<uuid>'`
-  pair on the per-request transaction. 401 on missing/malformed
-  Authorization, 403 on unknown/revoked token.
-- New `llm-tracker-server tokens {issue,revoke,list}` Typer CLI;
-  `pyproject.toml` adds `typer` and declares the console script.
-- New `tests/test_auth_middleware.py` — three cases: missing
-  Authorization → 401; unknown token → 403; valid token →
-  `request.state.org_id` set and the downstream handler sees the
-  correct `app.org_id`. With CP5's wrapped `session_factory`
-  fixture in place, the test should be able to share the same
-  fixture surface; the CP6 middleware essentially does what the
-  wrapper does (role drop + GUC set), so the test can assert the
-  middleware's behaviour by reading `current_setting('app.org_id')`
-  from inside the handler under test.
+- Forward whichever credential header Claude Code natively sends
+  (canonically `x-api-key`; confirm during this checkpoint per
+  ADR-0020 §Open questions) on the outbound httpx call to
+  `api.anthropic.com`. Never persist: no DB column, no log line,
+  no audit detail. structlog processor strips the credential
+  header from every log entry; a unit test asserts the header
+  bytes never appear in a captured log buffer.
+- New files under `src/llm_tracker_server/proxy/`: `__init__.py`,
+  `forwarder.py` (httpx async client + SSE relay; port relevant
+  pieces from `packages/llm_tracker/src/llm_tracker/proxy/`),
+  `credential.py` (extract on inbound, attach to outbound, scrub
+  from logs). `logging.py` gains the scrubbing structlog processor.
+- New `tests/test_credential_passthrough.py` — assert outbound
+  request carries the header; assert no log line ever contains it.
 
-The CP5 invocation shape — `SET LOCAL ROLE llm_tracker_app;` then
-`SELECT set_config('app.org_id', :uuid, true)` — is the contract the
-middleware needs to match. Documented in
-`alembic/versions/0005_rls_policies.py`'s module docstring (§"Per-
-request invocation"). Don't introduce a service-role bypass; ADR-
-0018 §Decision item 2 + this worklog §Decisions §CP5 first bullet
-together close that door.
+Soft dependency only on **#3 (settled by ADR-0020)**; no Phase-3a
+blocker for this checkpoint. The Anthropic credential never crosses
+the persistence boundary, which is the safety property CP7 must
+make load-bearing.
+
+A few CP6 contracts that CP7 (and CP9 after it) will rely on:
+
+- `request.state.session` is the per-request `AsyncSession` the
+  middleware bound with `SET LOCAL ROLE llm_tracker_app` +
+  `SELECT set_config('app.org_id', :uuid, true)`. CP7's proxy
+  layer should reach for that session if it needs DB access during
+  request handling (e.g., to write an `audit_log` row); CP9 will
+  formalise this as the storage entry point.
+- `request.state.org_id` is the resolved org UUID. CP9 will read it
+  when wiring `org_id` onto INSERT payloads (defense in depth on
+  top of the RLS `WITH CHECK`).
+- The `/admin/whoami` route lives in `app.py` until CP10's
+  `/admin/plugins` arrives and earns its own router module.
 
 For a future session reviving the dev loop:
 

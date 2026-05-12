@@ -1,0 +1,46 @@
+# fly.toml — Central llm-tracker server (Phase 3c CP13 / ADR-0022).
+#
+# Secrets are NEVER stored in this file. Set them once via the Fly CLI:
+#
+#   fly secrets set LLMTRACK_DATABASE_URL="postgresql+asyncpg://<user>:<password>@<host>:5432/<db>?ssl=require"
+#
+# The `LLMTRACK_DATABASE_URL` secret is required at runtime AND during the
+# release_command (`alembic upgrade head`). The release machine inherits the
+# same secrets as the rolling-deploy machines. See `docs/deploy.md` for the
+# step-by-step deploy guide.
+#
+# Reference: https://fly.io/docs/reference/configuration/
+
+app = "llm-tracker-server"
+primary_region = "nrt"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[deploy]
+  # Runs alembic in a one-shot ephemeral Machine before the rolling deploy,
+  # against the same image and the same secrets. Per CP12, the alembic CLI
+  # plus `alembic.ini` and `alembic/` ship inside the image at `/app`.
+  release_command = "alembic upgrade head"
+
+[env]
+  LLMTRACK_LOG_LEVEL = "INFO"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # auto_stop_machines accepts "off" | "stop" | "suspend" per the fly.toml
+  # reference (boolean values are not part of the current spec).
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "30s"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

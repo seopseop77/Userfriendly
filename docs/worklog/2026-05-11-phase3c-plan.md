@@ -44,6 +44,119 @@ The plan must:
 - Refreshed `docs/STATUS.md` to point at this worklog and set
   "Next single step" to CP1 (commit `f866cb8`).
 
+### CP13-a — `fly.toml` + deployment guide (2026-05-13, commits `ef59192` + `59dbae6`)
+
+CP13 was split into two halves because the back half (`fly apps create`,
+`fly secrets set`, `fly deploy`, the in-image `tokens issue` invocation,
+the auth-middleware curl) is genuinely a user-executed step that must
+not run from inside Claude Code. CP13-a — this session — is the
+file-only half: everything that lives in the repo. CP13-b — the next
+session — is the operator following `docs/deploy.md` end-to-end against
+real Fly.io + Supabase. CP14 (operator-only smoke) follows CP13-b.
+
+- Created `fly.toml` at the repo root (commit `ef59192`). Declares
+  `app = "llm-tracker-server"`, `primary_region = "nrt"` (Tokyo —
+  lowest latency from Korea; the operator can rename either value
+  pre-deploy without code changes), `[build] dockerfile = "Dockerfile"`,
+  a `[http_service]` block on internal port 8080 with `force_https =
+  true`, `auto_stop_machines = "stop"`, `auto_start_machines = true`,
+  `min_machines_running = 0`, a `[[http_service.checks]]` entry
+  hitting `/healthz` (`method = "GET"`, `interval = "30s"`,
+  `timeout = "5s"`), a `[[vm]]` of `size = "shared-cpu-1x"` /
+  `memory = "512mb"`, a `[deploy] release_command = "alembic upgrade
+  head"` so migrations run in a one-shot ephemeral Machine before the
+  rolling deploy (per ADR-0022 §Open questions + CP12 §Decisions §D5,
+  the alembic CLI + scripts already ship in the image at `/app`), and
+  one `[env]` entry: `LLMTRACK_LOG_LEVEL = "INFO"`. A comment block
+  at the top of `fly.toml` reminds whoever opens it that
+  `LLMTRACK_DATABASE_URL` is set via `fly secrets set`, *not* in this
+  file, and points at `docs/deploy.md` for the full procedure.
+- Created `docs/deploy.md` — the CP13-b runbook (commit `59dbae6`).
+  Sections: prerequisites checklist (flyctl install + login, Supabase
+  pooled URL ready, Supabase IPv4 add-on flag, local Docker build
+  sanity), six numbered deploy steps (`fly apps create`, `fly secrets
+  set LLMTRACK_DATABASE_URL`, `fly deploy`, `fly status` +
+  `curl /healthz`, `fly ssh console -C "llm-tracker-server tokens
+  issue --org demo"`, the auth-middleware-live curl that expects
+  HTTP 400 from Anthropic with a token and HTTP 401 without one),
+  and a Troubleshooting section keyed on the three most likely
+  failure modes (release-command alembic failure, Supabase IPv4-only
+  connection timeout, `/healthz` unhealthy). Closes with a "What
+  lands after CP13-b" footer that points at CP14.
+
+Verification — file-only checkpoint, so the surface is small:
+
+- `fly.toml` parses cleanly through `tomllib` (project venv,
+  Python 3.12) and every required field is asserted against the
+  CP13-a brief — `app`, `primary_region`, `build.dockerfile`,
+  `deploy.release_command`, `env.LLMTRACK_LOG_LEVEL`, every key of
+  `http_service`, the `[[http_service.checks]]` entry, the
+  `[[vm]]` entry. An explicit `assert 'LLMTRACK_DATABASE_URL'
+  not in cfg.get('env', {})` pins the "secrets via fly secrets,
+  not fly.toml" invariant.
+- `docs/deploy.md` internal references all resolve: `Dockerfile`,
+  `fly.toml`, `packages/llm_tracker_server/alembic.ini`,
+  `packages/llm_tracker_server/alembic/`, and four ADR file
+  numbers — 0017, 0018, 0020, 0022 — all present in
+  `docs/decisions/` under their actual slugs
+  (`0017-central-server-deployment-model.md`,
+  `0018-multi-tenancy-per-org-rls.md`,
+  `0020-auth-per-org-token-anthropic-passthrough.md`,
+  `0022-deployment-platform-fly-supabase.md`). The doc references
+  ADRs by number in prose only, not by file path, so the link
+  surface is empty by design.
+- Pre-commit `git diff --cached` scanned for secret patterns
+  (`Bearer .{20,}`, `sk-[a-zA-Z0-9]{20,}`, `AKIA`, `ghp_`, `xoxb-`,
+  `password=[^<]`, `LLMTRACK_.*_TOKEN=[^<]`) for both commits. The
+  only "Bearer" hits in the docs-commit diff were prose ("…a
+  bearer token", "`Authorization: Bearer <token>`") — confirmed
+  clean.
+
+Decisions worth flagging, all minor:
+
+1. **`auto_stop_machines = "stop"`, not `true`.** The CP13-a brief
+   said `auto_stop_machines: true`, but the current `fly.toml`
+   reference at <https://fly.io/docs/reference/configuration/>
+   documents the field as accepting one of `"off"` | `"stop"` |
+   `"suspend"`, not a boolean. The brief also required "Use only
+   documented fields — no deprecated or undocumented options." Used
+   the string `"stop"` (the equivalent of the brief's intent) and
+   added a one-line comment noting the spec.
+2. **`primary_region = "nrt"` (Tokyo).** The brief specified `nrt`;
+   ADR-0022 §Open questions had earlier suggested `iad`. `nrt` is
+   closer to the operator (Korea) and matches the brief; either
+   region works for the demo. A future ADR is owed if/when latency
+   or residency requirements bite — flagged in ADR-0022 already.
+3. **`release_command = "alembic upgrade head"`.** Per ADR-0022's
+   open question on migration-runner location, the plan recommended
+   the release command for the demo scale; this commit makes it
+   binding. The release Machine inherits the app's secrets, so the
+   same `LLMTRACK_DATABASE_URL` set in step 2 of `docs/deploy.md`
+   is also what alembic uses.
+4. **Brief typos repaired silently.** The CP13-a brief contained
+   three obvious typographic slips — `auto_start_machie`,
+   `httpsly.io/install.sh`, and `llm-tracker-se.dev`. Resolved to
+   `auto_start_machines`, `https://fly.io/install.sh`, and
+   `https://llm-tracker-server.fly.dev` respectively. Worth
+   recording so the user can cross-check intent.
+5. **`docs/deploy.md` placed at `docs/deploy.md`, not
+   `docs/runbooks/...`.** The brief said `docs/deploy.md`; the
+   repo has no `runbooks/` convention today. Following the brief.
+
+What CP13-a does NOT do, all by design:
+
+- It does not call `flyctl` or any command that touches Fly.io
+  infrastructure (forbidden by the CP13-a brief).
+- It does not edit any of the source under `packages/` — CP13-a's
+  scope is the two repo-root artefacts plus the runbook.
+- It does not resolve Suggestion #8 (the
+  `packages/llm_tracker_server/pyproject.toml` manifest gaps +
+  stale `uv.lock`). Suggestion #8 is independent of CP13-a/13-b
+  and can land alongside or after.
+
+Source `HEAD` is now `59dbae6`. Documentation HEAD advances with
+this §5.3 finalize commit.
+
 ### CP12 — `Dockerfile` + `.dockerignore` (2026-05-12, commit `92ddff7`)
 
 - Created `Dockerfile` at the repo root — multi-stage build, both
@@ -3006,8 +3119,12 @@ the ASGI-transport test, so I skipped the live-port loop.
 ## What's left / known limits
 
 - **The plan is 14 checkpoints; it is not the implementation.** As
-  of CP12, **12 of 14 are committed**; CP13 (`fly.toml` + secrets +
-  staging deploy) is the next.
+  of CP13-a, **12 of 14 plan-checkpoints are committed**, plus the
+  file-only half of CP13 (CP13-a — `fly.toml` + `docs/deploy.md`).
+  CP13 was split in two because the back half (`fly apps create`
+  → `fly secrets set` → `fly deploy` → smoke curl) is genuinely
+  user-executed. **CP13-b** (operator runs `docs/deploy.md` end-
+  to-end) and **CP14** (operator-only smoke) remain.
 - **Lifecycle audit rows are dropped under CP9.** The contextvar
   no-ops outside a request, and `audit_log.org_id` is NOT NULL
   with no service-role bypass. The call sites are still in place
@@ -3041,91 +3158,62 @@ the ASGI-transport test, so I skipped the live-port loop.
 
 ## Handoff
 
-CP12 landed cleanly. Source `HEAD` is `92ddff7`; the §5.3
-finalize commit refreshing `docs/STATUS.md` + this worklog adds
-one more. The 14-checkpoint plan is **12/14 done**.
+CP13-a landed cleanly. Source `HEAD` is `59dbae6` (after the
+fly.toml commit `ef59192` + the deploy-guide commit `59dbae6`);
+the §5.3 finalize commit refreshing `docs/STATUS.md` + this worklog
+adds one more. The 14-checkpoint plan is **12/14 done + CP13-a**;
+CP13-b (user-executed) and CP14 remain.
 
-CP12 turned the server into a runnable container:
+**CP13-b is the next thing to happen, and it is not a Claude Code
+step.** The operator follows `docs/deploy.md` end-to-end against a
+real Fly.io app + a real Supabase project. CP13-b finishes when:
+`fly deploy` succeeds, `fly status` shows the app healthy, `curl
+https://<app>.fly.dev/healthz` returns 200, and one
+`llm-tracker-server tokens issue --org demo` invocation through
+`fly ssh console` returns a usable bearer token. When CP13-b
+lands, the next Claude Code session opens CP14.
 
-- `Dockerfile` — multi-stage `python:3.11-slim` builder/runtime;
-  builder pip-installs `llm_tracker_sdk` + `llm_tracker_server`
-  + `python-ulid` into `/opt/venv`; runtime drops to a non-root
-  `app:app` user, copies the venv + `alembic.ini` + `alembic/`
-  under `/app`, exposes `:8080`, runs uvicorn, and uses a
-  `python -c urllib.request.urlopen` HEALTHCHECK against
-  `/healthz`. Final image: 80.6 MB compressed / 379 MB
-  on-disk.
-- `.dockerignore` — strips git, docs, var, cache dirs, every
-  workspace package except sdk + server, and tests from the
-  two packages that ship.
+What CP13-a shipped:
 
-CP12 surfaced two `pyproject.toml` manifest gaps in
-`packages/llm_tracker_server/`: `python-ulid` is imported by
-`storage/audit.py` + `proxy/forwarder.py` but not declared, and
-`llm-tracker-sdk` is imported by `proxy/forwarder.py` +
-`content_levels/levels.py` but not declared. In dev both are
-provided transitively by the workspace's `llm_tracker` package
-and uv's workspace pointer; in a server-only install the boot
-fails at `ModuleNotFoundError: No module named 'ulid'`. CP12
-works around both by pip-installing them explicitly in the
-Dockerfile; the proper manifest fix is captured as Suggestion
-#8 below and is also entangled with a stale `uv.lock` (the
-server entry's `metadata.requires-dist` is missing `typer` and
-`httpx` against the current `pyproject.toml`).
+- `fly.toml` (commit `ef59192`) — Fly.io app manifest. Single
+  region `nrt`, internal port 8080, `/healthz` health check,
+  scale-to-zero (`min_machines_running = 0`),
+  `release_command = "alembic upgrade head"`. **No secrets** —
+  `LLMTRACK_DATABASE_URL` is set via `fly secrets set` per the
+  comment block at the top of the file.
+- `docs/deploy.md` (commit `59dbae6`) — CP13-b runbook. Six
+  numbered steps + a troubleshooting section keyed on the three
+  most likely failures (release-command alembic failure,
+  Supabase IPv4-only connection timeout, `/healthz` unhealthy).
 
-Two open carry-overs remain unaddressed and are not on CP13's
-critical path either:
-
-- The CP9.5 housekeeping ticket (pure-ASGI `AuthMiddleware`
-  replacement so the generator does not need a fresh session
-  post-stream) — Phase-3c-end ticket.
-- The stale "Phase 1b" wording in `docs/plugins.md §8`
-  (EgressGuard has shipped at ADR-0015) — captured as
-  Suggestion #7 below.
-
-**Next single step**: **CP13 — `fly.toml` + secrets + staging
-deploy (ADR-0022).** Per the plan §"CP13":
-
-- `fly.toml` at the repo root declaring the http service,
-  internal port 8080, `/healthz` health check, single region
-  (`iad`).
-- `fly secrets set LLMTRACK_DATABASE_URL=...` against a
-  freshly-provisioned Supabase project (pooled connection
-  string, IPv4 add-on enabled if needed).
-- Decide migration runner: Fly **release command** vs CI step.
-  Plan recommends the release command for the demo scale —
-  `release_command = "alembic upgrade head"` runs in a
-  one-shot ephemeral machine before the rolling deploy, with
-  the same image and the same secrets, which is exactly what
-  CP12 set up. Per CP12 §D5 the alembic CLI + scripts are
-  already in the runtime image.
-- Provision a demo org + token via the in-image CLI:
-  `flyctl ssh console -C 'llm-tracker-server tokens issue
-  --org demo'`.
-- Verify: `fly deploy` succeeds; `fly status` shows the app
-  healthy; `curl https://<app>.fly.dev/healthz` returns 200;
-  one `tokens issue` invocation returns a bearer token.
-
-Phase-3a dependencies: none for CP13. CP14 (operator-only
-end-to-end smoke) follows; it is the final checkpoint and has
-the soft Phase-3a #2 dependency for *external* testing, but the
-operator-only smoke is not blocked.
-
-Two coupled work items the user may want to fold in before or
-alongside CP13 (both are Suggestion-tier, not gating):
+Two coupled work items the user may want to fold in alongside
+CP13-b (both Suggestion-tier, not gating):
 
 - Fix the `packages/llm_tracker_server/pyproject.toml` manifest
   gaps (`python-ulid`, `llm-tracker-sdk`) + run `uv lock` to
-  refresh the lockfile. If accepted, the Dockerfile's explicit
-  pip install of `python-ulid` becomes redundant and can be
-  removed; the SDK install can use `--no-deps` against the
-  server (or even drop the SDK install line entirely, since
-  pip will resolve it from the server's declared deps + the
-  matching `--find-links` style). See Suggestion #8.
-- The CP9.5 pure-ASGI `AuthMiddleware` replacement. Untouched
-  by CP12; same priority as before.
+  refresh the lockfile. See Suggestion #8. If accepted, the
+  Dockerfile's explicit `python-ulid` install can be removed in
+  a follow-up.
+- The CP9.5 pure-ASGI `AuthMiddleware` replacement (so the
+  generator does not need a fresh session post-stream). Untouched
+  by CP12 and CP13-a; same priority as before.
 
-For a future session reviving the dev loop:
+**Next single step**: **CP13-b — operator follows
+`docs/deploy.md` end-to-end against a real Fly.io app + a real
+Supabase project.** No Claude Code work happens in CP13-b. When
+the operator returns with `fly status` healthy, a 200 from
+`https://<app>.fly.dev/healthz`, and a bearer token from
+`llm-tracker-server tokens issue --org demo`, the next Claude
+Code session opens **CP14 — operator-only end-to-end smoke**
+per the plan §"CP14".
+
+Phase-3a dependencies: none for CP13-b. CP14 (operator-only
+smoke) has the soft Phase-3a #2 dependency for *external*
+testing only — the operator-only flavour is not blocked.
+
+For a future session reviving the local dev loop (Postgres on
+the host for the test-fixture suite; the Dockerised server +
+the Fly.io deployment are independent):
 
 ```
 docker run -d --name llm-tracker-pg \

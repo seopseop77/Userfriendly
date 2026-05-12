@@ -6,45 +6,46 @@
 
 ---
 
-**Last updated**: 2026-05-12 (Claude Code; Phase 3c CP12 landed — `Dockerfile` + `.dockerignore` at the repo root, multi-stage `python:3.11-slim` image; `docker run` boots `/healthz` 200, HEALTHCHECK reports healthy, image 80.6 MB compressed)
-**Updated by**: Claude Code (Phase 3c CP12 checkpoint, source commit 92ddff7)
+**Last updated**: 2026-05-13 (Claude Code; Phase 3c CP13-a landed — `fly.toml` at the repo root + `docs/deploy.md` runbook. CP13 is split into CP13-a (file-only, this session) and CP13-b (operator runs `docs/deploy.md` end-to-end against real Fly.io + Supabase). CP13-b plus CP14 remain.)
+**Updated by**: Claude Code (Phase 3c CP13-a checkpoint, source commits ef59192 + 59dbae6)
 
 ## Current phase
 
-- **Phase**: **Phase 3c — CP1 + CP2 + CP3 + CP4 + CP5 + CP6 + CP7 +
-  CP8 + CP9 + CP10 + CP11 + CP12 closed (12/14).** CP1–CP11
+- **Phase**: **Phase 3c — CP1 through CP12 + CP13-a closed
+  (12/14 plan-checkpoints + file-only half of CP13).** CP1–CP12
   stand as previously recorded (skeleton, PG storage,
   orgs+api_tokens, `org_id NOT NULL`, RLS + `llm_tracker_app`
   role, auth middleware, Anthropic credential pass-through +
   scrubbing, plugin-host port, org-aware INSERTs, manifest
   `min_content_level` + per-plugin host clamp, `.env.example` +
-  `docs/plugins.md` refresh). CP12 turned the server into a
-  runnable container: a multi-stage `Dockerfile` (both stages on
-  `python:3.11-slim`) at the repo root; the builder pip-installs
-  `packages/llm_tracker_sdk` + `packages/llm_tracker_server` +
-  `python-ulid` into `/opt/venv`; the runtime stage drops to a
-  non-root `app:app` user, copies the venv plus the alembic
-  config + scripts under `/app`, exposes `:8080`, runs uvicorn,
-  and uses a `python -c urllib.request.urlopen` HEALTHCHECK
-  against `/healthz`. A matching `.dockerignore` strips git,
-  docs, var, cache directories, every workspace package except
-  the sdk + server, and tests inside those two. Verified end-
-  to-end on the local Docker daemon: clean build (~60 s on this
-  machine), `/healthz` returns `HTTP 200 {"status":"ok","version":
-  "0.0.1"}`, Docker HEALTHCHECK transitions `starting → healthy`
-  after the first probe, alembic CLI present + driver-wired
-  (`alembic --version` → `1.18.4`; `alembic current` reaches
-  asyncpg and only fails because no DB is attached). Image:
-  80.6 MB compressed registry content / 379 MB on-disk usage —
-  the compressed metric (relevant for Fly.io push/pull) is well
-  under the plan's "~300 MB" budget, the unpacked metric exceeds
-  it by ~26 % and is accepted (see worklog §Decisions §D4).
-  Source HEAD now at `92ddff7`.
-- **Active task**: **CP13 — `fly.toml` + secrets + staging
-  deploy (ADR-0022)** is the queued next commit. **ADR-#2
-  consent decision** remains the most blocking remaining
-  Phase-3a item before *any external testing*; operator-only
-  smoke (CP14) is not blocked.
+  `docs/plugins.md` refresh, multi-stage Dockerfile +
+  `.dockerignore`). **CP13 was split into CP13-a (this session)
+  and CP13-b (user-executed)** because the back half is genuine
+  flyctl work that must not run inside Claude Code. CP13-a
+  shipped `fly.toml` at the repo root (app
+  `llm-tracker-server`, primary region `nrt`, build via the
+  CP12 Dockerfile, `[http_service]` on internal port 8080 with
+  `force_https`, scale-to-zero, `/healthz` check;
+  `[deploy] release_command = "alembic upgrade head"`; one
+  `[env]` entry — `LLMTRACK_LOG_LEVEL = "INFO"`; secrets via
+  `fly secrets set` only) plus `docs/deploy.md` — the CP13-b
+  runbook (prerequisites checklist, six numbered deploy steps
+  from `fly apps create` → smoke curl, and a troubleshooting
+  section keyed on the three most likely failures: alembic
+  release-command failure, Supabase IPv4-only timeout,
+  `/healthz` unhealthy). Verified the way file-only checkpoints
+  are verified: `fly.toml` parses cleanly through `tomllib` with
+  every spec assertion green, no `LLMTRACK_DATABASE_URL` in
+  `[env]`, internal references in `docs/deploy.md` all resolve
+  against the actual ADR filenames + Dockerfile + alembic
+  assets. Source HEAD now at `59dbae6`.
+- **Active task**: **CP13-b — operator follows
+  `docs/deploy.md` end-to-end** against real Fly.io + Supabase.
+  No Claude Code work happens in CP13-b; CP14 (operator-only
+  smoke) follows once CP13-b returns. **ADR-#2 consent
+  decision** remains the most blocking remaining Phase-3a item
+  before *any external testing*; operator-only smoke (CP14) is
+  not blocked.
 
 ## Active worklog
 
@@ -55,113 +56,114 @@ The prior signing-removal worklog
 ## Recent commits
 
 ```
+59dbae6   docs: Fly.io + Supabase deploy guide (CP13-b)
+ef59192   infra: fly.toml for the server (CP13-a)
+a8b622b   docs: STATUS + worklog for Phase 3c CP12 checkpoint
 92ddff7   infra: Dockerfile + .dockerignore for the server (CP12)
 ec378fb   docs: STATUS + worklog for Phase 3c CP11 checkpoint
-a7e21c9   docs: refresh .env.example + plugins.md for server (CP11)
-56a3594   docs: STATUS + worklog for Phase 3c CP10 checkpoint
-6c3b7b8   server: per-plugin min_content_level clamp (CP10)
 ```
 
 ## Where we paused
 
-**Phase 3c CP12 — `Dockerfile` + `.dockerignore` — closed.**
-The server is now containerised end-to-end on the local Docker
-daemon; CP13 wires the same image into Fly.io.
+**Phase 3c CP13-a — `fly.toml` + `docs/deploy.md` — closed.**
+CP13 is split into CP13-a (file-only, this session) and CP13-b
+(operator runs `docs/deploy.md` end-to-end against real Fly.io
++ Supabase). CP13-b is **not** a Claude Code step.
 
-- Created `Dockerfile` at the repo root — multi-stage build,
-  both stages on `python:3.11-slim`:
-  - **builder**: `python -m venv /opt/venv`; pip-installs
-    `packages/llm_tracker_sdk`, `packages/llm_tracker_server`,
-    and `python-ulid` into the venv. The SDK + ulid installs are
-    explicit workarounds for `packages/llm_tracker_server/
-    pyproject.toml` not declaring either today (the code imports
-    both; in dev they are provided transitively by `packages/
-    llm_tracker/` and uv's workspace pointer). Captured as
-    worklog Suggestion #8 along with the stale `uv.lock`
-    entry that prevents an in-place fix without a `uv lock`
-    refresh.
-  - **runtime**: non-root `app:app` user; copies the venv from
-    the builder; copies `alembic.ini` + `alembic/` migrations
-    under `/app` so the CP13 release-command runner can call
-    `alembic upgrade head` against the image as-is (dispatches
-    CP11 Suggestion #5); `EXPOSE 8080`; `HEALTHCHECK` uses
-    `python -c "urllib.request.urlopen('http://localhost:8080/
-    healthz', timeout=3)"` so the slim image doesn't need
-    `curl`; final `CMD` is `uvicorn llm_tracker_server.app:app
-    --host 0.0.0.0 --port 8080`.
-- Created `.dockerignore` at the repo root — strips git, docs,
-  var, cache directories, every workspace package except the
-  sdk + server, and every `tests/` directory inside the two
-  packages that *do* ship. Build context drops to a few MB of
-  Python source.
-- Removed the initial `# syntax=docker/dockerfile:1.7`
-  directive — it forced the Docker daemon to pull the frontend
-  image from `registry-1.docker.io`, which failed with a TLS
-  handshake timeout on the first build. None of the Dockerfile
-  features used here are 1.7-specific; the directive added a
-  network dependency for no benefit.
+- Created `fly.toml` at the repo root (commit `ef59192`).
+  Declares `app = "llm-tracker-server"`, `primary_region =
+  "nrt"` (Tokyo — lowest latency from Korea; either value is
+  rename-safe without code changes), `[build] dockerfile =
+  "Dockerfile"` (re-using the CP12 image), and an
+  `[http_service]` block on internal port 8080 with
+  `force_https = true`, `auto_stop_machines = "stop"`,
+  `auto_start_machines = true`, `min_machines_running = 0`
+  (scale-to-zero), and a `[[http_service.checks]]` entry
+  hitting `/healthz` (`method = "GET"`, `interval = "30s"`,
+  `timeout = "5s"`). `[[vm]] size = "shared-cpu-1x"`,
+  `memory = "512mb"`. `[deploy] release_command = "alembic
+  upgrade head"` — alembic runs in a one-shot ephemeral
+  Machine before the rolling deploy, against the same image
+  and the same secrets (CP12 §Decisions §D5 already shipped
+  the CLI + `alembic.ini` + `alembic/` migrations at `/app`).
+  One `[env]` entry — `LLMTRACK_LOG_LEVEL = "INFO"`. A comment
+  block at the top of the file reminds whoever opens it that
+  `LLMTRACK_DATABASE_URL` is set via `fly secrets set`, *not*
+  in this file, and points at `docs/deploy.md` for the
+  end-to-end procedure.
+- Created `docs/deploy.md` (commit `59dbae6`) — the CP13-b
+  runbook. Sections: prerequisites checklist (flyctl install
+  + login, Supabase pooled URL ready, Supabase IPv4 add-on
+  flag for Fly's IPv4-only egress, local Docker build sanity),
+  six numbered deploy steps (`fly apps create` →
+  `fly secrets set LLMTRACK_DATABASE_URL` → `fly deploy`
+  (release-command runs `alembic upgrade head`) → `fly status`
+  + `curl /healthz` → `fly ssh console -C "llm-tracker-server
+  tokens issue --org demo"` → the auth-middleware-live curl
+  that expects HTTP 400 with a token and HTTP 401 without
+  one), and a troubleshooting section keyed on the three most
+  likely failure modes (alembic release-command failure,
+  Supabase IPv4-only connection timeout, `/healthz`
+  unhealthy). Closes with a "What lands after CP13-b" footer
+  that names CP14 as the follow-up.
 
-Verification (full transcript in worklog §Verification §CP12):
+Verification (full transcript in worklog §Verification
+§CP13-a — though CP13-a's verification surface is small
+because it is file-only):
 
-- `docker build -t llm-tracker-server:cp12 .` — clean build.
-  Final layer count: 16; final naming layer DONE in 4.4 s.
-- `docker images llm-tracker-server:cp12` reports **80.6 MB
-  compressed content / 379 MB unpacked**. The plan's "under
-  ~300 MB" budget is met for the compressed registry size
-  (the metric for Fly.io push/pull and most production
-  targets); on-disk exceeds 300 MB by ~26 % — accepted, see
-  worklog §Decisions §D4.
-- `docker run -d -p 18080:8080 ... llm-tracker-server:cp12`
-  boots in ~2 s. `curl localhost:18080/healthz` returns
-  `HTTP 200 {"status":"ok","version":"0.0.1"}`. Structured log
-  line `server.startup` shows `auth_wired: false,
-  plugin_host_wired: false` — the CP1 boot contract (no DB →
-  no auth-gated routes attach) carries through the image.
-- Docker `HEALTHCHECK` status: `starting → healthy` after the
-  first probe; `docker inspect ... .State.Health.Log` shows
-  two consecutive `exit=0` probes.
-- `docker exec llm-tracker-cp12-test alembic --version` →
-  `alembic 1.18.4`. `alembic current` from `/app` reaches
-  asyncpg and fails with `[Errno 111] Connect call failed
-  (127.0.0.1, 5432)` — the *informative* part: CLI + driver
-  wired correctly; only the DB is missing, which CP13 supplies
-  via Fly secrets.
+- `fly.toml` parses cleanly through `tomllib` (project venv,
+  Python 3.12) and every required field is asserted against
+  the CP13-a brief: `app`, `primary_region`, `build.dockerfile`,
+  `deploy.release_command`, `env.LLMTRACK_LOG_LEVEL`, every
+  key of `http_service`, the `[[http_service.checks]]` entry,
+  and the `[[vm]]` entry. An explicit `assert
+  'LLMTRACK_DATABASE_URL' not in cfg.get('env', {})` pins the
+  "secrets via fly secrets, not fly.toml" invariant.
+- `docs/deploy.md` internal references all resolve: `Dockerfile`,
+  `fly.toml`, `packages/llm_tracker_server/alembic.ini`,
+  `packages/llm_tracker_server/alembic/`, and four ADR
+  numbers (0017, 0018, 0020, 0022) all present in
+  `docs/decisions/` under their actual slugs
+  (`0017-central-server-deployment-model.md`,
+  `0018-multi-tenancy-per-org-rls.md`,
+  `0020-auth-per-org-token-anthropic-passthrough.md`,
+  `0022-deployment-platform-fly-supabase.md`). The doc
+  references ADRs by number in prose only, so the link
+  surface is empty by design.
+- Pre-commit `git diff --cached` scanned for secret patterns
+  (`Bearer .{20,}`, `sk-[a-zA-Z0-9]{20,}`, `AKIA`, `ghp_`,
+  `xoxb-`, `password=[^<]`, `LLMTRACK_.*_TOKEN=[^<]`) for both
+  commits — only prose "Bearer" hits ("a bearer token",
+  "`Authorization: Bearer <token>`"), confirmed clean.
 
-Eight CP12-specific decisions, all flagged in the worklog
-§Decisions §CP12; the most load-bearing:
+Five CP13-a-specific decisions, all flagged in the worklog
+§Decisions §CP13-a; the most load-bearing:
 
-1. **`python-ulid` and `llm-tracker-sdk` installed by the
-   Dockerfile, not via a `pyproject.toml` edit.** Surgical
-   scope per CLAUDE.md §2.3 + §9, and entangled with a stale
-   `uv.lock`. Worklog Suggestion #8 captures the proper
-   manifest fix.
-2. **`pip install` instead of `uv sync` for the image.** The
-   workspace `uv.lock` entry for `llm-tracker-server` has
-   `metadata.requires-dist` missing both `typer` and `httpx`
-   against the current `pyproject.toml`, so `uv sync --frozen`
-   would refuse to install. Plain pip reads the package's
-   `pyproject.toml` directly.
-3. **Multi-stage with `python:3.11-slim` for both stages.**
-   Plan-prescribed base. Non-root `app:app` user added in the
-   runtime stage; the builder stays as root for the
-   pip-install.
-4. **Image size 80.6 MB compressed / 379 MB on-disk;
-   accepted.** Reducing further would mean dropping
-   `uvicorn[standard]` extras or switching to alpine, both
-   larger changes than CP12.
-5. **Alembic CLI + `alembic/` + `alembic.ini` ship in the
-   runtime image.** Dispatches CP11 Suggestion #5; CP13 can
-   run `alembic upgrade head` against the image directly.
-6. **`HEALTHCHECK` uses `python -c urllib.request.urlopen`
-   instead of `curl`.** Keeps the slim image slim.
-7. **Removed the `# syntax=docker/dockerfile:1.7` directive.**
-   No 1.7-specific features in use; the directive added a
-   network dependency that broke the first build.
-8. **Pinned-tag `python:3.11-slim` without a digest.** Hard
-   pinning would force manual bumps; flagged as a future CI
-   hardening step, not CP12 scope.
+1. **`auto_stop_machines = "stop"`, not `true`.** The CP13-a
+   brief said boolean; the current `fly.toml` spec at
+   <https://fly.io/docs/reference/configuration/> documents
+   the field as `"off" | "stop" | "suspend"`. The same brief
+   required "use only documented fields" — used the string
+   `"stop"` (which carries the brief's intent).
+2. **`primary_region = "nrt"` (Tokyo), not `iad`.** Brief
+   specified `nrt`; ADR-0022 §Open questions had suggested
+   `iad`. `nrt` is closer to the operator and the brief is
+   authoritative for the demo. Future ADR owed if/when
+   latency or residency requirements bite.
+3. **`release_command = "alembic upgrade head"`.** Resolves
+   ADR-0022's migration-runner open question for the demo
+   scale; the release Machine inherits the same secrets, so
+   `LLMTRACK_DATABASE_URL` is the only knob.
+4. **Three typos in the CP13-a brief repaired silently** —
+   `auto_start_machie` → `auto_start_machines`,
+   `httpsly.io/install.sh` → `https://fly.io/install.sh`,
+   `llm-tracker-se.dev` → `llm-tracker-server.fly.dev`.
+   Recorded so the user can cross-check intent.
+5. **`docs/deploy.md` placed at `docs/deploy.md`, not
+   `docs/runbooks/...`.** Brief said `docs/deploy.md`; no
+   `runbooks/` convention exists in the repo today.
 
-Source HEAD is now `92ddff7`. Documentation HEAD advances
+Source HEAD is now `59dbae6`. Documentation HEAD advances
 with this §5.3 finalize commit.
 
 ### Prior workstream — Phase-3a decisions (closed 2026-05-11)
@@ -338,46 +340,47 @@ reframes them server-side**:
 
 ## Next single step
 
-**Phase 3c CP13 — `fly.toml` + secrets + staging deploy
-(ADR-0022).** Thirteenth commit of the 14-checkpoint plan at
-`docs/worklog/2026-05-11-phase3c-plan.md`:
+**Phase 3c CP13-b — operator follows `docs/deploy.md`
+end-to-end against real Fly.io + Supabase.** This is **not** a
+Claude Code step. The runbook at `docs/deploy.md` walks through:
 
-- `fly.toml` at the repo root declaring the http service,
-  internal port 8080, `/healthz` health check, single region
-  (`iad`).
-- `fly secrets set LLMTRACK_DATABASE_URL=...` against a
-  freshly-provisioned Supabase project (pooled connection
-  string; enable Supabase's IPv4 add-on if Fly's egress can't
-  reach the IPv6 endpoint).
-- Decide migration runner: Fly **release command** vs CI step.
-  Plan recommends the release command for the demo scale —
-  `release_command = "alembic upgrade head"` runs in a one-shot
-  ephemeral machine before the rolling deploy, against the same
-  image and the same secrets. Per CP12 §Decisions §D5, the
-  alembic CLI + `alembic.ini` + `alembic/` migrations already
-  ship in the runtime image (`/app/alembic.ini`).
-- Provision a demo org + token via the in-image CLI:
-  `flyctl ssh console -C 'llm-tracker-server tokens issue
-  --org demo'`.
-- Verify: `fly deploy` succeeds; `fly status` shows the app
-  healthy; `curl https://<app>.fly.dev/healthz` returns 200;
-  the `tokens issue` invocation returns a usable bearer token.
+1. `flyctl` installed + `fly auth login` completed.
+2. `fly apps create llm-tracker-server` (one-time; rename if
+   the name is taken, then update `fly.toml` to match).
+3. `fly secrets set LLMTRACK_DATABASE_URL="postgresql+asyncpg://
+   <user>:<password>@<host>:5432/<db>?ssl=require"` — Supabase
+   pooled connection string. Enable Supabase's IPv4 add-on if
+   Fly's IPv4-only egress times out against the free-tier
+   IPv6-only endpoint.
+4. `fly deploy` — runs `alembic upgrade head` in a one-shot
+   ephemeral Machine (via `release_command` in `fly.toml`),
+   then rolls out the new image to the app Machines.
+5. `fly status` + `curl https://llm-tracker-server.fly.dev/
+   healthz` to verify (`HTTP 200 {"status":"ok","version":
+   "0.0.1"}`).
+6. `fly ssh console -C "llm-tracker-server tokens issue --org
+   demo"` to mint a demo bearer token; save it once (it is
+   shown only once).
+7. Auth-middleware-live curl: with the token, expect HTTP 400
+   from Anthropic (empty `messages` body); without the token,
+   expect HTTP 401 from `AuthMiddleware`.
 
-Phase-3a dependencies: none for CP13. CP14 (operator-only
-end-to-end smoke) follows; it has the soft Phase-3a #2
-dependency for *external* testing, but the operator-only
-smoke is not blocked.
+CP13-b is complete when steps 1–7 all pass. When the operator
+returns with the bearer token + `fly status` healthy, the next
+Claude Code session opens **CP14 — operator-only end-to-end
+smoke** (one real `/v1/messages` request through the deployed
+server with a valid Anthropic API key in `x-api-key`, response
+stream returns unchanged, one row in `public.exchanges` scoped
+to the demo org, no traceback in `fly logs`).
 
-The CP12 image already builds + runs cleanly on the local
-Docker daemon, so the only new mechanics for CP13 are Fly's
-manifest (`fly.toml`), the secret push, and the release-command
-wiring. Suggestion #8 (manifest gaps in `packages/
-llm_tracker_server/pyproject.toml`) can ride alongside or
-land independently — it is not gating CP13.
+Phase-3a dependencies: none for CP13-b or for the operator-only
+flavour of CP14. **External**-tester flavours of CP14 require
+ADR-#2 (consent + data handling) to settle first; flag to start
+that decision alongside CP13-b.
 
-To revive the dev loop in a new session (Postgres on the host
-for the test-fixture suite; the Dockerised server is
-independent):
+To revive the local dev loop in a new session (Postgres on the
+host for the test-fixture suite; the Dockerised server +
+Fly.io deployment are independent):
 
 ```
 docker run -d --name llm-tracker-pg \
@@ -387,11 +390,11 @@ docker run -d --name llm-tracker-pg \
 export LLMTRACK_TEST_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker_test
 ```
 
-To rebuild + smoke the CP12 image in a new session:
+To rebuild + smoke the CP12 image locally:
 
 ```
-docker build -t llm-tracker-server:cp12 .
-docker run -d --rm -p 18080:8080 --name lts-smoke llm-tracker-server:cp12
+docker build -t llm-tracker-server:local .
+docker run -d --rm -p 18080:8080 --name lts-smoke llm-tracker-server:local
 curl -sS http://localhost:18080/healthz
 docker stop lts-smoke
 ```
@@ -447,9 +450,10 @@ ready to start.
 - [x] **Phase 3c CP10 — `min_content_level` manifest field + per-plugin host clamp (2026-05-12, commit 6c3b7b8)**
 - [x] **Phase 3c CP11 — `.env.example` + developer docs refresh (2026-05-12, commit a7e21c9)**
 - [x] **Phase 3c CP12 — `Dockerfile` + `.dockerignore` (2026-05-12, commit 92ddff7)**
+- [x] **Phase 3c CP13-a — `fly.toml` + `docs/deploy.md` (2026-05-13, commits ef59192 + 59dbae6)**
 - [ ] **Phase 3a — remaining 3 decision ADRs** (#1 fallback / #2 consent / #4 agent language)
 - [ ] Phase 3b — thin local agent (gated on #1 + #4)
-- [ ] Phase 3c — server build-out (12 of 14 checkpoints done; remaining CP13–CP14 per `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0017/0018/0019/0020/0022)
+- [ ] Phase 3c — server build-out (12 of 14 plan-checkpoints + CP13-a done; CP13-b is user-executed per `docs/deploy.md`; CP14 follows. Plan at `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0017/0018/0019/0020/0022)
 - [ ] Phase 1c — `scope_guard` (paused; reframed server-side per ADR-0019; gated on Phase 3c readiness)
 - [ ] Phase 3d — carry-overs: OpenAI/Gemini adapters, analytics interface, response-side policy plugins
 

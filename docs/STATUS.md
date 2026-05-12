@@ -6,47 +6,59 @@
 
 ---
 
-**Last updated**: 2026-05-12 (Claude Code; Phase 3c CP8 landed — proxy + plugin host server-side port; 29 new cases green, full repo suite 287 passed without PG)
-**Updated by**: Claude Code (Phase 3c CP8 checkpoint, source commit 79227fe)
+**Last updated**: 2026-05-12 (Claude Code; Phase 3c CP9 landed — storage layer org-aware INSERTs; full server suite 55 passed with PG, full repo 287 passed without PG)
+**Updated by**: Claude Code (Phase 3c CP9 checkpoint, source commit fe18e9a)
 
 ## Current phase
 
 - **Phase**: **Phase 3c — CP1 + CP2 + CP3 + CP4 + CP5 + CP6 + CP7 +
-  CP8 closed (8/14).** CP1 brought up the `llm_tracker_server`
-  FastAPI skeleton + `/healthz`. CP2 ported the storage layer to
-  PostgreSQL (SQLAlchemy async + asyncpg + Alembic env + two
-  migrations). CP3 added the ADR-0018 / ADR-0020 tenancy substrate
-  (`orgs` + `api_tokens`). CP4 added the column half of
-  defense-in-depth: `org_id UUID NOT NULL REFERENCES orgs(id)` on
-  `exchanges`, `events`, `tool_calls`, `audit_log`. CP5 added the
-  visibility half: migration `0005_rls_policies` creates the
-  non-superuser `llm_tracker_app` role, enables and FORCEs RLS on
-  the four user-data tables, and lays down two PERMISSIVE policies
-  per table (`<table>_org_isolation` + `<table>_admin_access`).
-  CP6 added the ADR-0020 Axis-1 edge: a `BaseHTTPMiddleware`
-  parses `Authorization: Bearer <token>`, hashes it, looks it up
-  in `api_tokens`, and opens a request-scoped session bound to
+  CP8 + CP9 closed (9/14).** CP1 brought up the
+  `llm_tracker_server` FastAPI skeleton + `/healthz`. CP2 ported
+  the storage layer to PostgreSQL (SQLAlchemy async + asyncpg +
+  Alembic env + two migrations). CP3 added the ADR-0018 /
+  ADR-0020 tenancy substrate (`orgs` + `api_tokens`). CP4 added
+  the column half of defense-in-depth:
+  `org_id UUID NOT NULL REFERENCES orgs(id)` on `exchanges`,
+  `events`, `tool_calls`, `audit_log`. CP5 added the visibility
+  half: migration `0005_rls_policies` creates the non-superuser
+  `llm_tracker_app` role, enables and FORCEs RLS on the four
+  user-data tables, and lays down two PERMISSIVE policies per
+  table (`<table>_org_isolation` + `<table>_admin_access`). CP6
+  added the ADR-0020 Axis-1 edge: a `BaseHTTPMiddleware` parses
+  `Authorization: Bearer <token>`, hashes it, looks it up in
+  `api_tokens`, and opens a request-scoped session bound to
   `app.org_id` via `SET LOCAL ROLE llm_tracker_app` +
   `set_config('app.org_id', '<uuid>', true)`. CP7 added the
   ADR-0020 Axis-2 edge: `forward_request(...)` passes
   `x-api-key` / `anthropic-api-key` through unchanged while
   stripping the consumed `Authorization` Bearer, and
   `scrub_credential_processor` redacts the credential from any log
-  event by header-name set *and* `sk-ant-` value-prefix. CP8 has
-  now ported the local-sidecar `PluginHost` + `EgressGuard` +
+  event by header-name set *and* `sk-ant-` value-prefix. CP8
+  ported the local-sidecar `PluginHost` + `EgressGuard` +
   `HookContext` lifecycle into `llm_tracker_server`: the catch-all
   `/{path:path}` route wraps CP7's forwarder with the full 8-hook
   plugin lifecycle, the synthetic Anthropic SSE block stream from
-  ADR-0002 §3 replaces the upstream body on `Block` / `Abort`, and
-  the legacy L/A/R-mode taxonomy (ADR-0019) plus the
-  `LLMTRACK_USER_OPTED_IN` env knob (ADR-0016) are gone. Audit
-  writes are routed through an injected callable (CP9 wires the
-  session-bound writer). Source HEAD now at `79227fe`.
-- **Active task**: **CP9 — Storage layer: org-aware INSERTs
-  (ADR-0018 + ADR-0020 wiring)** is the queued next commit.
-  **ADR-#2 consent decision** remains the most blocking remaining
-  Phase-3a item before *any external testing*; operator-only smoke
-  (CP14) is not blocked.
+  ADR-0002 §3 replaces the upstream body on `Block` / `Abort`,
+  and the legacy L/A/R-mode taxonomy (ADR-0019) plus the
+  `LLMTRACK_USER_OPTED_IN` env knob (ADR-0016) are gone. CP9 has
+  now wired the storage layer to that lifecycle: every `Exchange`
+  INSERT lands with `org_id = request.state.org_id` (defense in
+  depth on top of CP5's RLS `WITH CHECK`), every audit dispatched
+  on a request reaches `audit_log` through a request-scoped
+  `ContextVar`-bound writer (`session_bound_audit_writer`), and
+  the three `Block` / `Abort` short-circuit paths each persist a
+  `blocked_by`-tagged row before returning. Under
+  `BaseHTTPMiddleware`'s commit-before-stream ordering, the
+  response generator opens a **fresh** `AsyncSession` from
+  `app.state.session_factory` for the post-completion timing
+  write, re-binding `SET LOCAL ROLE llm_tracker_app` +
+  `set_config('app.org_id', ...)` on it before any write. Source
+  HEAD now at `fe18e9a`.
+- **Active task**: **CP10 — `min_content_level` manifest field +
+  host enforcement (ADR-0019 §Open questions)** is the queued
+  next commit. **ADR-#2 consent decision** remains the most
+  blocking remaining Phase-3a item before *any external testing*;
+  operator-only smoke (CP14) is not blocked.
 
 ## Active worklog
 
@@ -57,154 +69,137 @@ The prior signing-removal worklog
 ## Recent commits
 
 ```
+fe18e9a   server: storage layer org-aware INSERTs (CP9)
+e9925e1   docs: STATUS + worklog for Phase 3c CP8 checkpoint
 79227fe   server: port proxy + plugin host (CP8)
 5f069ba   docs: STATUS + worklog for Phase 3c CP7 checkpoint
 e1d34bc   server: add Anthropic credential pass-through + scrubbing (CP7)
-a517bcc   docs: STATUS + worklog for Phase 3c CP6 checkpoint
-1c0835a   server: add auth middleware + tokens CLI (CP6)
 ```
 
 ## Where we paused
 
-**Phase 3c CP8 — Port proxy + plugin host server-side — closed.**
-The catch-all `/{path:path}` route now wraps CP7's credential-
-passthrough forwarder with the full 8-hook plugin lifecycle, the
-synthetic Anthropic SSE block stream from ADR-0002 §3 replaces the
-upstream body on `Block` / `Abort` decisions, and the legacy
-L/A/R-mode taxonomy (ADR-0019) plus the `LLMTRACK_USER_OPTED_IN`
-env knob (ADR-0016) are gone. CP9 will wire the storage writes
-(`record_exchange_timing` / `record_exchange_blocked` / audit-row
-emission) through the per-request session so every INSERT carries
-`org_id = request.state.org_id`.
+**Phase 3c CP9 — Storage layer: org-aware INSERTs — closed.**
+The CP8 plugin-host lifecycle is now persistence-wired: every
+`Exchange` INSERT lands with `org_id = request.state.org_id`,
+every audit dispatched on a request reaches `audit_log` through
+a request-scoped contextvar-bound writer, and the three short-
+circuit paths (`Block` from `on_request_received` /
+`before_forward`, `Abort` from `on_upstream_response_start`)
+each persist a `blocked_by`-tagged row before returning. CP10
+will swap CP8's transitional permissive `HookContext` for
+manifest-driven `min_content_level` clamping (ADR-0019 §Open
+questions).
 
-- New `packages/llm_tracker_server/src/llm_tracker_server/plugin_host/`
-  package (4 modules + `__init__.py`):
-  - `host.py` — `PluginHost` ported from the local sidecar with
-    `mode=`, `user_opted_in=`, and `session_factory=` dropped.
-    Audit writes route through an injected `AuditWriter`
-    callable (no-op default; CP9 swaps in a session-bound
-    writer). Entry-point loading, manifest validation,
-    `plugins_disabled` denylist (ADR-0013), per-plugin
-    `HostEgressClient` wiring (ADR-0015), timeout + exception
-    isolation, and `loaded_plugins()` introspection (ADR-0014)
-    are all preserved.
-  - `context.py` — `make_hook_context(...)` is the single
-    chokepoint for per-exchange `HookContext` construction.
-    Passes `mode="R"` + `user_opted_in=True` to the SDK
-    dataclass (yielding L3 visibility) as a transitional shape;
-    CP10's `min_content_level` manifest field will introduce
-    per-plugin clamping.
-  - `manifest.py` — `find_manifest(plugin_class)` walks
-    `importlib.resources` for the plugin's top-level package
-    and parses `plugin.toml`. `allowed_modes` passes validation
-    but is ignored by the host (ADR-0019).
-  - `hooks.py` — `HOOK_TIMEOUT = 5.0`,
-    `SHUTDOWN_HOOK_TIMEOUT = 30.0` (the supabase_sink carry-over
-    so a sink drain doesn't fault under the 5 s per-exchange
-    budget).
-- New `packages/llm_tracker_server/src/llm_tracker_server/egress_guard/`
-  package (`guard.py` + `client.py` + `__init__.py`):
-  - `guard.py` — `EgressGuard` ported with `mode=` dropped and
-    the three mode-keyed denial paths
-    (`mode_L_denies_egress`, `mode_X_not_in_allowed_modes`,
-    `mode_A_requires_single_destination`) removed. What remains:
-    manifest registration, capability declaration check,
-    exact-URL allowlist. Audit writes via injected `AuditWriter`.
-  - `client.py` — `HostEgressClient` ported verbatim (ADR-0015
-    is untouched by ADR-0019).
-- New `packages/llm_tracker_server/src/llm_tracker_server/content_levels/`
-  package — re-export of the SDK content-level primitives.
-- New `packages/llm_tracker_server/src/llm_tracker_server/proxy/sse.py`
-  — `block_sse_chunks(reason, exchange_id)` returns the exact
-  Anthropic SSE byte sequence (`message_start` →
-  `content_block_start` → `content_block_delta` with
-  `[llm-tracker] <reason>` → `content_block_stop` →
-  `message_delta` → `message_stop`); `block_response(...)` wraps
-  it as a `StreamingResponse` whose `gen()` finally-clause runs
-  `plugin_host.end_exchange(...)` so per-exchange ctx is dropped
-  on every block / abort path.
+- New `packages/llm_tracker_server/src/llm_tracker_server/storage/exchanges.py`
+  — `record_exchange_timing` (happy path) +
+  `record_exchange_blocked` (short-circuit path). Both helpers
+  take `org_id` keyword-only and set it on the column
+  explicitly; both `flush` — not `commit` — so the per-request
+  session retains transaction control.
+- New `packages/llm_tracker_server/src/llm_tracker_server/storage/audit.py`
+  — `write_audit(session, *, org_id, kind, ...)`. The
+  append-only triggers from migration `0002_audit_log_triggers`
+  make each flushed row permanent once the request transaction
+  commits.
+- New `packages/llm_tracker_server/src/llm_tracker_server/audit_context.py`
+  — `bind_request_context(session, org_id)` is a sync `with`
+  setting a `ContextVar`; `session_bound_audit_writer(**kwargs)`
+  reads the contextvar and forwards to `write_audit`, no-opping
+  outside a request scope (lifecycle audits are a deferred
+  Phase-3c carry-over).
 - Modified `packages/llm_tracker_server/src/llm_tracker_server/proxy/forwarder.py`
-  — `plugin_host` is a new keyword-only argument; when supplied,
-  `forward_request` runs the full lifecycle around the upstream
-  call: `begin_exchange` → `on_request_received` (`Block`
-  short-circuits) → `before_forward` (`Block` / `Transform`
-  honoured) → `on_upstream_response_start` (`Abort` honoured) →
-  per-chunk `on_response_chunk` (`Abort` cuts mid-stream) → on a
-  clean upstream EOF, `on_response_complete` + `on_persisted` →
-  `end_exchange` in the generator's outer finally. The
-  `async for ... else` idiom gates the completion hooks so a
-  truncated stream doesn't fire them (this fixes a pre-existing
-  control-flow flaw in the local sidecar). `plugin_host=None`
-  preserves the CP7 transparent shape byte-for-byte.
+  — `forward_request` reads `request.state.session` +
+  `request.state.org_id`, wraps the pre-streaming hook calls in
+  `bind_request_context`, and inserts a `record_exchange_blocked`
+  call before each of the three `block_response(...)` returns.
+  The response generator opens a **fresh** `AsyncSession` from
+  `request.app.state.session_factory` (under
+  `BaseHTTPMiddleware` the auth session is committed and
+  closed before the body iterates), re-issues `SET LOCAL ROLE
+  llm_tracker_app` + `set_config('app.org_id', ...)` on it,
+  binds the contextvar to the fresh session, calls
+  `record_exchange_timing` between `on_response_complete` and
+  `on_persisted`, then `commit`s. Both lifecycle paths fold
+  into one `AsyncExitStack`. The CP7/CP8 transparent shape
+  survives byte-for-byte (gated on
+  `has_post_stream_storage`).
 - Modified `packages/llm_tracker_server/src/llm_tracker_server/app.py`
-  — `lifespan` owns two `httpx.AsyncClient` instances (upstream
-  forwarding + plugin egress; mirrors the local-sidecar split so
-  the egress client outlives `on_shutdown` for a drain), builds
-  an `EgressGuard` + `PluginHost`, attaches them to
-  `app.state`. Two new routes mounted when the session factory
-  is available: `/admin/plugins` (ADR-0014) and the catch-all
-  `@app.api_route("/{path:path}", methods=[DELETE/GET/PATCH/POST/PUT])`
-  that calls `forward_request(...)` with the lifespan-owned
-  upstream client and the `plugin_host`. The bare `/healthz`
-  boot contract from CP1 is preserved.
-- Modified `proxy/__init__.py` to re-export the new SSE pieces.
-- New `tests/test_plugin_host.py` (15 cases, no PG fixture) —
-  ported from the local sidecar with the audit-row assertions
-  swapped to a list-capturing writer; covers lifecycle audit
-  emissions, fault isolation, shutdown-budget headroom, manifest
-  validation, egress wiring, ADR-0019 mode retirement,
-  disable-by-config, introspection, and HookContext propagation.
-- New `tests/test_egress_guard.py` (7 cases, no PG) — ports the
-  denial + allow paths without the mode-keyed variants.
-- New `tests/test_proxy_forwarder_hooks.py` (7 cases, no PG) —
-  integration coverage for `Block` / `Transform` / `Abort` at
-  each hook plus the happy-path dispatch order.
+  — lifespan constructs `EgressGuard` + `PluginHost` with
+  `audit_writer=session_bound_audit_writer` and stashes
+  `app.state.session_factory` so the forwarder generator can
+  open the fresh post-stream session.
+- Modified `packages/llm_tracker_server/src/llm_tracker_server/storage/__init__.py`
+  to re-export the three new helpers.
+- New `tests/test_two_org_e2e_isolation.py` (1 case,
+  PG-required) — `test_two_org_e2e_isolation` seeds two orgs +
+  tokens, drives a real POST `/v1/messages` through the
+  catch-all as org A (upstream mocked via
+  `httpx.MockTransport` + `monkeypatch` on
+  `forwarder.UPSTREAM_BASE`), then asserts: as org A → 1 row
+  with `org_id = org_A`, `endpoint = "v1/messages"`,
+  `blocked_by IS NULL`; as org B → 0 rows; as `app.role =
+  'admin'` → 1 row total.
 
-Verification: server test suite → **39 passed, 15 skipped** (15
-new plugin_host + 7 new egress_guard + 7 new forwarder hooks +
-10 existing CP7/healthz; 15 skipped because no PG locally). Full
-repo suite without PG → **287 passed, 15 skipped, 4 warnings**
-(258 [CP7 baseline] + 29 new = 287). Ruff `check` + `format
---check` clean. App-import smoke (`from llm_tracker_server.app
-import app`) still returns a `FastAPI` object with no DB URL.
+Verification: server test suite (no PG) → **39 passed, 16
+skipped** (CP8 baseline 39 / 15 + 1 new CP9 e2e test that
+requires PG). Server test suite with PG → **55 passed** (39
+no-PG + 16 PG-gated, all green). Full repo suite without PG →
+**287 passed, 16 skipped, 4 warnings** (CP8 baseline 287 / 15 +
+the new CP9 e2e test counted as skipped here). Ruff `check` +
+`format --check` clean on the server package; pre-existing
+lint/format drift in adjacent packages left untouched per
+CLAUDE.md §2.3 surgical-changes.
 
-Eleven CP8-specific decisions, all flagged in the worklog
-§Decisions §CP8; the most load-bearing:
+Nine CP9-specific decisions, all flagged in the worklog
+§Decisions §CP9; the most load-bearing:
 
-1. **Permissive-by-default `HookContext` is transitional.**
-   `make_hook_context` passes `mode="R"` + `user_opted_in=True`
-   so the SDK resolves to L3 until CP10's manifest clamping
-   lands.
-2. **`LLMTRACK_USER_OPTED_IN` retired.** Per-org tokens (CP6)
-   are the new identity anchor; ADR-#2 will set the consent
-   surface.
-3. **`EgressGuard` no longer mode-gates anything.** Only the
-   manifest's own declarations enforce egress now.
-4. **Audit writes routed through an injected `AuditWriter`
-   callable.** Lets CP9 swap in a request-scoped, org-tagged
-   writer without changing any call site in `host.py`.
-5. **Storage writes deferred to CP9.** The forwarder hands the
-   plugin host the timing values via `on_response_complete` but
-   writes nothing to the DB itself.
-6. **`policy.py` (mode-keyed capability denial) not ported.**
-   ADR-0019 retired the underlying enforcement.
-7. **`async for ... else` fix in the forwarder.** Truncated
-   streams no longer misleadingly fire the completion hooks
-   (pre-existing flaw in the local-sidecar version).
-8. **No new `proxy/app.py` module.** Catch-all + lifespan
-   wiring live in the existing top-level `app.py`.
-9. **Two `httpx.AsyncClient` instances in `lifespan`.** Forwarder
-   client (`http2=False`) and egress client (defaults) have
-   independent lifecycles so the egress client outlives the
-   plugin shutdown drain.
-10. **Catch-all gated on auth middleware.** Without
-    `LLMTRACK_DATABASE_URL` the catch-all is not registered;
-    `/healthz` still works without a DB.
-11. **`BaseHTTPMiddleware` shape of `AuthMiddleware` preserved.**
-    A pure-ASGI rewrite was out of scope; CP14 smoke will
-    reveal whether streaming through it actually breaks SSE.
+1. **Generator opens a fresh `AsyncSession` for post-stream
+   writes.** Under `BaseHTTPMiddleware`, the auth middleware's
+   `session.commit()` runs before the outer ASGI iterates the
+   body, so `request.state.session` is closed by the time the
+   generator's `record_exchange_timing` would fire. The
+   plan's "use the same session" letter is unachievable with
+   the current middleware shape; the split (middleware session
+   pre-stream, fresh session post-stream) is the workaround. A
+   pure-ASGI replacement of `AuthMiddleware` is the long-term
+   fix and is now flagged as a CP9.5 housekeeping ticket.
+2. **Audit writer wired through a `ContextVar`.** Per-request
+   `PluginHost.audit_writer` overrides would race under
+   concurrency; the contextvar binds `(session, org_id)` for
+   the duration of each `with bind_request_context(...)` block.
+3. **`record_exchange_*` / `write_audit` flush, not commit.**
+   The per-request session keeps transaction control so the
+   middleware's terminal `commit()` is still the single commit
+   point pre-stream; the generator owns the commit on its fresh
+   session post-stream.
+4. **Storage helpers mirror local-sidecar file names
+   (`exchanges.py` + `audit.py`).** The plan's
+   `events.py` + `tool_calls.py` files don't exist yet because
+   the Phase-2 extractor hasn't been built; no helper modules
+   are introduced that nobody calls.
+5. **`session_factory` plumbed onto `app.state`.** Same seam
+   used by `upstream_client` + `plugin_host`. Forwarder reads
+   it via `request.scope.get("app")` so unit tests that build
+   a bare `Request` still hit the transparent path.
+6. **`session_bound_audit_writer` is a free function.** Free
+   functions with module-level state compose more cleanly with
+   both `PluginHost` and `EgressGuard` than a singleton.
+7. **`SET LOCAL ROLE` + `set_config` issued unconditionally
+   on the fresh session.** Production needs both; tests need
+   only the GUC (conftest wraps the role drop); idempotent on
+   the same transaction.
+8. **Lifecycle audits silently dropped.** No org context
+   outside a request + NOT NULL `audit_log.org_id` + no
+   service-role bypass = no row written. The call sites stay
+   in place so ADR-#2 / a follow-up checkpoint can light them
+   up under whatever shape it picks (operator-org, system-org,
+   separate table).
+9. **CP9 e2e test bypasses FastAPI lifespan.** Seeds
+   `app.state` (`upstream_client`, `plugin_host`,
+   `session_factory`) manually instead of paying for a real
+   `httpx.AsyncClient` lifecycle per test.
 
-Source HEAD is now `79227fe`. Documentation HEAD advances with
+Source HEAD is now `fe18e9a`. Documentation HEAD advances with
 this §5.3 finalize commit.
 
 ### Prior workstream — Phase-3a decisions (closed 2026-05-11)
@@ -381,49 +376,45 @@ reframes them server-side**:
 
 ## Next single step
 
-**Phase 3c CP9 — Storage layer: org-aware INSERTs
-(ADR-0018 + ADR-0020 wiring).** Ninth commit of the 14-checkpoint
-plan at `docs/worklog/2026-05-11-phase3c-plan.md`:
+**Phase 3c CP10 — `min_content_level` manifest field + host
+enforcement (ADR-0019 §Open questions).** Tenth commit of the
+14-checkpoint plan at `docs/worklog/2026-05-11-phase3c-plan.md`:
 
-- Every INSERT path in the ported storage layer (`exchanges`,
-  `events`, `tool_calls`, `audit_log`) writes
-  `org_id = request.state.org_id`. The same per-request
-  `AsyncSession` (bound by CP6's middleware to `app.org_id` via
-  `SET LOCAL ROLE llm_tracker_app` +
-  `set_config('app.org_id', :uuid, true)`) is the one CP9
-  uses for the writes, so RLS sees the matching org axis.
-  Defense in depth: the column is set explicitly even though
-  RLS would block a wrong-org write.
-- Swap the `PluginHost`'s no-op `audit_writer` (CP8 default)
-  for a session-bound writer that takes the request-scoped
-  session + `request.state.org_id` and writes an `AuditLog`
-  row. Every call site in `host.py` (load events, lifecycle
-  audits, `hook_invoked`, `plugin_fault`) routes through this
-  writer; CP9 doesn't need to touch the host file.
-- In the forwarder's `generate()`: inside the existing
-  `if completed and plugin_host is not None` block, call
-  `record_exchange_timing` (or a CP9-renamed equivalent) with
-  the locally-held timing values + `org_id` before firing
-  `on_persisted`. The `Block` path return calls
-  `record_exchange_blocked` first so the row carries
-  `blocked_by = result.plugin` + the org id.
-- Add a two-org end-to-end isolation test through the real
-  `/v1/messages` path: issue a request as org A, assert the
-  exchange row in org B's session-scope is invisible.
+- Add `min_content_level` to the plugin manifest schema
+  (default `L3`; valid values `L0` / `L1` / `L2` / `L3`).
+- Server-side `PluginHost.make_hook_context` clamps each
+  plugin's `HookContext` view to the declared level — a plugin
+  asking for `L0` cannot reach `request_text` even when the
+  data is in memory.
+- Drop the mode-keyed intersection logic still living in the
+  SDK's `HookContext`: CP8's transitional shape passes
+  `mode="R"` + `user_opted_in=True` which the SDK resolves to
+  L3. Either thread `min_content_level` into the SDK or
+  replace the shim with the declared level directly.
+- New test `tests/test_min_content_level.py`: declare a plugin
+  at L1, assert it cannot access `request_text`; declare
+  another at L3, assert it can.
+- `/admin/plugins` payload gets `min_content_level` so
+  manifests remain self-describing through introspection
+  (ADR-0014).
 
-CP8 left three contracts CP9 will rely on:
+CP9 left two contracts CP10 will rely on:
 
-- `PluginHost(audit_writer=...)` is the swap-in point for a
-  session-bound writer.
-- The forwarder's `generate()` already holds `t0_mono`,
-  `t0_epoch_ms`, and the `timing` dict for CP9 to read.
-- The `Block` path's call site in `forward_request` is the
-  insertion point for `record_exchange_blocked`.
+- The CP8 transitional permissive `HookContext` is still in
+  place: `make_hook_context` returns L3 visibility for every
+  plugin. CP10's job is to replace that with manifest-driven
+  clamping. Existing test
+  `test_begin_exchange_passes_same_ctx_to_each_hook` pins the
+  current L3-visible behaviour and needs a sibling pinning the
+  new clamping shape.
+- `PluginHost.loaded_plugins()` already serialises
+  `allowed_modes`; CP10 adds `min_content_level` to the same
+  payload.
 
-CP6 left two contracts CP9 still reads:
-`request.state.session` is the per-request `AsyncSession`
-bound to `app.org_id`, and `request.state.org_id` is the
-resolved org UUID.
+The CP9 storage + audit wiring stays as-is — CP10 doesn't
+change INSERT shapes. The two-session split (middleware
+pre-stream, fresh session post-stream; CP9 §D1) is a CP9.5
+housekeeping ticket and is not on CP10's path.
 
 To revive the dev loop in a new session:
 
@@ -482,9 +473,10 @@ ready to start.
 - [x] **Phase 3c CP6 — auth middleware + tokens CLI (2026-05-12, commit 1c0835a)**
 - [x] **Phase 3c CP7 — Anthropic credential pass-through + log scrubbing (2026-05-12, commit e1d34bc)**
 - [x] **Phase 3c CP8 — Port proxy + plugin host server-side (2026-05-12, commit 79227fe)**
+- [x] **Phase 3c CP9 — Storage layer: org-aware INSERTs (2026-05-12, commit fe18e9a)**
 - [ ] **Phase 3a — remaining 3 decision ADRs** (#1 fallback / #2 consent / #4 agent language)
 - [ ] Phase 3b — thin local agent (gated on #1 + #4)
-- [ ] Phase 3c — server build-out (8 of 14 checkpoints done; remaining CP9–CP14 per `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0017/0018/0019/0020/0022)
+- [ ] Phase 3c — server build-out (9 of 14 checkpoints done; remaining CP10–CP14 per `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0017/0018/0019/0020/0022)
 - [ ] Phase 1c — `scope_guard` (paused; reframed server-side per ADR-0019; gated on Phase 3c readiness)
 - [ ] Phase 3d — carry-overs: OpenAI/Gemini adapters, analytics interface, response-side policy plugins
 

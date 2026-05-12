@@ -44,6 +44,100 @@ The plan must:
 - Refreshed `docs/STATUS.md` to point at this worklog and set
   "Next single step" to CP1 (commit `f866cb8`).
 
+### CP10 — `min_content_level` manifest field + host enforcement (2026-05-12, commit `6c3b7b8`)
+
+- Modified `packages/llm_tracker_sdk/src/llm_tracker_sdk/manifest.py`
+  — `PluginManifest` gains
+  `min_content_level: ContentLevel = ContentLevel.L3` plus a
+  `mode="before"` field validator that coerces strings
+  (`"L0"` / `"L1"` / `"L2"` / `"L3"`), integers (`0`..`3`) and
+  `ContentLevel` enum members. Unknown values raise a Pydantic
+  `ValueError` with the ladder enumeration. The L3 default keeps
+  every pre-CP10 manifest (no field declared) loading at its
+  previous permissive ceiling.
+
+- Modified `packages/llm_tracker_sdk/src/llm_tracker_sdk/hook_context.py`
+  — `HookContext` gains an optional `_ceiling: ContentLevel | None`
+  slot (default `None`, `repr=False` like `_raw_request_body`).
+  `effective_ceiling()` now prefers `_ceiling` when present, falling
+  back to the legacy `effective_ceiling(mode, user_opted_in=...)`
+  math otherwise. The fallback preserves the local-sidecar
+  `packages/llm_tracker/` callers and every SDK-level test pinned
+  to mode L/A/R unchanged.
+
+- Modified `packages/llm_tracker_server/src/llm_tracker_server/plugin_host/context.py`
+  — `make_hook_context` gains a `min_content_level: ContentLevel
+  | None = None` keyword. When supplied it passes through to
+  `HookContext._ceiling`. Production callers always supply a value
+  via the dispatch loop. Module docstring rewritten: the
+  `mode="R"` + `user_opted_in=True` placeholder pair is now never
+  consulted at runtime (the manifest-driven `_ceiling` wins) and
+  exists only as filler for the SDK dataclass's required `mode`
+  field.
+
+- Modified `packages/llm_tracker_server/src/llm_tracker_server/plugin_host/host.py`:
+  - `PluginHost.__init__` adds `self._min_levels: dict[str,
+    ContentLevel]` — keyed by `plugin.name` and populated during
+    `load_plugins` from the manifest's `min_content_level`.
+    Plugins bypassing `load_plugins` (`host._plugins = [...]`
+    in unit tests) are absent from the dict and default to `L3`
+    so the pre-CP10 permissive shape survives.
+  - New private helper `_bind_plugin_view(ctx, plugin)`
+    consolidates the per-plugin mutations on the shared context:
+    `ctx.egress` (ADR-0015) and `ctx._ceiling` (CP10). Every
+    per-exchange dispatcher (`on_request_received`,
+    `before_forward`, `on_upstream_response_start`,
+    `on_response_chunk`, `on_response_complete`, `on_persisted`)
+    now calls `_bind_plugin_view` before each plugin's `_call`.
+    The shared `ctx` mutates per plugin during the loop — same
+    pattern the egress client already followed — so the
+    ADR-0012 invariant (same ctx instance for every plugin
+    within an exchange) holds.
+  - `loaded_plugins()` payload now includes
+    `"min_content_level": m.min_content_level.name` so the
+    `/admin/plugins` endpoint (ADR-0014) reports each plugin's
+    declared level alongside `allowed_modes`.
+
+- Modified `packages/llm_tracker_server/tests/test_plugin_host.py`
+  — `test_loaded_plugins_returns_serialisable_view`'s expected
+  dict gains `"min_content_level": "L3"` (the default for a
+  manifest with no explicit declaration).
+
+- New `packages/llm_tracker_server/tests/test_min_content_level.py`
+  (5 cases, no PG):
+  - `test_l1_plugin_cannot_read_request_text` — declares two
+    plugins (L1 + L3) via `find_manifest` + `entry_points`
+    monkeypatch, drives one `on_request_received` exchange with
+    a body, asserts the L1 plugin's captured `request_text(L3)`
+    is `None` while `request_hash()` / `request_length()`
+    populate as the L1 escape hatch (SHA-256 of the body, raw
+    byte length).
+  - `test_l3_plugin_sees_request_text` — same fixture, asserts
+    the L3 plugin's captured `request_text(L3)` decodes to the
+    full request body.
+  - `test_loaded_plugins_payload_reports_min_content_level` —
+    drives `load_plugins` end-to-end, asserts both plugins'
+    levels surface in `loaded_plugins()` (`"L1"` and `"L3"`).
+  - `test_manifest_min_content_level_defaults_to_l3` — bare
+    `PluginManifest(...)` resolves to `ContentLevel.L3`
+    (pre-CP10 manifests stay backward-compatible).
+  - `test_manifest_min_content_level_rejects_unknown_string` —
+    `"L4"` raises `ValueError` with the "Unknown
+    min_content_level" message.
+
+Verification: server test suite (no PG) → **44 passed, 16
+skipped** (CP9 baseline 39 / 16 + 5 new CP10 cases). Server
+test suite with PG → **60 passed** (44 no-PG + 16 PG-gated, all
+green; CP9 baseline was 55). Full repo suite without PG → **292
+passed, 16 skipped, 4 warnings** (CP9 baseline 287 + 5 new
+CP10). Ruff `check` + `format --check` clean on
+`packages/llm_tracker_sdk` and `packages/llm_tracker_server`.
+Pre-existing lint/format drift in adjacent packages left
+untouched per CLAUDE.md §2.3 surgical-changes.
+
+Source `HEAD` now at `6c3b7b8`. Documentation HEAD advances with
+this §5.3 finalize commit.
+
 ### CP9 — Storage layer: org-aware INSERTs (2026-05-12, commit `fe18e9a`)
 
 - New `packages/llm_tracker_server/src/llm_tracker_server/storage/exchanges.py`
@@ -1079,6 +1173,75 @@ So only CP9 and CP14 carry a Phase-3a flag, and it is a soft
   appear) will run under a session that asserts `app.role = 'admin'`
   alongside `app.org_id`.
 
+### CP10
+
+- **D1 — Option A: thread `min_content_level` through the SDK
+  rather than rip out the mode-keyed math.** The plan's "either
+  thread it through or replace the shim" choice. Option B (full
+  replacement) would force a synchronized change inside
+  `packages/llm_tracker/` (the local-sidecar package ADR-0017
+  §Reversibility preserved as reusable scaffolding) and break
+  every test under `packages/llm_tracker/tests/test_hook_context.py`
+  + `test_content_levels.py` that pins L/A/R semantics. Adding an
+  optional `_ceiling` slot that wins-when-present is one diff in
+  the SDK, leaves all legacy callers untouched, and lets the
+  server-side host treat the mode/opt-in pair as inert filler. The
+  trade-off is two coexisting ceiling-resolution paths in the SDK
+  for as long as the local-sidecar package lives; the long-term
+  cleanup is gated on the eventual deletion of
+  `packages/llm_tracker/` (a Phase 3b/3c-end housekeeping
+  decision per the planning §Decisions).
+
+- **D2 — Default `min_content_level` is `L3`.** Matches the
+  planning §Decisions ("backwards-compatible with every plugin
+  written against the local-sidecar SDK"). Plugins opt *down* to
+  L0/L1/L2 explicitly; an absent field never silently restricts
+  data the plugin already had access to.
+
+- **D3 — Per-plugin clamp is mutation on the shared `ctx`, not a
+  per-plugin context object.** ADR-0012 pins that every
+  per-exchange hook receives the same ctx instance, and the
+  existing `test_begin_exchange_passes_same_ctx_to_each_hook`
+  identity assertion would break if dispatch handed each plugin
+  its own ctx. The per-plugin mutation pattern (`ctx.egress =
+  plugin.egress`) already lived in the dispatcher; extending it
+  with `ctx._ceiling = ...` mirrors that and stays thread-safe
+  because dispatch within one exchange is serial.
+
+- **D4 — `_bind_plugin_view(ctx, plugin)` helper consolidates the
+  two per-plugin mutations.** Two read-points was acceptable at
+  CP8 (`ctx.egress` only); three would have been six dispatcher
+  copies of the same two-line preamble. Factoring is one diff for
+  CP10 and makes future per-plugin slots a one-line change
+  instead of a six-site sweep.
+
+- **D5 — Plugins bypassing `load_plugins` default to `L3`.** Unit
+  tests that set `host._plugins = [_FooPlugin()]` directly skip
+  the manifest pipeline and therefore aren't present in
+  `self._min_levels`. Defaulting the lookup to L3 preserves the
+  permissive shape every pre-CP10 dispatcher test relied on —
+  notably `test_begin_exchange_passes_same_ctx_to_each_hook`,
+  which asserts `ctx.request_text(L3) == body`. Production
+  callers always go through `load_plugins`, so this is a
+  test-affordance fallback, not a production posture.
+
+- **D6 — `min_content_level` accepted as string from TOML, enum
+  at runtime.** Pydantic v2's default IntEnum coercion accepts
+  `min_content_level = 3` → `ContentLevel.L3`, but authors
+  writing TOML expect `min_content_level = "L1"`. The
+  `mode="before"` field validator handles strings, ints, and the
+  `ContentLevel` enum itself (for in-Python construction) and
+  raises a `ValueError` with the explicit ladder enumeration on
+  any other input. The string form is the documented public
+  surface; ints and the enum are conveniences for tests and
+  programmatic callers.
+
+- **D7 — `/admin/plugins` serialises the level as a string name
+  (`"L3"`, not `3`).** Symmetric with how `allowed_modes`
+  serialises as `["L", "A", "R"]` (the names, not their
+  indices). Consumers of `/admin/plugins` are humans reading
+  JSON; a number would be opaque.
+
 ### CP9
 
 - **D1 — Generator opens a *fresh* `AsyncSession` for post-stream
@@ -1738,6 +1901,58 @@ So only CP9 and CP14 carry a Phase-3a flag, and it is a soft
   `docs/STATUS.md`, `docs/roadmap.md`, the signing-removal worklog,
   and the supabase-sink CP4 worklog all exist at the cited paths.
 
+### CP10
+
+Server-only suite without the PG URL:
+
+```
+$ .venv/bin/python -m pytest packages/llm_tracker_server/tests/ -q
+...
+44 passed, 16 skipped in 5.67s
+```
+
+44 = CP9 baseline 39 + 5 new CP10 cases (`test_min_content_level.py`).
+The 16 skips are the PG-gated cases (CP2/CP3/CP4/CP5/CP6/CP9 smokes —
+unchanged).
+
+Server suite with the PG URL set:
+
+```
+$ LLMTRACK_TEST_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker_test \
+    .venv/bin/python -m pytest packages/llm_tracker_server/tests/ -q
+...
+60 passed in 22.92s
+```
+
+60 = 44 no-PG + 16 PG-gated. No new PG-dependent tests in CP10
+(the clamp surface is DB-free), so the PG-gated count is
+unchanged from CP9.
+
+Full repo suite without the PG URL:
+
+```
+$ .venv/bin/python -m pytest -q
+...
+292 passed, 16 skipped, 4 warnings in 12.77s
+```
+
+292 = CP9 baseline 287 + 5 new CP10 cases. Pre-existing 4
+warnings unchanged (`os.fork` deprecation from
+`packages/llm_tracker/src/llm_tracker/cli/manage.py`).
+
+Ruff:
+
+```
+$ .venv/bin/python -m ruff check packages/llm_tracker_sdk packages/llm_tracker_server
+All checks passed!
+$ .venv/bin/python -m ruff format --check packages/llm_tracker_sdk packages/llm_tracker_server
+57 files already formatted
+```
+
+Two files needed one `ruff format` pass at write time
+(`manifest.py` and the new `test_min_content_level.py`); the
+format-check above is post-format.
+
 ### CP7
 
 Targeted run of the new credential-passthrough test file (no PG
@@ -2366,8 +2581,8 @@ the ASGI-transport test, so I skipped the live-port loop.
 ## What's left / known limits
 
 - **The plan is 14 checkpoints; it is not the implementation.** As
-  of CP9, 9 of 14 are committed; CP10 (`min_content_level` manifest
-  field + host enforcement) is the next.
+  of CP10, **10 of 14 are committed**; CP11 (`.env.example` +
+  developer docs refresh) is the next.
 - **Lifecycle audit rows are dropped under CP9.** The contextvar
   no-ops outside a request, and `audit_log.org_id` is NOT NULL
   with no service-role bypass. The call sites are still in place
@@ -2401,66 +2616,60 @@ the ASGI-transport test, so I skipped the live-port loop.
 
 ## Handoff
 
-CP9 landed cleanly. Source `HEAD` is `fe18e9a`; the §5.3 finalize
-commit refreshing `docs/STATUS.md` + this worklog adds one more.
-The 14-checkpoint plan is **9/14 done**. The storage layer is now
-org-aware end-to-end: every `Exchange` INSERT lands with
-`org_id = request.state.org_id` (defense-in-depth on top of CP5's
-RLS `WITH CHECK`), every audit dispatched on a request reaches
-`audit_log` through a request-scoped contextvar-bound writer, and
-the synthetic SSE block paths (`Block` from `on_request_received`
-/ `before_forward`, `Abort` from `on_upstream_response_start`)
-each persist a `blocked_by`-tagged row before returning. The
-single new e2e test
-(`test_two_org_e2e_isolation`) drives a real POST through the
-catch-all and asserts org-A → org-B invisibility; the full server
-suite is now **55 passed with PG** (39 no-PG + 16 PG-gated) and
-the full repo suite without PG is **287 passed / 16 skipped**.
+CP10 landed cleanly. Source `HEAD` is `6c3b7b8`; the §5.3
+finalize commit refreshing `docs/STATUS.md` + this worklog adds
+one more. The 14-checkpoint plan is **10/14 done**. The
+plugin-visibility ceiling is now manifest-driven: every plugin
+manifest carries a `min_content_level` (default `L3`; declared
+in TOML as `"L0"` / `"L1"` / `"L2"` / `"L3"`) and the
+server-side `PluginHost` re-points `ctx._ceiling` per plugin
+before every hook dispatch via the new `_bind_plugin_view(ctx,
+plugin)` helper. An L1 plugin can no longer reach
+`request_text` even when the data is in memory; the L1 escape
+hatch (`request_hash` + `request_length`) still resolves. An L3
+plugin sees the full body. The SDK's legacy mode/opt-in math is
+preserved for the local-sidecar `packages/llm_tracker/` package:
+`HookContext.effective_ceiling` prefers the manifest-driven
+`_ceiling` when present and falls through to the
+`effective_ceiling(mode, user_opted_in=...)` table otherwise, so
+no local-sidecar callers regressed.
 
-CP9 left two contracts CP10 will rely on:
+`/admin/plugins` (ADR-0014) now reports each plugin's declared
+level alongside `allowed_modes` (serialised as the enum's name,
+e.g. `"L3"`), so manifests stay self-describing through
+introspection.
 
-- The transitional permissive `HookContext` from CP8 §D1 is still
-  in place: `make_hook_context` returns L3 visibility for every
-  plugin. CP10's job is to replace that with manifest-driven
-  clamping (`min_content_level` field on `PluginManifest`).
-  Existing test
-  `test_begin_exchange_passes_same_ctx_to_each_hook` pins the
-  current L3-visible behaviour and will need a sibling that pins
-  the new clamping shape once CP10 lands.
-- `PluginHost.loaded_plugins()` already serialises
-  `allowed_modes` for `/admin/plugins` (ADR-0014). CP10 should
-  add `min_content_level` to the same payload so the
-  introspection view stays self-describing.
+CP10 left the CP9 wiring untouched:
 
-**Next single step**: **CP10 — `min_content_level` manifest
-field + host enforcement (ADR-0019 §Open questions).** Per the
-plan:
+- Storage helpers, audit context, and the two-session
+  forwarder split are unchanged.
+- The CP9 transitional shape (every `Exchange` INSERT lands
+  with `org_id = request.state.org_id`) continues to apply;
+  CP10 did not change INSERT or audit shapes.
 
-- Add `min_content_level` to the plugin manifest schema (default
-  `L3`; valid values `L0` / `L1` / `L2` / `L3`).
-- Server-side `PluginHost.make_hook_context` clamps each
-  plugin's `HookContext` view to the declared level — a plugin
-  asking for `L0` cannot reach `request_text` even when the data
-  is in memory.
-- Drop the mode-keyed intersection logic (already gone in CP8
-  for the host, but the SDK `HookContext.request_text(level)`
-  still resolves the mode-keyed ceiling internally; CP10 either
-  threads `min_content_level` into the SDK or replaces the
-  `mode="R"` / `user_opted_in=True` shim with the declared
-  level).
-- New test `tests/test_min_content_level.py`: declare a plugin
-  at L1, assert it cannot access `request_text`; declare another
-  at L3, assert it can.
-- `/admin/plugins` payload gets `min_content_level` so manifests
-  remain self-describing through introspection.
+The CP9.5 housekeeping ticket (pure-ASGI `AuthMiddleware`
+replacement so the generator does not need a fresh session
+post-stream) remains open and is not on CP11's path either —
+it's a Phase-3c-end ticket.
 
-The CP9-specific contracts CP10 doesn't need to touch:
+**Next single step**: **CP11 — `.env.example` + developer docs
+refresh.** Per the plan §"CP11":
 
-- The forwarder's storage + audit wiring stays as-is. CP10
-  doesn't change INSERT shapes.
-- The two-session split (middleware session pre-stream, fresh
-  session post-stream) is a CP9.5 housekeeping ticket; CP10
-  doesn't depend on it being resolved.
+- Rewrite `.env.example` for the server's actual surface —
+  `DATABASE_URL`, log level, the (transient) Anthropic header
+  convention, optional per-org token for local development.
+  Remove `LLMTRACK_MODE`, `LLMTRACK_USER_OPTED_IN`, SQLite
+  paths.
+- Add a "running locally" section to `docs/plugins.md` covering
+  the server-side load path (entry-point group, manifest
+  discovery, the new `min_content_level` field surface).
+- No Dockerfile yet — that's CP12.
+
+Phase-3a dependencies: none for CP11. CP12 (Dockerfile) and
+CP13 (Fly + secrets + staging) follow; CP14 (operator-only
+end-to-end smoke) is the final checkpoint and has the soft
+Phase-3a #2 dependency for *external* testing, but the
+operator-only smoke is not blocked.
 
 For a future session reviving the dev loop:
 

@@ -31,8 +31,20 @@ capabilities = ["read_request_content", "block_request"]
 # Egress allowlist (exact match; no wildcards). Requires egress_http capability.
 egress_destinations = []
 
-# Deployment modes in which this plugin runs ("L", "A", "R")
+# Deployment modes the manifest was originally written for. ADR-0019
+# retired runtime mode enforcement; the field is retained for
+# backward-compat with manifests written before the server pivot and
+# is reported by `/admin/plugins` (ADR-0014) but no longer gates load.
 allowed_modes = ["A", "R"]
+
+# Content-level ceiling for what this plugin sees through `HookContext`
+# (ADR-0019, CP10). One of "L0" / "L1" / "L2" / "L3"; default "L3"
+# when the field is absent. The server-side `PluginHost` re-points
+# `ctx._ceiling` per plugin before every hook dispatch, so an L1
+# plugin cannot reach raw `request_text` even when a sibling L3
+# plugin in the same chain can. Authors opt *down* explicitly --
+# an absent field never silently restricts data.
+min_content_level = "L3"
 
 # SQLite table prefix (defaults to empty; use name if you own tables)
 db_namespace = "my_plugin"
@@ -59,19 +71,31 @@ Use `PluginManifest.from_path(Path("plugin.toml"))` to validate programmatically
 
 Every per-exchange hook receives a `HookContext` (ADR-0012). The
 context has lazy accessors for the request body that degrade against
-the deployment mode and operator opt-in flag (design.md §7.1).
+the plugin's manifest `min_content_level` (CP10).
 
-| Effective level | `request_text(level)` | `request_hash()` | `request_length()` |
+Under the server-side runtime (ADR-0019), the effective ceiling is the
+plugin's own `min_content_level` -- not the deployment mode and not an
+operator opt-in flag. The server's `PluginHost` re-points
+`ctx._ceiling` per plugin before every hook dispatch, so two plugins
+sharing the same exchange context see different shapes:
+
+| Plugin's `min_content_level` | `request_text(level)` | `request_hash()` | `request_length()` |
 |---|---|---|---|
-| L0 (Mode A)                          | `None`           | `None`         | `None`         |
-| L1 (Mode L; Mode R no opt-in)        | `None`           | hex SHA-256    | byte length    |
-| L2 (Mode R + opt-in, asking for L2)  | raw decoded text\* | hex SHA-256  | byte length    |
-| L3 (Mode R + opt-in, asking for L3)  | raw decoded text | hex SHA-256    | byte length    |
+| `L0`                                 | `None`             | `None`         | `None`         |
+| `L1` (default for "metadata-only" sinks) | `None`         | hex SHA-256    | byte length    |
+| `L2`                                 | raw decoded text\* | hex SHA-256    | byte length    |
+| `L3` (default when the field is absent) | raw decoded text | hex SHA-256  | byte length    |
 
 \* L2 returns the raw decoded text today. The "scrubbed" shape
-described in design.md §7.1 lands in Phase 1c alongside the scrubber
-primitives — until then a plugin asking for L2 receives the same
-bytes it would get at L3.
+described in design.md §7.1 still lands as a Phase 3c follow-up
+alongside the server-side scrubber primitives — until then a plugin
+asking for L2 receives the same bytes it would get at L3.
+
+The legacy mode-keyed ceiling math
+(`effective_ceiling(mode, user_opted_in=...)`) is preserved inside the
+SDK as a fallback path so plugins written against the original
+local-sidecar shape (`packages/llm_tracker/`) still run, but the
+server-side path always wins when a manifest declares a level.
 
 **Reading rules of thumb**:
 
@@ -198,13 +222,16 @@ Direct use of `requests` / `urllib` / `httpx` from plugin code is
 enforces: (a) exact-match against `egress_destinations`, (b) operator
 approval, (c) mode permission.
 
-## 9. Mode-aware behavior
+## 9. Mode-aware behavior (legacy)
 
-The manifest's `allowed_modes` decides where the plugin loads:
-
-- `["L", "A", "R"]` — works anywhere.
-- `["A", "R"]` — needs outbound capability; disabled in Mode L.
-- `["R"]` — data upload sink; only Mode R.
+The manifest's `allowed_modes` was originally used by the local
+sidecar to gate plugin load against a deployment mode (L/A/R). ADR-0019
+retired runtime mode enforcement when the project pivoted to a central
+server. The field is still parsed and reported by `/admin/plugins` so
+existing manifests load unchanged, but it no longer gates loading; what
+a plugin can see is decided by its own `min_content_level` (§2, §3.1)
+and what it can reach over the network is decided by `EgressGuard`
+against `egress_destinations`.
 
 ## 10. Isolation and trust
 
@@ -228,3 +255,64 @@ Install from git URL:
 ```
 pip install "git+https://github.com/<owner>/Userfriendly.git#subdirectory=packages/llm_tracker_plugin_hello_world"
 ```
+
+## 12. Running locally — server-side load path
+
+Under the server-side runtime (`packages/llm_tracker_server/`, ADR-0017),
+plugins are loaded once at process startup by the `PluginHost` inside
+the FastAPI `lifespan` callback. The mechanism is the same setuptools
+entry-point machinery the local sidecar uses; the differences are
+where the host runs and what the manifest gates.
+
+**Entry-point group**. The server scans the `llm_tracker.plugins`
+entry-point group via `importlib.metadata.entry_points`. Register your
+plugin class in `pyproject.toml` exactly as you would for the
+sidecar:
+
+```toml
+[project.entry-points."llm_tracker.plugins"]
+my_plugin = "my_plugin:MyPlugin"
+```
+
+The host installs every plugin it finds at boot. There is no
+operator-side allowlist; the trust root is the deploy pipeline (git +
+CI + server filesystem permissions) per ADR-0021.
+
+**Manifest discovery**. For each entry point the host loads the class,
+then looks up `plugin.toml` next to the class's module. Manifest
+validation is the same `PluginManifest.model_validate` path documented
+in §2; failures land in the `audit_log` as
+`kind=manifest_rejected` and the plugin is skipped, not crashed
+through.
+
+**Per-plugin ceiling clamp (CP10)**. After the manifest validates, the
+host records `manifest.min_content_level` (default `L3`) and applies it
+on every per-exchange hook dispatch by re-pointing `ctx._ceiling`
+before the plugin's `_call` -- the same `ctx` is reused across hooks
+per ADR-0012, but each plugin sees a freshly-bound view. The same
+preamble sets `ctx.egress` to the plugin's own `HostEgressClient`
+(ADR-0015) so attribution stays stable.
+
+**Local dev loop**. To run the server against a disposable Postgres:
+
+```bash
+docker run -d --name llm-tracker-pg \
+  -e POSTGRES_USER=cp2 -e POSTGRES_PASSWORD=cp2 \
+  -e POSTGRES_DB=llm_tracker \
+  -p 55432:5432 postgres:15
+
+export LLMTRACK_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker
+alembic -c packages/llm_tracker_server/alembic.ini upgrade head
+
+uvicorn llm_tracker_server.app:app --reload --port 8080
+```
+
+Mint a per-org token for local development:
+
+```bash
+llm-tracker-server tokens issue --org demo
+```
+
+`GET /admin/plugins` then returns the introspection payload for every
+plugin the host wired up, including each plugin's declared
+`min_content_level`.

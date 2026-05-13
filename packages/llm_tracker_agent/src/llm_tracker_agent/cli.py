@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
 import threading
 import time
@@ -53,6 +54,26 @@ def setup(
     typer.echo(f"Saved {CONFIG_PATH}. Run `claude-manage` to start.")
 
 
+def _pick_port(preferred: int) -> int:
+    """Return ``preferred`` if loopback-bindable, else a free ephemeral port.
+
+    Lets multiple ``claude-manage`` instances coexist: the first wins the
+    preferred port, every subsequent instance gets its own ephemeral port
+    instead of silently sharing the first instance's proxy. There is a
+    micro-race between this probe closing the socket and uvicorn re-binding
+    — if it loses, uvicorn fails in its thread and ``_wait_ready`` times
+    out with a clear error.
+    """
+    for candidate in (preferred, 0):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            try:
+                probe.bind(("127.0.0.1", candidate))
+            except OSError:
+                continue
+            return probe.getsockname()[1]
+    raise OSError("no free loopback port available")
+
+
 def _wait_ready(port: int, timeout: float = READY_TIMEOUT_SECONDS) -> None:
     deadline = time.monotonic() + timeout
     url = f"http://127.0.0.1:{port}/healthz"
@@ -75,21 +96,28 @@ def _wait_ready(port: int, timeout: float = READY_TIMEOUT_SECONDS) -> None:
 
 def _run(extra_args: list[str]) -> None:
     config = load_config()
+    port = _pick_port(config.local_port)
+    if port != config.local_port:
+        typer.echo(
+            f"[claude-manage] preferred port {config.local_port} in use; "
+            f"this instance is on {port}.",
+            err=True,
+        )
     proxy_app = make_proxy_app(config)
     server = uvicorn.Server(
         uvicorn.Config(
             proxy_app,
             host="127.0.0.1",
-            port=config.local_port,
+            port=port,
             log_level="warning",
             access_log=False,
         )
     )
     threading.Thread(target=server.run, daemon=True).start()
-    _wait_ready(config.local_port)
+    _wait_ready(port)
 
     env = os.environ.copy()
-    env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{config.local_port}"
+    env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}"
 
     # NOTE: spec called for ``os.execvp("claude", ...)`` but exec'ing
     # replaces the current Python process image and immediately kills

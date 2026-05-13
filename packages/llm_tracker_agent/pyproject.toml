@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llm-tracker-agent"
+version = "0.0.1"
+description = "Thin local agent (`claude-manage`) that routes Claude Code through the llm-tracker central server. Phase 3b per ADR-0017 / ADR-0024 / ADR-0025."
+requires-python = ">=3.11"
+authors = [{ name = "Userfriendly Team" }]
+license = { text = "Proprietary (internal research use)" }
+
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx[http2]",
+    "typer",
+    "tomli-w",
+]
+
+[project.scripts]
+claude-manage = "llm_tracker_agent.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/llm_tracker_agent"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

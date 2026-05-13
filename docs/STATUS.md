@@ -6,8 +6,8 @@
 
 ---
 
-**Last updated**: 2026-05-13 (Claude Code; **CP14 response-side investigation closed — hypothesis falsified.** STATUS's prior framing ("INSERT-at-open + UPDATE-at-close two-step") is wrong: there is **no UPDATE path anywhere** in the server source, and the happy-path INSERT (`record_exchange_timing` in `storage/exchanges.py`) is a single write at stream-close that *intentionally omits* eight response-side columns. The NULLs are not a silent UPDATE failure — they are "never written by code" — a known unfinished piece of CP8/CP9 documented in `forwarder._drain`'s "Phase-2 will replace this with the Extractor" comment. Three options surfaced for the user (A: quick wins from data the forwarder already has; B: thin SSE extractor for `message_start`/`delta`/`stop`; C: ADR-first then implement). Recommendation: C → A → B in that order. Awaiting user pick. New worklog: `docs/worklog/2026-05-13-cp14-response-side-followup.md`.)
-**Updated by**: Claude Code (CP14 response-side investigation; docs-only checkpoint)
+**Last updated**: 2026-05-13 (Claude Code; **CP14 follow-up Option A landed.** User picked Option A (quick wins only) from the three-option ask; ADR + SSE Extractor deferred to separate tracks. Source change in commit `237d842`: `record_exchange_timing` signature extended with `ended_at_ms`/`status_code`/`model_requested`/`latency_ms`; `proxy/forwarder.py` parses `model` from request body via `_parse_model_requested` (best-effort, never escalates) and derives `ended_at_ms` from the same monotonic anchor as the existing `t_*_ms` marks; `test_two_org_e2e_isolation.py` asserts the four new columns are populated on the happy-path row. 61/61 tests green; ruff clean. Five response-side columns (`model_served`, `input_tokens`, `output_tokens`, `cache_*`, `stop_reason`) remain NULL until Option B's SSE extractor lands. Live Fly deploy still runs the pre-Option-A build until next `fly deploy`.)
+**Updated by**: Claude Code (CP14 follow-up Option A; commit 237d842 + this STATUS+worklog commit)
 
 ## Current phase
 
@@ -35,41 +35,33 @@
   `public.exchanges` scoped to demo org
   (`org_id=c6fcdd23-1313-48e7-8c99-d6e7577a4b08`,
   `org_name=demo`).
-- **Active task**: **CP14 response-side investigation — finding
-  surfaced, awaiting user pick.** The investigation overturned
-  STATUS's prior hypothesis: there is no two-step INSERT/UPDATE
-  contract — there is **no UPDATE path at all** in the server
-  source, and the happy-path INSERT (`record_exchange_timing`
-  in `packages/llm_tracker_server/src/llm_tracker_server/storage/exchanges.py`)
-  is a single write at stream-close that intentionally omits
-  eight response-side columns (`ended_at`, `model_requested`,
-  `model_served`, `status_code`, `input_tokens`,
-  `output_tokens`, `latency_ms`, `stop_reason`). The NULLs
-  are "never written by code" — explicitly flagged in
-  `proxy/forwarder._drain`'s "Phase-2 will replace this with
-  the Extractor" docstring at CP8/CP9 ship time. Three options
-  enumerated in
-  `docs/worklog/2026-05-13-cp14-response-side-followup.md`
-  §"Decisions needed":
-  1. **Option A** — populate the no-parser-needed fields
-     (`ended_at`, `status_code`, `latency_ms`,
-     `model_requested`) directly from data the forwarder
-     already has. ~30–60 line surgical patch.
-  2. **Option B** — thin SSE extractor for `message_start` /
-     `message_delta` / `message_stop` that fills
-     `model_served`, `input_tokens`, `output_tokens`,
-     `cache_*`, `stop_reason`. ~150–300 lines + tests.
-     Re-uses the existing tee queue (`_drain` seam). Brings
-     forward Phase-2 Extractor work.
-  3. **Option C** — write the ADR ("exchange row close-out
-     policy") *first*, then implement under its contract.
-     Decides: what fields are guaranteed populated, the
-     producer split (request-side / response-side /
-     forwarder-internal), and how the error path lands a row
-     (today it doesn't land any row when upstream fails
-     before SSE starts).
-  Recommendation: **C → A → B** in that order (overlap OK).
-  Awaiting user pick before touching code.
+- **Active task**: **None on Option A proper — closed.** Three
+  natural follow-ups, in priority order:
+  1. **Deploy + verify Option A on the live Fly server.** `fly deploy`
+     ships commit `237d842`; an operator curl then produces a fresh
+     `public.exchanges` row carrying `ended_at` / `status_code` /
+     `model_requested` / `latency_ms` populated. 10–15 minutes
+     once the operator pulls the trigger. Not a code change —
+     this just closes the production-side of Option A.
+  2. **Option B — SSE extractor** for the remaining five
+     response-side fields (`model_served`, `input_tokens`,
+     `output_tokens`, `cache_*`, `stop_reason`). New module
+     `extractors/anthropic.py` replaces the `_drain` stub in
+     `proxy/forwarder.py`; parses `message_start` / `delta` /
+     `stop` events; integrates into `record_exchange_timing`'s
+     kwargs surface (signature extension #2 at that point).
+     ~150–300 lines + tests. Doubles as Phase-2 Extractor entry.
+  3. **Option C — ADR-0024 "exchange row close-out policy"**.
+     After Option A landed the forwarder-known fields, the ADR's
+     surface area is slightly narrower but still owed: decides
+     the error-path row contract (today: no row at all if
+     upstream fails pre-SSE), blocked-path field parity (today:
+     `ended_at`/`latency_ms`/`model_requested` NULL on
+     `record_exchange_blocked` rows even though three are
+     trivially available), and the policy for "guaranteed
+     populated vs. allowed NULL". Recommend drafting *before*
+     Option B so B's signature change lands under a stable
+     contract.
 - **Other follow-ups** (unchanged, neither blocking):
   - **ADR-#2 consent + data-handling** still owed *before any
     external testing*; operator-only smoke not blocked.
@@ -93,11 +85,11 @@ the plan-of-record across Phase 3c.
 ## Recent commits
 
 ```
+237d842   server: populate close-out columns on exchange row (CP14 follow-up A)
+f37c95f   docs: CP14 response-side investigation — falsified
+e5e8688   docs: STATUS + worklog for Phase 3c CP14 closure
 458a4ba   server: grant llm_tracker_app SET on deploy user (0006)
 7d57b1d   docs: STATUS + worklog for ADR-0023 checkpoint
-21e9fa5   docs: ADR-0023 + deploy/env recipes for header rename
-af6bd8f   server: rename auth header to X-LLM-Tracker-Token (ADR-0023)
-be8e544   docs: deploy.md troubleshooting for stale rows + pooler clash
 ```
 
 ## Where we paused
@@ -563,32 +555,45 @@ reframes them server-side**:
 
 ## Next single step
 
-**User picks Option A / B / C from
-`docs/worklog/2026-05-13-cp14-response-side-followup.md` §"Decisions
-needed".** The investigation closed with the hypothesis falsified —
-there is no silent UPDATE failure to fix, because there is no UPDATE
-path. The eight currently-NULL columns are intentionally unwritten
-stubs from CP8/CP9. The three options enumerated in the worklog
-differ on design-up-front vs. ship-now, and on how far into Phase-2
-the fix reaches:
+**Deploy commit `237d842` to Fly and verify the four new columns on a
+fresh demo curl.** Option A landed the code (tests green); production
+verification is the missing half. Operator drives:
 
-| Option | Scope | Cost | Closes |
-|---|---|---|---|
-| **A** | Populate `ended_at`, `status_code`, `latency_ms`, `model_requested` from data already in the forwarder | ~30–60 line patch + tests | 4 of 8 columns |
-| **B** | Add `extractors/anthropic.py` SSE parser for `message_start`/`delta`/`stop` events | ~150–300 lines + tests; Phase-2 Extractor entry point | 4 more (`model_served`, `input_tokens`, `output_tokens`, `cache_*`, `stop_reason`) |
-| **C** | Write ADR-0024 "exchange row close-out policy" first, then implement under it | 30 min draft + whatever A/B implementation chosen | the policy itself; A/B then land cleanly under one contract |
+```
+fly deploy -a llm-tracker-server
+# wait for both machines to pass /healthz
+fly ssh console -a llm-tracker-server -C "alembic current"
+# expect: 0006_grant_app_role_set (head) — also closes the
+# pending migration-0006 stamp side-quest in one go
+curl -i -X POST https://llm-tracker-server.fly.dev/v1/messages \
+  -H "X-LLM-Tracker-Token: <demo>" \
+  -H "x-api-key: <anthropic-key>" \
+  -H "content-type: application/json" \
+  -d '{"model":"claude-opus-4-5","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
+# expect: HTTP 200, fly logs traceback-free
+```
 
-Claude Code's recommendation: **C → A → B**, in that order
-(overlap OK). All three converge on the same code path
-(`record_exchange_timing` + the forwarder's post-stream block at
-`packages/llm_tracker_server/src/llm_tracker_server/proxy/forwarder.py:305–325`),
-so doing A or B without C risks re-shaping the helper's signature
-twice. Once the user picks a lane, the next session resumes from
-the response-side worklog and either:
+Then via Supabase MCP (or psql) `SELECT id, started_at, ended_at,
+status_code, model_requested, latency_ms FROM public.exchanges ORDER
+BY started_at DESC LIMIT 1` — all five columns should be populated;
+`model_served` / `*_tokens` / `stop_reason` will still be NULL until
+Option B's extractor lands.
 
-- Drafts ADR-0024 ("exchange row close-out policy") under Option C, or
-- Lands the surgical patch under Option A as a single small commit, or
-- Stands up `extractors/anthropic.py` under Option B as a Phase-2 entry.
+If verification passes, the natural follow-ups are (next session
+picks):
+
+- **Option C — ADR-0024 draft** ("exchange row close-out policy"):
+  decides error-path row contract, blocked-path field parity, and
+  guaranteed-populated vs. allowed-NULL policy. Recommend drafting
+  before Option B so B's signature change is contract-stable.
+- **Option B — SSE Extractor** at `extractors/anthropic.py`:
+  parses `message_start` / `delta` / `stop`, populates the
+  remaining five response-side fields. Phase-2 Extractor entry
+  point per `docs/roadmap.md`.
+
+Either option resumes from
+`docs/worklog/2026-05-13-cp14-response-side-followup.md` §"What's
+left / known limits" for the open questions to address.
 
 ### Side-quests (do at any time, none blocking)
 
@@ -692,6 +697,7 @@ ready to start.
 - [x] **Phase 3c CP13-b — first Fly.io + Supabase deploy (2026-05-13, commit 3050bcc; server live at `https://llm-tracker-server.fly.dev/`)**
 - [x] **ADR-0023 — server auth header rename to `X-LLM-Tracker-Token` (2026-05-13, commits af6bd8f + 21e9fa5; CP14 prep, fixes OAuth Claude Code collision)**
 - [x] **Phase 3c CP14 — operator-only end-to-end smoke (2026-05-13, commit 458a4ba; first 200-OK roundtrip with operator-minted demo token; demo-scoped row in `public.exchanges`; PG16+ deploy gap surfaced + fixed in migration 0006; response-side metadata NULL on the success row flagged as separate follow-up track)**
+- [x] **CP14 follow-up Option A — close-out columns populated (`ended_at`/`status_code`/`model_requested`/`latency_ms`) (2026-05-13, commit 237d842; investigation falsified the prior "INSERT-at-open + UPDATE-at-close" hypothesis — there is no UPDATE path; 4 of 8 response-side NULLs closed; remaining 5 (`model_served`, `input_tokens`, `output_tokens`, `cache_*`, `stop_reason`) need Option B's SSE Extractor)**
 - [ ] **Phase 3a — remaining 3 decision ADRs** (#1 fallback / #2 consent / #4 agent language)
 - [ ] Phase 3b — thin local agent (gated on #1 + #4)
 - [x] **Phase 3c — server build-out (14 of 14 plan-checkpoints done; closed 2026-05-13 with operator smoke validated. Plan at `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0017/0018/0019/0020/0022/0023)**

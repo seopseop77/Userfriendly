@@ -21,6 +21,8 @@ session). Verify the hypothesis before fixing.
 
 ## What was done
 
+**Investigation half** (read-only, finding-only commit `f37c95f`):
+
 - Read `packages/llm_tracker_server/src/llm_tracker_server/proxy/forwarder.py`
   (the full pre-stream + streaming-generator path), the storage helpers
   in `storage/exchanges.py`, the storage ORM model in `storage/models.py`,
@@ -37,6 +39,32 @@ session). Verify the hypothesis before fixing.
   - The response-side columns appear only in `models.py` (column
     definitions) and `proxy/sse.py` (synthetic-block SSE constants).
     They have **no producer site** in the server code.
+
+**Implementation half — Option A landed** (commit `237d842`):
+
+- Modified `packages/llm_tracker_server/src/llm_tracker_server/storage/exchanges.py` —
+  extended `record_exchange_timing` signature with four new required
+  kwargs: `ended_at_ms`, `status_code`, `model_requested`,
+  `latency_ms`. Helper sets them on the `Exchange` ORM object alongside
+  the existing started/timing fields. Module docstring rewritten to
+  describe the new column set + carve-out for Option B's SSE-extractor
+  fields.
+- Modified `packages/llm_tracker_server/src/llm_tracker_server/proxy/forwarder.py` —
+  added `import json`; added `_parse_model_requested(body)` helper
+  (returns `None` on empty / non-JSON / non-dict / non-str-`model`
+  bodies — observability gravy, never escalates); in the post-stream
+  success block, derives `t_end_mono` from `time.monotonic()`,
+  computes `ended_at_ms` from the same monotonic anchor as the
+  existing `t_*_ms` marks (consistent under clock-jump), and passes
+  `upstream.status_code` + `_parse_model_requested(body)` +
+  `latency_ms = ended_at_ms - t0_epoch_ms` through.
+- Modified `packages/llm_tracker_server/tests/test_two_org_e2e_isolation.py` —
+  extended the org-A row assertions to verify `status_code == 200`,
+  `model_requested == "claude-x"` (matching the request body in the
+  test), `ended_at is not None and >= started_at`,
+  `latency_ms is not None and >= 0`. The Option-B-bound columns
+  (`model_served`, `*_tokens`, `stop_reason`) stay NULL and are
+  intentionally not asserted.
 
 ## Findings — hypothesis falsified
 
@@ -99,7 +127,19 @@ bodies described this same hole partially — the actual hole is wider:
 **all eight response-side columns are NULL on every exchange row**,
 both error and SSE-200, because there is no producer site for them.
 
-## Decisions needed (escalate — architecture / public-interface touching)
+## Decisions
+
+**User picked Option A** (quick wins only) from the three options
+below. Rationale (user-side, paraphrased): land the no-parser-needed
+fields first so the next demo curl produces a populated-looking row;
+defer the SSE extractor (Option B) and the policy ADR (Option C) to
+separate tracks so each can be sized + scheduled on its own merits.
+Recommendation in this worklog was C → A → B; user override accepted.
+
+Implementation followed Option A's preview chip verbatim — same four
+columns, same signature shape, same call site. No scope creep.
+
+### Original option enumeration (kept for the next track's sizing)
 
 Per CLAUDE.md §4 + §10, changing storage write behavior + extending the
 helper's signature + (for option B/C) parsing SSE events into structured
@@ -169,68 +209,103 @@ Then implement under that contract. Slower-up-front but lines up the
 SSE-200 hole + the CP9 HTTP-error hole + the silent "no row at all
 on upstream non-SSE failure" hole all under one design.
 
-### Recommendation
+### Original recommendation (overridden)
 
-**Option C → Option A → Option B**, in that order, but they can
-overlap. Specifically:
+**Option C → Option A → Option B**, in that order, but with overlap
+allowed. Rationale: C first (~30 min ADR draft) is small but
+load-bearing for everything downstream; doing A or B without C risks
+re-architecting the helper signature twice.
 
-1. **C first** (ADR draft) — 30 minutes. The decisions are small but
-   load-bearing for everything downstream. Doing A or B without C
-   risks re-architecting the helper signature twice.
-2. **A under the ADR's contract** — small, immediate-value, lands all
-   the no-parser-needed fields, gives the operator something to
-   `SELECT *` on the next demo curl.
-3. **B as proper Phase-2 entry point** — the SSE extractor is wanted
-   anyway for `events` / `tool_calls` population (per the Phase-2 plan
-   in `docs/roadmap.md`). Landing it here gives it a real consumer
-   immediately.
-
-Awaiting user pick before touching code.
+User chose **A only** (override accepted). The ADR (Option C) is
+re-queued as a separate track — see "What's left" below.
 
 ## Verification
 
-(Read-only investigation. No code or tests changed.)
-
 ```
-$ grep -rn "Exchange(" packages/llm_tracker_server/src/
-storage/models.py:45:class Exchange(Base):
-storage/exchanges.py:49:        Exchange(   # record_exchange_timing
-storage/exchanges.py:77:        Exchange(   # record_exchange_blocked
+$ .venv/bin/python3.12 -m ruff check \
+    packages/llm_tracker_server/src/llm_tracker_server/storage/exchanges.py \
+    packages/llm_tracker_server/src/llm_tracker_server/proxy/forwarder.py \
+    packages/llm_tracker_server/tests/test_two_org_e2e_isolation.py
+All checks passed!
 
-$ grep -rn "UPDATE.*exchanges\|update(Exchange\|.update(\s*Exchange" \
-    packages/llm_tracker_server/src/
-(no matches)
-
-$ grep -rn "model_served\|input_tokens\|output_tokens\|stop_reason\|ended_at" \
-    packages/llm_tracker_server/src/
-storage/models.py:56,60,62,63,67   (column defs)
-proxy/sse.py:16,55,57,82,83        (synthetic-block SSE constants only)
-(no producer site)
+$ LLMTRACK_TEST_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker_test \
+    .venv/bin/python3.12 -m pytest packages/llm_tracker_server/tests -q
+.............................................................   [100%]
+61 passed in 23.79s
 ```
+
+61/61 — same count as the post-CP14 baseline; the extended e2e
+assertions reuse the existing test, no new test method.
+
+Manual production verification (next demo curl) is **not** wrapped
+into this checkpoint — the live Fly deploy still runs the pre-Option-A
+build until the next `fly deploy`. Once redeployed, the next happy-
+path curl should land an `exchanges` row with `ended_at`,
+`status_code`, `model_requested`, `latency_ms` all populated; the
+remaining columns (`model_served`, `*_tokens`, `stop_reason`) stay
+NULL until Option B's extractor lands.
 
 ## What's left / known limits
 
-- This worklog is purely a finding + options write-up. Awaiting user
-  decision on Option A / B / C. No code shipped under this slug yet.
-- The CP9 closed-checkpoint observation about `model_served=null`
-  needs to be reworded once the ADR / fix lands — the framing
-  ("by-design observability hole for non-SSE responses") was already
-  too narrow.
-- Migration 0006 is still un-stamped on live Supabase
-  (`alembic_version = 0005_rls_policies`). Not blocking this
-  investigation; carries over.
+- **Option B (SSE extractor)** still owed for the remaining five
+  response-side fields. Touches: a new
+  `llm_tracker_server.extractors.anthropic` module, replacement of
+  the existing `_drain` stub in `proxy/forwarder.py` with a real
+  consumer, integration into `record_exchange_timing`'s kwargs
+  surface (extend signature again at that point). Estimated
+  150–300 lines + tests; doubles as the Phase-2 Extractor entry
+  point per `docs/roadmap.md`.
+- **Option C (ADR-0024 "exchange row close-out policy")** still
+  owed. Now that Option A has landed the forwarder-known fields, the
+  ADR's surface area shrinks slightly (the request-side / forwarder-
+  internal split is already concrete in code) but the open questions
+  remain: contract for the error path (today: no row at all if
+  upstream fails pre-SSE), parity for the blocked-path row, and the
+  policy for "guaranteed populated vs. allowed NULL". Recommend
+  drafting before Option B lands so B's signature change is
+  contract-stable.
+- **Blocked-path row parity**. `record_exchange_blocked` still writes
+  rows with `ended_at`, `latency_ms`, `model_requested` NULL on
+  Block / Abort short-circuits. Three of the four Option A fields
+  are trivially available on that path too (the fourth,
+  `status_code`, is debatable — no upstream call happened, the
+  client sees a synthetic 200 from `block_response`). Out of scope
+  for this checkpoint; flag for either Option C ADR or a follow-up
+  surgical patch.
+- **Migration 0006 stamp** on live Supabase is still un-aligned
+  (live `alembic_version = 0005_rls_policies`; code head is
+  `0006_grant_app_role_set`). Next `fly deploy` resolves via
+  idempotent `alembic upgrade head`. Independent track from this
+  worklog's scope.
+- **CP9 closed-checkpoint observation rewording**. The framing
+  ("by-design observability hole for HTTP-error responses") was
+  always too narrow — the actual hole covered all SSE-200 happy
+  paths too. After Option A: the hole shrinks but doesn't close. A
+  re-write should wait until Option B / C lands and the picture
+  stabilises.
 
 ## Handoff
 
-Three options on the table for the user (Option C → A → B
-recommended). All three converge on populating eight currently-NULL
-columns on the `exchanges` row close-out path; they differ on
-how-much-design-up-front vs. ship-now. Once the user picks a lane,
-the next session starts from this worklog and either:
+Option A is **closed**. The CP14 row's NULLs that triggered this
+investigation are now reduced from 8 columns to 5; the remaining 5
+all need SSE event parsing (Option B). The natural next checkpoint is
+either:
 
-- Drafts ADR-0024 ("exchange row close-out policy") under Option C, or
-- Lands the surgical patch under Option A as a single small commit, or
-- Stands up `extractors/anthropic.py` under Option B as a Phase-2 entry.
+1. **Deploy + verify**: `fly deploy` the Option A build, run an
+   operator curl, confirm a fresh exchange row carries the four new
+   columns populated. Roughly 10–15 minutes.
+2. **ADR-0024 draft** (Option C): write the close-out policy ADR
+   *before* sizing Option B, so B's signature change lands under a
+   stable contract.
+3. **Option B implementation**: the SSE Extractor — replace `_drain`
+   with `extractors/anthropic.py` parsing `message_start` /
+   `message_delta` / `message_stop` events.
+
+Continuation prompt for the next session, paste verbatim:
+
+> Resume. Read STATUS.md → the worklog it points to → `git log -5`.
+> Announce the next single step in one line, then execute it. Update
+> per §5.3 along the way.
 
 ## Suggestions (untouched)
 

@@ -40,6 +40,29 @@ session). Verify the hypothesis before fixing.
     definitions) and `proxy/sse.py` (synthetic-block SSE constants).
     They have **no producer site** in the server code.
 
+**Production verification half — Option A live on Fly** (no new commit;
+this is a deploy + observation checkpoint):
+
+- Operator ran `fly deploy -a llm-tracker-server` (ships HEAD = `237d842`)
+  and a fresh `/v1/messages` curl through the live server.
+- Supabase MCP `SELECT … FROM public.exchanges ORDER BY started_at DESC
+  LIMIT 1` on the new row (id `01KRG14W5VNV78HN3P9PEF2Z9P`,
+  `started_at` 1778654539963 ms ≈ 2026-05-13 06:42:19.963 UTC):
+  - `ended_at = 1778654541783` (≈ started_at + 1820 ms) ✓
+  - `status_code = 200` ✓
+  - `model_requested = "claude-opus-4-5"` ✓
+  - `latency_ms = 1820` ✓
+  - `model_served`, `input_tokens`, `output_tokens`, `stop_reason`,
+    `cache_*` all still NULL — expected, Option B territory.
+- Supabase MCP `SELECT version_num FROM alembic_version` →
+  `0006_grant_app_role_set`. The deploy's `release_command` ran
+  `alembic upgrade head` and stamped 0006 idempotently; the migration-
+  0006 stamp side-quest is closed in one go.
+- Compared against the pre-Option-A CP14 row (id
+  `01KRFVTG1E7Q72QN7E5MP26JXY`) — that row still has all four columns
+  NULL, confirming the new shape is producer-side only (no
+  backfill, by design — only new exchanges close out correctly).
+
 **Implementation half — Option A landed** (commit `237d842`):
 
 - Modified `packages/llm_tracker_server/src/llm_tracker_server/storage/exchanges.py` —
@@ -237,13 +260,29 @@ $ LLMTRACK_TEST_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tr
 61/61 — same count as the post-CP14 baseline; the extended e2e
 assertions reuse the existing test, no new test method.
 
-Manual production verification (next demo curl) is **not** wrapped
-into this checkpoint — the live Fly deploy still runs the pre-Option-A
-build until the next `fly deploy`. Once redeployed, the next happy-
-path curl should land an `exchanges` row with `ended_at`,
-`status_code`, `model_requested`, `latency_ms` all populated; the
-remaining columns (`model_served`, `*_tokens`, `stop_reason`) stay
-NULL until Option B's extractor lands.
+**Production verification (added 2026-05-13, second checkpoint pass)**.
+After `fly deploy -a llm-tracker-server` shipped `237d842`, an operator
+curl produced row `01KRG14W5VNV78HN3P9PEF2Z9P` with all four Option A
+columns populated as predicted:
+
+```
+id              = 01KRG14W5VNV78HN3P9PEF2Z9P
+started_at      = 1778654539963   (2026-05-13 06:42:19.963 UTC)
+ended_at        = 1778654541783   (started_at + 1820 ms)
+status_code     = 200
+model_requested = "claude-opus-4-5"
+latency_ms      = 1820
+model_served    = NULL    ← Option B
+input_tokens    = NULL    ← Option B
+output_tokens   = NULL    ← Option B
+stop_reason     = NULL    ← Option B
+```
+
+Migration stamp side-effect: `SELECT version_num FROM alembic_version`
+returns `0006_grant_app_role_set` (was `0005_rls_policies` pre-deploy).
+The release-command `alembic upgrade head` ran the idempotent 0006
+migration as a stamp-only no-op on the DB side, closing the pending
+migration-0006 stamp side-quest in the same deploy.
 
 ## What's left / known limits
 
@@ -272,11 +311,11 @@ NULL until Option B's extractor lands.
   client sees a synthetic 200 from `block_response`). Out of scope
   for this checkpoint; flag for either Option C ADR or a follow-up
   surgical patch.
-- **Migration 0006 stamp** on live Supabase is still un-aligned
-  (live `alembic_version = 0005_rls_policies`; code head is
-  `0006_grant_app_role_set`). Next `fly deploy` resolves via
-  idempotent `alembic upgrade head`. Independent track from this
-  worklog's scope.
+- ~~**Migration 0006 stamp** on live Supabase~~ — **closed** by this
+  checkpoint's `fly deploy`. `alembic_version` advanced from
+  `0005_rls_policies` to `0006_grant_app_role_set` via the release-
+  command-run `alembic upgrade head` (idempotent no-op on the DB side
+  because the GRANT was already applied manually during CP14).
 - **CP9 closed-checkpoint observation rewording**. The framing
   ("by-design observability hole for HTTP-error responses") was
   always too narrow — the actual hole covered all SSE-200 happy
@@ -286,18 +325,19 @@ NULL until Option B's extractor lands.
 
 ## Handoff
 
-Option A is **closed**. The CP14 row's NULLs that triggered this
-investigation are now reduced from 8 columns to 5; the remaining 5
-all need SSE event parsing (Option B). The natural next checkpoint is
-either:
+Option A is **closed end-to-end** — code (`237d842`) + tests (61/61) +
+live deploy + production verification on row
+`01KRG14W5VNV78HN3P9PEF2Z9P` (four columns populated, latency 1820 ms,
+status 200). Migration 0006 stamp side-quest also closed by the same
+deploy. The CP14 row's NULLs that triggered this investigation are now
+reduced from 8 columns to 5; the remaining 5 all need SSE event
+parsing (Option B). Next checkpoint is one of:
 
-1. **Deploy + verify**: `fly deploy` the Option A build, run an
-   operator curl, confirm a fresh exchange row carries the four new
-   columns populated. Roughly 10–15 minutes.
-2. **ADR-0024 draft** (Option C): write the close-out policy ADR
+1. **ADR-0024 draft** (Option C): write the close-out policy ADR
    *before* sizing Option B, so B's signature change lands under a
-   stable contract.
-3. **Option B implementation**: the SSE Extractor — replace `_drain`
+   stable contract. Recommended next — Option A's deploy step is now
+   off the queue.
+2. **Option B implementation**: the SSE Extractor — replace `_drain`
    with `extractors/anthropic.py` parsing `message_start` /
    `message_delta` / `message_stop` events.
 

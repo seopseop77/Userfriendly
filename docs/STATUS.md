@@ -6,8 +6,8 @@
 
 ---
 
-**Last updated**: 2026-05-13 (Claude Code; **CP14 follow-up Option A landed.** User picked Option A (quick wins only) from the three-option ask; ADR + SSE Extractor deferred to separate tracks. Source change in commit `237d842`: `record_exchange_timing` signature extended with `ended_at_ms`/`status_code`/`model_requested`/`latency_ms`; `proxy/forwarder.py` parses `model` from request body via `_parse_model_requested` (best-effort, never escalates) and derives `ended_at_ms` from the same monotonic anchor as the existing `t_*_ms` marks; `test_two_org_e2e_isolation.py` asserts the four new columns are populated on the happy-path row. 61/61 tests green; ruff clean. Five response-side columns (`model_served`, `input_tokens`, `output_tokens`, `cache_*`, `stop_reason`) remain NULL until Option B's SSE extractor lands. Live Fly deploy still runs the pre-Option-A build until next `fly deploy`.)
-**Updated by**: Claude Code (CP14 follow-up Option A; commit 237d842 + this STATUS+worklog commit)
+**Last updated**: 2026-05-13 (Claude Code; **CP14 follow-up Option A — production-verified.** Operator ran `fly deploy -a llm-tracker-server` shipping HEAD `237d842` and a fresh `/v1/messages` curl. Supabase MCP confirmed row `01KRG14W5VNV78HN3P9PEF2Z9P` carries `ended_at`=1778654541783 (≈ started_at+1820 ms), `status_code`=200, `model_requested`="claude-opus-4-5", `latency_ms`=1820 — Option A's four close-out columns all populated as predicted. The same deploy's `release_command` ran `alembic upgrade head` and stamped `alembic_version` from `0005_rls_policies` → `0006_grant_app_role_set` (idempotent on the DB side; closes the pending migration-0006 stamp side-quest in one go). Five Option-B response-side columns (`model_served`, `input_tokens`, `output_tokens`, `cache_*`, `stop_reason`) still NULL on the new row — expected, gated on SSE Extractor. No code change in this checkpoint — deploy + verification only.)
+**Updated by**: Claude Code (CP14 follow-up Option A production verification; no new commit — deploy + live observation)
 
 ## Current phase
 
@@ -35,14 +35,19 @@
   `public.exchanges` scoped to demo org
   (`org_id=c6fcdd23-1313-48e7-8c99-d6e7577a4b08`,
   `org_name=demo`).
-- **Active task**: **None on Option A proper — closed.** Three
-  natural follow-ups, in priority order:
-  1. **Deploy + verify Option A on the live Fly server.** `fly deploy`
-     ships commit `237d842`; an operator curl then produces a fresh
-     `public.exchanges` row carrying `ended_at` / `status_code` /
-     `model_requested` / `latency_ms` populated. 10–15 minutes
-     once the operator pulls the trigger. Not a code change —
-     this just closes the production-side of Option A.
+- **Active task**: **None on Option A — fully closed (code + deploy
+  + production verification).** Two natural follow-ups in priority
+  order:
+  1. **Option C — ADR-0024 "exchange row close-out policy"**.
+     Recommended next. After Option A landed the forwarder-known
+     fields, the ADR's surface area is slightly narrower but still
+     owed: decides the error-path row contract (today: no row at
+     all if upstream fails pre-SSE), blocked-path field parity
+     (today: `ended_at`/`latency_ms`/`model_requested` NULL on
+     `record_exchange_blocked` rows even though three are trivially
+     available), and the policy for "guaranteed populated vs.
+     allowed NULL". Drafting *before* Option B so B's signature
+     change lands under a stable contract.
   2. **Option B — SSE extractor** for the remaining five
      response-side fields (`model_served`, `input_tokens`,
      `output_tokens`, `cache_*`, `stop_reason`). New module
@@ -51,24 +56,9 @@
      `stop` events; integrates into `record_exchange_timing`'s
      kwargs surface (signature extension #2 at that point).
      ~150–300 lines + tests. Doubles as Phase-2 Extractor entry.
-  3. **Option C — ADR-0024 "exchange row close-out policy"**.
-     After Option A landed the forwarder-known fields, the ADR's
-     surface area is slightly narrower but still owed: decides
-     the error-path row contract (today: no row at all if
-     upstream fails pre-SSE), blocked-path field parity (today:
-     `ended_at`/`latency_ms`/`model_requested` NULL on
-     `record_exchange_blocked` rows even though three are
-     trivially available), and the policy for "guaranteed
-     populated vs. allowed NULL". Recommend drafting *before*
-     Option B so B's signature change lands under a stable
-     contract.
 - **Other follow-ups** (unchanged, neither blocking):
   - **ADR-#2 consent + data-handling** still owed *before any
     external testing*; operator-only smoke not blocked.
-  - **Migration 0006 stamp** on live Supabase (live
-    `alembic_version` is still `0005_rls_policies`; migration
-    0006's DB effect is already in place from the manual MCP
-    GRANT). Next deploy fixes it (no-op idempotent upgrade).
 
 ## Active worklog
 
@@ -555,66 +545,39 @@ reframes them server-side**:
 
 ## Next single step
 
-**Deploy commit `237d842` to Fly and verify the four new columns on a
-fresh demo curl.** Option A landed the code (tests green); production
-verification is the missing half. Operator drives:
+**Draft ADR-0024 — "exchange row close-out policy"** (Option C).
+With Option A's deploy + live verification closed in this checkpoint,
+the recommended next move is the policy ADR — *before* Option B's SSE
+extractor — so the second signature extension on `record_exchange_timing`
+lands under a stable contract. The ADR should decide three things:
 
-```
-fly deploy -a llm-tracker-server
-# wait for both machines to pass /healthz
-fly ssh console -a llm-tracker-server -C "alembic current"
-# expect: 0006_grant_app_role_set (head) — also closes the
-# pending migration-0006 stamp side-quest in one go
-curl -i -X POST https://llm-tracker-server.fly.dev/v1/messages \
-  -H "X-LLM-Tracker-Token: <demo>" \
-  -H "x-api-key: <anthropic-key>" \
-  -H "content-type: application/json" \
-  -d '{"model":"claude-opus-4-5","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
-# expect: HTTP 200, fly logs traceback-free
-```
+1. **Guaranteed populated vs. allowed NULL** — which columns must be
+   non-NULL on every row in `public.exchanges`, and which are allowed
+   to be NULL (and on which paths).
+2. **Error path** — today there is no INSERT at all if upstream fails
+   before SSE starts; the row is only persisted in the streaming `for`
+   loop's `else` clause. ADR picks: write a row anyway with
+   `status_code` + `ended_at` set, or leave the silence as policy.
+3. **Blocked path parity** — `record_exchange_blocked` writes rows
+   with `ended_at`/`latency_ms`/`model_requested` NULL even though
+   three of the four are trivially available at block time. Pull them
+   into the helper, or leave per-path divergence as policy.
 
-Then via Supabase MCP (or psql) `SELECT id, started_at, ended_at,
-status_code, model_requested, latency_ms FROM public.exchanges ORDER
-BY started_at DESC LIMIT 1` — all five columns should be populated;
-`model_served` / `*_tokens` / `stop_reason` will still be NULL until
-Option B's extractor lands.
+Reference path: `docs/decisions/0024-exchange-row-close-out-policy.md`
+(new), template at `docs/decisions/TEMPLATE.md`. Once Accepted,
+Option B implementation references it from the SSE Extractor's
+contract.
 
-If verification passes, the natural follow-ups are (next session
-picks):
-
-- **Option C — ADR-0024 draft** ("exchange row close-out policy"):
-  decides error-path row contract, blocked-path field parity, and
-  guaranteed-populated vs. allowed-NULL policy. Recommend drafting
-  before Option B so B's signature change is contract-stable.
-- **Option B — SSE Extractor** at `extractors/anthropic.py`:
-  parses `message_start` / `delta` / `stop`, populates the
-  remaining five response-side fields. Phase-2 Extractor entry
-  point per `docs/roadmap.md`.
-
-Either option resumes from
-`docs/worklog/2026-05-13-cp14-response-side-followup.md` §"What's
-left / known limits" for the open questions to address.
+Alternate paths (skip Option C, do Option B directly): the worklog
+`docs/worklog/2026-05-13-cp14-response-side-followup.md` §"What's left
+/ known limits" enumerates the open questions Option B would have to
+re-answer ad-hoc without the ADR.
 
 ### Side-quests (do at any time, none blocking)
 
-- **Stamp migration 0006 on live Supabase.** Live `alembic_version`
-  is `0005_rls_policies`; the migration head in code is
-  `0006_grant_app_role_set` and its DB effect is already in place
-  (applied manually via Supabase MCP during CP14). Two paths to
-  align:
-
-  ```
-  # Option A — fold into the next fly deploy:
-  # alembic upgrade head runs as part of the container's release_command.
-  # 0006 is idempotent → no-op on the DB side, just stamps version.
-
-  # Option B — stamp now without redeploy:
-  fly ssh console -a llm-tracker-server -C \
-    "alembic stamp 0006_grant_app_role_set"
-  ```
-
-  Option A is cleaner if there's any other code change due soon;
-  Option B if the alembic-state drift is annoying *right now*.
+- ~~**Stamp migration 0006 on live Supabase.**~~ **Closed** by this
+  checkpoint's `fly deploy` (release-command-run `alembic upgrade
+  head` advanced `alembic_version` to `0006_grant_app_role_set`).
 - **ADR-#2 consent + data-handling.** Still owed *before any
   external testing* of the central server. Operator-only smoke
   (now validated) is not blocked. Legal/privacy input may take
@@ -697,7 +660,7 @@ ready to start.
 - [x] **Phase 3c CP13-b — first Fly.io + Supabase deploy (2026-05-13, commit 3050bcc; server live at `https://llm-tracker-server.fly.dev/`)**
 - [x] **ADR-0023 — server auth header rename to `X-LLM-Tracker-Token` (2026-05-13, commits af6bd8f + 21e9fa5; CP14 prep, fixes OAuth Claude Code collision)**
 - [x] **Phase 3c CP14 — operator-only end-to-end smoke (2026-05-13, commit 458a4ba; first 200-OK roundtrip with operator-minted demo token; demo-scoped row in `public.exchanges`; PG16+ deploy gap surfaced + fixed in migration 0006; response-side metadata NULL on the success row flagged as separate follow-up track)**
-- [x] **CP14 follow-up Option A — close-out columns populated (`ended_at`/`status_code`/`model_requested`/`latency_ms`) (2026-05-13, commit 237d842; investigation falsified the prior "INSERT-at-open + UPDATE-at-close" hypothesis — there is no UPDATE path; 4 of 8 response-side NULLs closed; remaining 5 (`model_served`, `input_tokens`, `output_tokens`, `cache_*`, `stop_reason`) need Option B's SSE Extractor)**
+- [x] **CP14 follow-up Option A — close-out columns populated (`ended_at`/`status_code`/`model_requested`/`latency_ms`) (2026-05-13, commit 237d842; production-verified on row `01KRG14W5VNV78HN3P9PEF2Z9P` after `fly deploy` — same deploy stamped `alembic_version` to `0006_grant_app_role_set`; investigation falsified the prior "INSERT-at-open + UPDATE-at-close" hypothesis — there is no UPDATE path; 4 of 8 response-side NULLs closed; remaining 5 (`model_served`, `input_tokens`, `output_tokens`, `cache_*`, `stop_reason`) need Option B's SSE Extractor)**
 - [ ] **Phase 3a — remaining 3 decision ADRs** (#1 fallback / #2 consent / #4 agent language)
 - [ ] Phase 3b — thin local agent (gated on #1 + #4)
 - [x] **Phase 3c — server build-out (14 of 14 plan-checkpoints done; closed 2026-05-13 with operator smoke validated. Plan at `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0017/0018/0019/0020/0022/0023)**

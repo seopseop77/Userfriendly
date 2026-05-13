@@ -123,9 +123,21 @@ async def test_two_org_e2e_isolation(session_factory, monkeypatch) -> None:
         )
         rows_a = (await session.execute(sa.select(Exchange))).scalars().all()
         assert len(rows_a) == 1
-        assert rows_a[0].org_id == org_a_id
-        assert rows_a[0].endpoint == "v1/messages"
-        assert rows_a[0].blocked_by is None
+        row = rows_a[0]
+        assert row.org_id == org_a_id
+        assert row.endpoint == "v1/messages"
+        assert row.blocked_by is None
+        # CP14 follow-up Option A — close-out columns the forwarder
+        # populates from data it already has (no SSE parser involved).
+        # The remaining response-side fields (`model_served`,
+        # `*_tokens`, `stop_reason`) stay NULL until Option B's
+        # extractor lands and are intentionally not asserted here.
+        assert row.status_code == 200
+        assert row.model_requested == "claude-x"  # from the request body above
+        assert row.ended_at is not None
+        assert row.ended_at >= row.started_at
+        assert row.latency_ms is not None
+        assert row.latency_ms >= 0
 
     # As org B: the same row is invisible.
     async with session_factory() as session:

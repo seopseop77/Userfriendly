@@ -44,6 +44,7 @@ like the CP7/CP8 transparent shape.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack, nullcontext
@@ -107,6 +108,26 @@ def _outbound_headers(headers: httpx.Headers | dict[str, str]) -> dict[str, str]
             continue
         out[key] = value
     return out
+
+
+def _parse_model_requested(body: bytes) -> str | None:
+    """Best-effort extract of the ``model`` field from a request body.
+
+    Returns ``None`` for empty/non-JSON bodies, missing-or-non-string
+    ``model`` values, or any decoding failure — the column is
+    observability gravy on the ``exchanges`` row, not load-bearing
+    for routing. Failures must never escalate.
+    """
+    if not body:
+        return None
+    try:
+        data = json.loads(body)
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    model = data.get("model")
+    return model if isinstance(model, str) else None
 
 
 async def _drain(queue: asyncio.Queue[bytes | None]) -> None:
@@ -307,6 +328,12 @@ async def forward_request(
                     if fresh is not None and "t1" in timing and "t2" in timing:
                         t_up = t0_epoch_ms + int((timing["t1"] - t0_mono) * 1000)
                         t_cli = t0_epoch_ms + int((timing["t2"] - t0_mono) * 1000)
+                        # CP14 follow-up Option A: derive `ended_at_ms`
+                        # from the same monotonic anchor the t_*_ms
+                        # marks use so the row's started/ended pair is
+                        # internally consistent under clock-jump.
+                        t_end_mono = time.monotonic()
+                        ended_at_ms = t0_epoch_ms + int((t_end_mono - t0_mono) * 1000)
                         await record_exchange_timing(
                             fresh,
                             exchange_id=exchange_id,
@@ -315,6 +342,10 @@ async def forward_request(
                             t_request_received_ms=t0_epoch_ms,
                             t_upstream_first_byte_ms=t_up,
                             t_client_first_byte_ms=t_cli,
+                            ended_at_ms=ended_at_ms,
+                            status_code=upstream.status_code,
+                            model_requested=_parse_model_requested(body),
+                            latency_ms=ended_at_ms - t0_epoch_ms,
                         )
                     # design.md §6.3.2: on_persisted fires *after* the
                     # DB write so plugins can read the exchange row

@@ -4,12 +4,19 @@ Two call sites in the forwarder:
 
 * :func:`record_exchange_timing` — happy path. Lands after the upstream
   stream ended naturally; carries the three ``t_*_ms`` epoch
-  millisecond marks the local sidecar already captures.
+  millisecond marks the local sidecar already captures, plus the four
+  forwarder-known close-out fields (CP14 follow-up Option A):
+  ``ended_at_ms``, ``status_code``, ``model_requested``, ``latency_ms``.
+  The remaining response-side columns (``model_served``,
+  ``input_tokens``, ``output_tokens``, ``cache_*``, ``stop_reason``)
+  still need an SSE Extractor to populate — that is Option B / Phase-2
+  scope, separate track.
 * :func:`record_exchange_blocked` — short-circuit path. Lands when a
   plugin returns ``Block`` from ``on_request_received`` /
   ``before_forward`` or ``Abort`` from ``on_upstream_response_start``;
   carries ``blocked_by = result.plugin`` so audits can attribute the
-  decision.
+  decision. Same close-out gap applies on the blocked-path row — out
+  of scope for Option A; flagged in the CP14 follow-up worklog.
 
 Both helpers take ``session`` + ``org_id`` keyword-only. The session is
 the per-request :class:`AsyncSession` opened by
@@ -43,16 +50,29 @@ async def record_exchange_timing(
     t_request_received_ms: int,
     t_upstream_first_byte_ms: int,
     t_client_first_byte_ms: int,
+    ended_at_ms: int,
+    status_code: int,
+    model_requested: str | None,
+    latency_ms: int,
 ) -> None:
-    """Persist a completed-exchange row scoped to ``org_id``."""
+    """Persist a completed-exchange row scoped to ``org_id``.
+
+    ``model_requested`` is ``None`` when the request body was not
+    parseable JSON or did not carry a string ``model`` field — the
+    column is observability gravy, not load-bearing for routing.
+    """
     session.add(
         Exchange(
             id=exchange_id,
             org_id=org_id,
             session_id="server",
             started_at=t_request_received_ms,
+            ended_at=ended_at_ms,
             provider="anthropic",
             endpoint=endpoint,
+            model_requested=model_requested,
+            status_code=status_code,
+            latency_ms=latency_ms,
             content_level="L3",
             tool_call_count=0,
             t_request_received_ms=t_request_received_ms,

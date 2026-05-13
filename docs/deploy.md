@@ -188,6 +188,103 @@ applies to the free tier only.
   `alembic/` directory shipped into the image; if either is missing
   the release command would have failed earlier, but worth confirming.
 
+### Stale rows in `public.exchanges` from prior test runs
+
+Operators running CP14 smoke tests repeatedly — or revisiting a Supabase
+project that was used by an earlier workstream (e.g. the Phase-2
+`llm_tracker_plugin_supabase_sink`) — may find that `public.exchanges`
+already contains rows before the new run even begins, making it hard to
+tell which row the current smoke test wrote. The schema itself is intact;
+only the data is stale.
+
+Fix: clear the table via the Supabase dashboard SQL editor or `psql`.
+
+```
+-- Drop a specific stale window:
+DELETE FROM public.exchanges WHERE started_at < <epoch_ms>;
+
+-- Or wipe the whole table (also resets dependent rows in events,
+-- tool_calls, audit_log — all of which carry FK / org-scoped rows):
+TRUNCATE TABLE
+  public.audit_log,
+  public.tool_calls,
+  public.events,
+  public.exchanges
+RESTART IDENTITY;
+```
+
+`TRUNCATE` is much faster than `DELETE` for a full wipe and resets any
+sequences. The `CASCADE`-equivalent here is the explicit ordered table
+list — listing the child tables (`events`, `tool_calls`, `audit_log`)
+before `exchanges` avoids FK violations and matches the migration
+ownership order.
+
+Notes:
+
+- If the schema *itself* is incompatible (different column names, an
+  older sink's `exchange_id` PK, etc.) rather than the data being stale,
+  the symptom is a `DuplicateTableError` at `fly deploy` time, not stale
+  rows. Drop the colliding table(s) instead — see ADR-0017 history for
+  context on the closed `supabase_sink` plugin schema.
+- `public.orgs` and `public.api_tokens` are *not* test artefacts and
+  should be left alone unless you also want to invalidate every bearer
+  token issued so far.
+
+### `DuplicatePreparedStatementError` against the Supabase pooler
+
+Symptom: any DB-touching command or HTTP route — `fly ssh console -C
+"alembic current"`, an authenticated `POST /v1/messages`, the `tokens
+issue` CLI — fails intermittently with a traceback whose final line is:
+
+```
+asyncpg.exceptions.DuplicatePreparedStatementError: prepared statement
+"__asyncpg_stmt_1__" already exists
+```
+
+The first deploy may even appear healthy; the failure surfaces the
+moment two sessions try to use the same pooled backend connection.
+
+Cause: Supabase's **Transaction-mode pooler** (the default "pooled
+connection string" exposed on port 6543) routes each transaction to
+whichever backend connection is free, and does **not** preserve named
+prepared statements across pooled sessions. asyncpg caches statements
+by name by default, so the second pooled session that lands on the same
+backend collides on `__asyncpg_stmt_N__`.
+
+Two fixes, either is sufficient:
+
+1. **Switch to Supabase's Session-mode pooler.** In the Supabase
+   dashboard → Settings → Database → Connection pooling, copy the
+   *Session mode* connection string instead of the *Transaction mode*
+   one, then update the Fly secret:
+
+   ```
+   fly secrets set LLMTRACK_DATABASE_URL="postgresql+asyncpg://<user>:<password>@<host>:<port>/<db>?ssl=require"
+   ```
+
+   Session mode pins each client to one backend for the lifetime of the
+   client connection, preserving prepared statement names. Trade-off:
+   slightly fewer concurrent clients per pool slot than Transaction
+   mode.
+
+2. **Disable the prepared-statement cache via the connection URL.**
+   Append `prepared_statement_cache_size=0` to the existing pooled URL
+   (no pooler change needed):
+
+   ```
+   fly secrets set LLMTRACK_DATABASE_URL="postgresql+asyncpg://<user>:<password>@<host>:6543/<db>?ssl=require&prepared_statement_cache_size=0"
+   ```
+
+   The SQLAlchemy asyncpg dialect reads `prepared_statement_cache_size`
+   from the URL query string and passes it through; setting it to `0`
+   disables the cache that pgbouncer cannot keep coherent.
+
+The server's `make_engine()` (and `alembic/env.py`) already pass
+`statement_cache_size=0` on the connection-level driver, so a current
+build is robust against this without either change above — the
+workarounds matter when an operator is running a stock build (no rebuild
+permitted) or has overridden the engine factory.
+
 ### A subsequent deploy needs a fresh secret
 
 `fly secrets set ...` triggers a new deploy by default. To stage

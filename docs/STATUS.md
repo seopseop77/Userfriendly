@@ -65,11 +65,11 @@ CP14 proper).
 ## Recent commits
 
 ```
+ac4370c   agent: multi-instance via ephemeral port fallback
 fbd36e4   agent: Phase 3b thin local agent (claude-manage)
 79a0ae9   docs: ADR-0024 fail-closed + ADR-0025 Python agent
 c124458   docs: tighten CLAUDE.md, correct stack/structure
 5cdac47   docs: STATUS + worklog for Option A live verification
-7afa88e   docs: STATUS + worklog for CP14 follow-up Option A closure
 ```
 
 ## Where we paused
@@ -123,6 +123,16 @@ launching Claude Code through the proxy in earnest.
   and is production-equivalent on SSE (no gzip). Response-side
   `Content-Encoding` is therefore stripped to keep the downstream
   client from double-decoding.
+
+**Follow-up after the main checkpoint** (commit `ac4370c`):
+`_pick_port` helper added so two `claude-manage` instances no
+longer collide on the preferred port. The first claims
+`config.local_port`; subsequent instances fall back to a
+kernel-assigned ephemeral port and announce on stderr. Each
+instance owns its own proxy; killing one no longer breaks the
+others. Two unit tests added; full suite now 302 passed / 16
+skipped. Worklog §"Follow-up — multi-instance via ephemeral port"
+captures the race-window note.
 
 End-to-end against the live `https://llm-tracker-server.fly.dev`
 server is still owed. See "Next single step" below.

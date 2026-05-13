@@ -175,15 +175,21 @@ before pointing Claude Code at the agent in earnest.
   `claude-manage setup` writing the config file. An actual
   `claude-manage` → real Claude Code → live Fly.io central server smoke
   is the next step (see Handoff).
-- **No CLI tests.** `cli.py` is exercised live (setup roundtrip above)
-  but not under pytest. The threading + uvicorn + readiness-poll path
-  is awkward to unit-test; the cli ships with the deviation from
-  spec (`subprocess.run` vs `os.execvp`) documented inline so a future
-  reader can pick it up.
-- **Orphaned uvicorn on `Ctrl-C`.** When the user hits Ctrl-C during a
-  Claude session, the SIGINT goes to the foreground process group;
-  `subprocess.run` returns; parent Python exits; daemon thread is
-  reaped. Tested mentally, not under load.
+- **Limited CLI test coverage.** `_pick_port` has unit tests
+  (`test_cli.py`, added in follow-up commit `ac4370c`). The
+  threading + uvicorn + readiness-poll + `subprocess.run` path is
+  not unit-tested; setup roundtrip was exercised live. Spec
+  deviation (`subprocess.run` vs `os.execvp`) is documented inline.
+- **Parent `kill -9` orphans the child `claude`.** Normal exit
+  paths (Claude `/exit`, Ctrl-C, claude crash) all flow cleanly:
+  SIGINT/Claude termination → `subprocess.run` returns → `typer.Exit`
+  → parent Python exits → OS reaps the daemon uvicorn thread →
+  loopback port released. The pathological case is SIGKILL on the
+  parent Python: the daemon thread dies with it, but the child
+  `claude` is re-parented to launchd/init and survives as an orphan.
+  Out of scope for the agent fix — would need a parent-death signal
+  (`PR_SET_PDEATHSIG` on Linux; macOS equivalent via kqueue) to
+  guarantee child cleanup under `kill -9`.
 - **Token format unvalidated.** `setup` only rejects empty/whitespace
   tokens. Format-level validation (`lts_` prefix, length) is out of
   scope; the server already validates on its side.
@@ -224,6 +230,37 @@ SSE extractor** for the remaining response-side fields.
 > ADR as "ADR-0024" but that slot is now taken by the agent
 > fallback ADR shipped today. The close-out-policy ADR will be
 > renumbered (0026) when it lands. Flagged here, not silently moved.
+
+## Follow-up — multi-instance via ephemeral port (commit `ac4370c`)
+
+User question in chat surfaced that two `claude-manage` instances
+sharing the same `~/.llm-tracker/config.toml` would both try to bind
+the same preferred port. The second `uvicorn.Server.run()` would
+fail in its daemon thread (logged to stderr only), but `_wait_ready`
+would still see the first instance's `/healthz` answer 200 and pass
+— routing the second `claude`'s traffic through the first instance's
+proxy. Killing the first instance would then break the second
+silently.
+
+Fix: new `_pick_port(preferred)` helper probes `127.0.0.1:<preferred>`;
+on `EADDRINUSE` falls back to a kernel-assigned ephemeral port. The
+picked port is used both for `uvicorn.Config(port=...)` and the
+`ANTHROPIC_BASE_URL` handed to `claude`. When the fallback fires,
+stderr emits
+`[claude-manage] preferred port N in use; this instance is on M.`
+
+Each instance now owns a distinct loopback proxy. Killing any one
+instance has no effect on the others; the per-`claude` proxy dies
+with its parent Python process as before.
+
+Tests added (`packages/llm_tracker_agent/tests/test_cli.py`, 2
+cases): preferred-port returned when free; fallback when preferred
+is taken. Full suite remains green at 302 passed / 16 skipped.
+
+Residual micro-race: between `_pick_port` closing the probe socket
+and uvicorn re-binding, another process could grab the port. On
+loopback this is extremely unlikely; if it ever fires, uvicorn
+fails in its thread and `_wait_ready` times out with a clear error.
 
 ## Suggestions (untouched)
 

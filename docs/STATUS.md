@@ -6,65 +6,201 @@
 
 ---
 
-**Last updated**: 2026-05-13 (Claude Code; **ADR-0023 — server auth header rename** landed as a CP14-prep side-quest. P0 blocker resolved: OAuth Claude Code users were locked out because `AuthMiddleware` consumed their Anthropic OAuth bearer in `Authorization`. New header `X-LLM-Tracker-Token` for server auth; `Authorization` is now pass-through-only and reaches Anthropic untouched (61/61 server tests green; ADR amends ADR-0020 Axis 1 only). Phase 3c CP13-b remains closed; **CP14 is still the next single step**, now meaningful for OAuth users too — operator owes a `fly deploy` to pick up the rename build before running CP14 smoke.)
-**Updated by**: Claude Code (ADR-0023 checkpoint, commits af6bd8f + 21e9fa5)
+**Last updated**: 2026-05-13 (Claude Code; **Phase 3c CP14 — operator-only end-to-end smoke — CLOSED.** 14/14 plan-checkpoints done; Phase 3c overall flips to "closed (operator smoke validated)". First real `/v1/messages` curl through the live server hit a P0 500 with `permission denied to set role "llm_tracker_app"` from PG16+ split-role-membership semantics on Supabase (`set_option=false` on the auto-granted `postgres → llm_tracker_app` membership; PG15 coupled membership with SET ROLE, PG16 split them into INHERIT / SET / ADMIN). Immediate unblock via Supabase MCP `GRANT llm_tracker_app TO postgres WITH SET TRUE`; durable fix shipped as alembic migration `0006_grant_app_role_set` (commit `458a4ba`), version-branched so the local PG15 docker fixture stays syntactically valid. Post-fix curl returned 200 OK; demo-scoped row landed in `public.exchanges`; fly logs traceback-free. **Secondary finding** (carved out per user direction): the successful row's response-side columns (`ended_at`, `model_served`, `status_code`, `input_tokens`, `output_tokens`, `latency_ms`, `stop_reason`) are all NULL — request-open INSERT works, stream-close UPDATE silently doesn't fire on a 200-OK SSE. Separate follow-up track.)
+**Updated by**: Claude Code (CP14 closure, commit 458a4ba + this STATUS+worklog commit)
 
 ## Current phase
 
-- **Phase**: **Phase 3c — CP1 through CP13 closed (13/14
-  plan-checkpoints).** CP1–CP12 stand as previously recorded
-  (skeleton, PG storage, orgs+api_tokens, `org_id NOT NULL`,
-  RLS + `llm_tracker_app` role, auth middleware, Anthropic
-  credential pass-through + scrubbing, plugin-host port,
-  org-aware INSERTs, manifest `min_content_level` + per-plugin
-  host clamp, `.env.example` + `docs/plugins.md` refresh,
-  multi-stage Dockerfile + `.dockerignore`). CP13-a (file-only
-  half) shipped `fly.toml` at the repo root + `docs/deploy.md`
-  runbook (commits `ef59192` + `59dbae6`). **CP13-b (this
-  checkpoint) ran the runbook against real Fly.io + Supabase**;
-  two real-world failures surfaced and were fixed in flight:
-  (i) the operator's Supabase project still carried a
-  stale-schema `public.exchanges` (7 rows) from the closed
-  Phase-2 `supabase_sink` plugin workstream — dropped via
-  Supabase MCP `execute_sql` after confirming no other stale
-  objects (no `alembic_version`, no `audit_log_reject_modify`
-  function); (ii) once migrations applied cleanly, follow-up
-  commands like `alembic current` and any DB-touching app route
-  failed with `asyncpg.DuplicatePreparedStatementError` against
-  Supabase's pgbouncer transaction-mode pooler — fixed by
-  passing `connect_args={"statement_cache_size": 0}` through
-  both `make_engine()` and `alembic/env.py` (commit `3050bcc`).
-  Server is live at `https://llm-tracker-server.fly.dev/`,
-  alembic head = `0005_rls_policies`, RLS on for the four
-  user-data tables, two `nrt` Machines passing `/healthz`.
-- **Active task**: **CP14 — operator-only end-to-end smoke**
-  (mint demo bearer token via `fly ssh console -C
-  "llm-tracker-server tokens issue --org demo"`, send one real
-  `/v1/messages` request with a valid Anthropic `x-api-key`,
-  verify stream round-trip, one row in `public.exchanges`
-  scoped to demo org, no traceback in `fly logs`). **ADR-#2
-  consent decision** remains the most blocking remaining
-  Phase-3a item before *any external testing*; operator-only
-  smoke (CP14) is not blocked.
+- **Phase**: **Phase 3c — CLOSED (14/14 plan-checkpoints).**
+  CP1–CP12 stand as previously recorded (skeleton, PG storage,
+  orgs+api_tokens, `org_id NOT NULL`, RLS + `llm_tracker_app`
+  role, auth middleware, Anthropic credential pass-through +
+  scrubbing, plugin-host port, org-aware INSERTs, manifest
+  `min_content_level` + per-plugin host clamp, `.env.example` +
+  `docs/plugins.md` refresh, multi-stage Dockerfile +
+  `.dockerignore`). CP13-a/b shipped the first Fly.io +
+  Supabase deploy (live at
+  `https://llm-tracker-server.fly.dev/`). ADR-0023 + migration
+  0006 are the two CP14-prep / CP14-followup side-quests.
+  **CP14 closed today** after surfacing a PG16+ deploy gap
+  (`set_option=false` on Supabase's auto-granted membership),
+  fixing it immediately via Supabase MCP, and persisting the
+  fix as alembic migration 0006 (commit `458a4ba`;
+  PG-version-aware DO-block so the local PG15 fixture stays
+  green). Verification: invalid-token probe returns 403
+  (auth path now reaches `lookup()`); operator-run real curl
+  with valid Anthropic key + `X-LLM-Tracker-Token` returned
+  200; fly logs show `proxy.forward → api.anthropic.com 200
+  → client 200` with no traceback; one row in
+  `public.exchanges` scoped to demo org
+  (`org_id=c6fcdd23-1313-48e7-8c99-d6e7577a4b08`,
+  `org_name=demo`).
+- **Active task**: **None on Phase 3c proper.** Two follow-ups
+  queued, neither blocking anything Phase-3c-rated:
+  1. **Investigate response-side NULL columns** on the CP14
+     row. `started_at` + `endpoint` + `provider` +
+     `content_level` + `org_id` populated; `ended_at`,
+     `model_requested`, `model_served`, `status_code`,
+     `input_tokens`, `output_tokens`, `latency_ms`,
+     `stop_reason` all NULL. The request-open INSERT works;
+     the stream-close UPDATE that should fill the response-side
+     fields is silent on a 200-OK SSE. STATUS CP9's
+     closed-checkpoint note flagged `model_served=null` only
+     for HTTP-error (non-SSE) responses as a by-design
+     observability hole — the current finding extends that hole
+     into the happy SSE path. Suspect: CP8's server-side
+     plugin host port either lost the `on_persisted` hook
+     trigger or the follow-up UPDATE is failing silently.
+  2. **ADR-#2 consent + data-handling** remains the most
+     blocking Phase-3a item *before any external testing*;
+     operator-only smoke is already validated and not blocked.
 
 ## Active worklog
 
-`docs/worklog/2026-05-13-auth-header-rename.md` (closes ADR-0023
-implementation). Prior: `docs/worklog/2026-05-13-cp13b-fly-deploy.md`
-(closes CP13-b). `docs/worklog/2026-05-11-phase3c-plan.md` remains
-the plan-of-record across the rest of Phase 3c.
+`docs/worklog/2026-05-13-cp14-operator-smoke.md` (closes Phase
+3c CP14). Prior in today's session:
+`docs/worklog/2026-05-13-auth-header-rename.md` (ADR-0023
+implementation) and `docs/worklog/2026-05-13-cp13b-fly-deploy.md`
+(CP13-b deploy). `docs/worklog/2026-05-11-phase3c-plan.md` remains
+the plan-of-record across Phase 3c.
 
 ## Recent commits
 
 ```
+458a4ba   server: grant llm_tracker_app SET on deploy user (0006)
+7d57b1d   docs: STATUS + worklog for ADR-0023 checkpoint
 21e9fa5   docs: ADR-0023 + deploy/env recipes for header rename
 af6bd8f   server: rename auth header to X-LLM-Tracker-Token (ADR-0023)
 be8e544   docs: deploy.md troubleshooting for stale rows + pooler clash
-059419e   docs: STATUS + worklog for Phase 3c CP13-b checkpoint
-3050bcc   server: pgbouncer transaction-mode compat (CP13-b)
 ```
 
 ## Where we paused
+
+**Phase 3c CP14 — operator-only end-to-end smoke — CLOSED.** The
+first real `/v1/messages` curl through the live server hit a P0
+500 inside `AuthMiddleware.dispatch`. fly logs traceback:
+
+```
+asyncpg.exceptions.InsufficientPrivilegeError:
+    permission denied to set role "llm_tracker_app"
+[SQL: SET LOCAL ROLE llm_tracker_app]
+File ".../llm_tracker_server/auth/middleware.py", line 83
+```
+
+Diagnosis via Supabase MCP `execute_sql` on `pg_auth_members`:
+`postgres` was *already* a member of `llm_tracker_app` (Supabase
+auto-grants `postgres` membership of newly created roles), but
+with `admin_option=true, inherit_option=false, set_option=false`.
+PG16 split role membership into three orthogonal options; the
+pre-PG16 coupling of "membership implies SET ROLE" no longer
+holds upstream. The auto-grant had INHERIT only — exactly the
+combination that lets `current_user='postgres'` *see*
+`llm_tracker_app`'s privileges (which is why CP5/CP6 passed
+locally against `cp2` superuser-mode tests) but blocks
+`SET LOCAL ROLE` (which is what RLS-enforcing auth middleware
+actually needs).
+
+Immediate unblock via Supabase MCP:
+
+```sql
+GRANT llm_tracker_app TO postgres WITH SET TRUE;
+```
+
+Post-grant `pg_auth_members` shows a second row with
+`set_option=true, inherit_option=true` alongside the original
+auto-grant row (Postgres ORs option rows; effective: all three
+true). Cosmetic-only: the two rows could be collapsed via REVOKE
++ GRANT but behavior is unchanged.
+
+Durable fix shipped as alembic migration `0006_grant_app_role_set`
+(commit `458a4ba`):
+
+- PG16+ branch: `GRANT llm_tracker_app TO CURRENT_USER WITH SET
+  TRUE`
+- PG15 branch: plain `GRANT llm_tracker_app TO CURRENT_USER`
+  (the `WITH SET TRUE` qualifier is PG16+ only; would syntax-error
+  on the local docker test fixture)
+- Branch selector: `server_version_num >= 160000` inside a
+  `DO $$ ... END $$` block; emit the right form per server.
+
+`CURRENT_USER` (not hardcoded `postgres`) keeps the migration
+portable across deploy environments where the connecting role
+might be named differently. Live Supabase `alembic_version` is
+still `0005` until the next `fly deploy` runs `alembic upgrade
+head`; the migration is idempotent so the next deploy is a no-op
+on the DB side and just advances the alembic stamp.
+
+Verification:
+
+```
+$ # pre-fix (CP14 first attempt, operator-run curl)
+HTTP/2 500 Internal Server Error
+
+$ # post-fix invalid-token probe (no Anthropic key needed)
+$ curl -X POST .../v1/messages -H "X-LLM-Tracker-Token: bogus" \
+    -d '{"model":"claude-opus-4-5","max_tokens":1,"messages":[]}'
+HTTP/2 403
+{"detail":"unknown or revoked token"}
+
+$ # post-fix real curl (operator-run, valid Anthropic key)
+HTTP/2 200
+
+$ # fly logs --since 5m (the 200 path)
+proxy.forward (forwarded_credential: true)
+HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+INFO: "POST /v1/messages HTTP/1.1" 200 OK
+(no traceback)
+
+$ # Supabase MCP: SELECT FROM exchanges ORDER BY started_at DESC
+[1 row: id=01KRFVTG1E7Q72QN7E5MP26JXY,
+ org_id=c6fcdd23-... (org_name="demo"),
+ started_at=2026-05-13 05:09:16.974+00,
+ endpoint=v1/messages, provider=anthropic, content_level=L3]
+
+$ .venv/bin/python3.12 -m ruff check \
+    packages/llm_tracker_server/alembic/versions/0006_grant_app_role_set_membership.py
+All checks passed!
+
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker_server/tests -q
+61 passed in 25.70s
+```
+
+CP14's three success criteria from
+`docs/worklog/2026-05-11-phase3c-plan.md`:
+
+- ✅ Response stream returns to client unchanged (operator-confirmed
+  200 + SSE bytes match Anthropic emit).
+- ✅ Exactly one row lands in `public.exchanges` scoped to demo
+  org. (Two demo-scoped rows total — the second is a 400-BadRequest
+  debug row from the same session, also evidence that
+  multi-tenancy isolation fires on every request regardless of
+  upstream outcome.)
+- ✅ `fly logs` since request timestamp shows no traceback.
+
+**Secondary finding** (carved out per user direction as a separate
+track): the successful row's response-side columns are all NULL —
+`ended_at`, `model_requested`, `model_served`, `status_code`,
+`input_tokens`, `output_tokens`, `latency_ms`, `stop_reason`. The
+request-open INSERT works; the stream-close UPDATE that should
+fill the response-side fields is silent on a 200-OK SSE. STATUS
+CP9 had previously flagged `model_served=null` only for HTTP-error
+(non-SSE) responses as a by-design observability hole; the current
+finding extends that hole into the happy SSE path. Suspected
+location: CP8's server-side plugin host port (`on_persisted` hook
+dispatch) or CP9's storage UPDATE path. Owner of next CP / ADR
+TBD — fresh worklog when picked up.
+
+Phase 3c is **closed (operator smoke validated)**. The OAuth
+Claude Code question that started this session is **not** yet
+answerable in the affirmative — it remains gated on Phase 3b
+(thin local agent or equivalent header-injection sidecar), which
+itself is gated on Phase-3a items #1/#4. Operator-only smoke is
+the proof-point for everything Phase-3c-rated, and that is now
+in.
+
+---
+
+### Prior workstream — ADR-0023 server auth header rename (closed 2026-05-13)
 
 **ADR-0023 — server auth header rename — landed (CP14 prep).** A
 P0 blocker surfaced while preparing CP14: OAuth Claude Code users
@@ -114,10 +250,11 @@ $ .venv/bin/python3.12 -m pytest packages/llm_tracker_server/tests -q
 ............................................................. 61 passed in 23.04s
 ```
 
-The deployed server is still on the pre-rename build until the next
-`fly deploy`; CP14 will pick up the new build and exercise the
-OAuth case end-to-end. Documentation HEAD advances with this §5.3
-finalize commit.
+The "still on pre-rename build until next `fly deploy`" note that
+sat here at finalize time turned out to be wrong: the rename build
+was actually already live by the time CP14 started probing —
+re-validated by the `missing X-LLM-Tracker-Token header` 401 body
+in CP14's pre-flight probe.
 
 ---
 
@@ -400,59 +537,90 @@ reframes them server-side**:
 
 ## Next single step
 
-**Phase 3c CP14 — operator-only end-to-end smoke.** The server is
-already live at `https://llm-tracker-server.fly.dev/` (CP13-b
-closed); CP14 sends the first real `/v1/messages` request through
-it.
+**Investigate the response-side NULL columns on CP14's exchange row.**
+This is the natural follow-up to CP14 closure — the row landed
+(CP14's pass criterion) but the *close-out* half of the
+exchange-persistence contract is silent. Highest-signal,
+self-contained, reuses the already-minted demo org + token.
 
-> **Pre-CP14**: the deployed image must be redeployed to pick up
-> ADR-0023 (`fly deploy`). Until then the live server still reads
-> `Authorization: Bearer ...` for our auth and would reject any
-> OAuth Claude Code request with 403. Verify the new build is live
-> by hitting `/v1/messages` *without* either auth header and
-> expecting `401 missing X-LLM-Tracker-Token header` (was: `401
-> missing or malformed Authorization header`).
+The empirically observed shape, post-CP14:
 
-1. **Mint the demo bearer token** (once; output is shown only at
-   issuance time):
+| Column | CP14 row | Expected |
+|---|---|---|
+| `started_at` | ✅ populated | populated at request open (INSERT) |
+| `endpoint`, `provider`, `org_id`, `content_level` | ✅ populated | populated at request open (INSERT) |
+| `ended_at` | ❌ NULL | populated at stream close (UPDATE) |
+| `model_requested`, `model_served` | ❌ NULL | populated from request body / upstream response (UPDATE) |
+| `status_code` | ❌ NULL | populated at stream close (UPDATE) |
+| `input_tokens`, `output_tokens` | ❌ NULL | populated from Anthropic `message_stop` usage (UPDATE) |
+| `latency_ms`, `stop_reason` | ❌ NULL | populated at stream close (UPDATE) |
 
-   ```
-   fly ssh console -C "llm-tracker-server tokens issue --org demo"
-   ```
+STATUS CP9's closed-checkpoint note flagged `model_served=null`
+only for *HTTP-error* (non-SSE) responses as a by-design
+observability hole. The CP14 finding extends that hole into the
+*happy SSE 200* path, which was not the by-design case.
 
-   Save the printed plaintext token. The server stores only the
-   SHA-256 hash; this string cannot be recovered later.
-2. **Send one real `/v1/messages`** request to the deployed server
-   with a valid Anthropic API key in `x-api-key` (or, equivalently,
-   an OAuth Anthropic bearer in `Authorization`) and the demo
-   token in **`X-LLM-Tracker-Token`** (per ADR-0023; `Authorization`
-   is no longer read by the server). The body should be a real,
-   non-empty `messages` payload (anything trivial that Anthropic
-   will answer; `claude-opus-4-5` works).
-3. **Verify three things, in order:**
-   - The response stream returns to the client unchanged (the
-     SSE wire bytes match what Anthropic emitted, modulo the
-     final `event: message_stop`).
-   - Exactly one row lands in `public.exchanges` scoped to the
-     demo org (`SELECT * FROM exchanges` via Supabase MCP / SQL
-     editor; the row's `org_id` matches `SELECT id FROM orgs
-     WHERE name = 'demo'`).
-   - `fly logs` (since the request timestamp) shows no traceback
-     — the path covers auth middleware → credential
-     pass-through → plugin host → org-aware INSERT.
+Likely investigation path (one or two sessions):
 
-CP14 is closed when those three pass. After CP14, Phase 3c's
-14-checkpoint plan is fully closed and Phase 3c overall flips
-to "closed (operator smoke validated)". External-tester flavours
-of CP14 require **ADR-#2 (consent + data handling)** to settle
-first.
+1. **Read CP8's server-side plugin host port** for the
+   `on_persisted` hook dispatch — does the close-out hook fire
+   on a 200-OK SSE stream end? Compare against the local-proxy
+   plugin host (which the supabase_sink CP9 demo exercised
+   successfully — rows had `model_served` populated for the
+   non-error path).
+2. **Read CP9's storage layer** for the request-close UPDATE.
+   Is it an `UPDATE exchanges SET ... WHERE id = :req_id`
+   issued from a separate `on_persisted` hook, or is the row
+   meant to be a single INSERT at close time? The empirical
+   "INSERT-at-open then UPDATE-at-close" two-step is inferred
+   from the observed mid-state.
+3. **Re-run a CP14-equivalent curl** with the same demo token
+   and watch fly logs for any indication that an UPDATE was
+   *attempted* but failed (e.g. an RLS-context drift between
+   the on-open session that wrote `app.org_id` and a later
+   close-out session that may not have).
+4. Either fix in place (small) or, if the underlying contract
+   is unclear, surface an ADR ("exchange row close-out policy")
+   that resolves both this finding and CP9's HTTP-error
+   observability hole in one design.
 
-The asyncpg / pgbouncer compat fix shipped in `3050bcc` should
-be re-verified under CP14's authenticated load — auth middleware
-reads `api_tokens` on *every* request, which is the exact code
-path that triggered the original
-`DuplicatePreparedStatementError` and the place where any
-remaining cache pathology would resurface.
+Suggested fresh worklog slug:
+`docs/worklog/2026-05-13-cp14-response-side-followup.md` (or a
+CP15-rated slug if this gets fold-in scope work). Treat the
+`docs/worklog/2026-05-13-cp14-operator-smoke.md` worklog as the
+upstream context.
+
+### Side-quests (do at any time, none blocking)
+
+- **Stamp migration 0006 on live Supabase.** Live `alembic_version`
+  is `0005_rls_policies`; the migration head in code is
+  `0006_grant_app_role_set` and its DB effect is already in place
+  (applied manually via Supabase MCP during CP14). Two paths to
+  align:
+
+  ```
+  # Option A — fold into the next fly deploy:
+  # alembic upgrade head runs as part of the container's release_command.
+  # 0006 is idempotent → no-op on the DB side, just stamps version.
+
+  # Option B — stamp now without redeploy:
+  fly ssh console -a llm-tracker-server -C \
+    "alembic stamp 0006_grant_app_role_set"
+  ```
+
+  Option A is cleaner if there's any other code change due soon;
+  Option B if the alembic-state drift is annoying *right now*.
+- **ADR-#2 consent + data-handling.** Still owed *before any
+  external testing* of the central server. Operator-only smoke
+  (now validated) is not blocked. Legal/privacy input may take
+  longer than internal ADR drafting; flag to start alongside the
+  response-side investigation.
+- **`docs/deploy.md` paragraph on PG16+ `set_option` quirk.** Sits
+  naturally next to the existing pgbouncer/asyncpg note from
+  CP13-b. Any future PG16+ managed deploy (RDS, Cloud SQL, Neon)
+  will hit the same trap.
+
+### Local dev loop revival (still current)
 
 To revive the local dev loop in a new session (Postgres on the
 host for the test-fixture suite; the Dockerised server +
@@ -474,12 +642,6 @@ docker run -d --rm -p 18080:8080 --name lts-smoke llm-tracker-server:local
 curl -sS http://localhost:18080/healthz
 docker stop lts-smoke
 ```
-
-In parallel, the **ADR-#2 consent decision** remains the most
-blocking remaining Phase-3a item *before any external testing* of
-the central server. Operator-only smoke (CP14) is not blocked.
-Legal/privacy input may take longer than internal ADR drafting;
-flag to start alongside Phase 3c.
 
 The user-deferred items #1 (fallback) and #4 (agent language) are
 **not on the critical path** under the current server-first
@@ -529,9 +691,10 @@ ready to start.
 - [x] **Phase 3c CP13-a — `fly.toml` + `docs/deploy.md` (2026-05-13, commits ef59192 + 59dbae6)**
 - [x] **Phase 3c CP13-b — first Fly.io + Supabase deploy (2026-05-13, commit 3050bcc; server live at `https://llm-tracker-server.fly.dev/`)**
 - [x] **ADR-0023 — server auth header rename to `X-LLM-Tracker-Token` (2026-05-13, commits af6bd8f + 21e9fa5; CP14 prep, fixes OAuth Claude Code collision)**
+- [x] **Phase 3c CP14 — operator-only end-to-end smoke (2026-05-13, commit 458a4ba; first 200-OK roundtrip with operator-minted demo token; demo-scoped row in `public.exchanges`; PG16+ deploy gap surfaced + fixed in migration 0006; response-side metadata NULL on the success row flagged as separate follow-up track)**
 - [ ] **Phase 3a — remaining 3 decision ADRs** (#1 fallback / #2 consent / #4 agent language)
 - [ ] Phase 3b — thin local agent (gated on #1 + #4)
-- [ ] Phase 3c — server build-out (13 of 14 plan-checkpoints done; CP14 remaining — operator-only end-to-end smoke. Plan at `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0017/0018/0019/0020/0022)
+- [x] **Phase 3c — server build-out (14 of 14 plan-checkpoints done; closed 2026-05-13 with operator smoke validated. Plan at `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0017/0018/0019/0020/0022/0023)**
 - [ ] Phase 1c — `scope_guard` (paused; reframed server-side per ADR-0019; gated on Phase 3c readiness)
 - [ ] Phase 3d — carry-overs: OpenAI/Gemini adapters, analytics interface, response-side policy plugins
 

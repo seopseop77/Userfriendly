@@ -6,8 +6,8 @@
 
 ---
 
-**Last updated**: 2026-05-13 (Claude Code; Phase 3c CP13-b landed — operator ran `docs/deploy.md` end-to-end against real Fly.io + Supabase. First deploy hit two failures (stale `public.exchanges` from the closed `supabase_sink` workstream; asyncpg / pgbouncer transaction-mode prepared-statement clash), both diagnosed and resolved. Server is live at `https://llm-tracker-server.fly.dev/` with alembic head = `0005_rls_policies`; two `nrt` Machines passing `/healthz`. One source-code commit shipped to make the deploy stick. **CP14 (operator-only smoke) is the only remaining Phase 3c plan-checkpoint.**)
-**Updated by**: Claude Code (Phase 3c CP13-b checkpoint, source commit 3050bcc)
+**Last updated**: 2026-05-13 (Claude Code; **ADR-0023 — server auth header rename** landed as a CP14-prep side-quest. P0 blocker resolved: OAuth Claude Code users were locked out because `AuthMiddleware` consumed their Anthropic OAuth bearer in `Authorization`. New header `X-LLM-Tracker-Token` for server auth; `Authorization` is now pass-through-only and reaches Anthropic untouched (61/61 server tests green; ADR amends ADR-0020 Axis 1 only). Phase 3c CP13-b remains closed; **CP14 is still the next single step**, now meaningful for OAuth users too — operator owes a `fly deploy` to pick up the rename build before running CP14 smoke.)
+**Updated by**: Claude Code (ADR-0023 checkpoint, commits af6bd8f + 21e9fa5)
 
 ## Current phase
 
@@ -49,21 +49,79 @@
 
 ## Active worklog
 
-`docs/worklog/2026-05-13-cp13b-fly-deploy.md` (closes CP13-b).
-`docs/worklog/2026-05-11-phase3c-plan.md` remains the plan-of-record
-across the rest of Phase 3c.
+`docs/worklog/2026-05-13-auth-header-rename.md` (closes ADR-0023
+implementation). Prior: `docs/worklog/2026-05-13-cp13b-fly-deploy.md`
+(closes CP13-b). `docs/worklog/2026-05-11-phase3c-plan.md` remains
+the plan-of-record across the rest of Phase 3c.
 
 ## Recent commits
 
 ```
+21e9fa5   docs: ADR-0023 + deploy/env recipes for header rename
+af6bd8f   server: rename auth header to X-LLM-Tracker-Token (ADR-0023)
+be8e544   docs: deploy.md troubleshooting for stale rows + pooler clash
+059419e   docs: STATUS + worklog for Phase 3c CP13-b checkpoint
 3050bcc   server: pgbouncer transaction-mode compat (CP13-b)
-90d29f3   docs: STATUS + worklog for Phase 3c CP13-a checkpoint
-59dbae6   docs: Fly.io + Supabase deploy guide (CP13-b)
-ef59192   infra: fly.toml for the server (CP13-a)
-a8b622b   docs: STATUS + worklog for Phase 3c CP12 checkpoint
 ```
 
 ## Where we paused
+
+**ADR-0023 — server auth header rename — landed (CP14 prep).** A
+P0 blocker surfaced while preparing CP14: OAuth Claude Code users
+(the majority) send their Anthropic credential in `Authorization:
+Bearer <oauth-token>`. `AuthMiddleware` was reading the same slot
+for our per-org token, eating the OAuth bearer and returning `403
+unknown or revoked`. The local proxy never had this problem because
+it was a transparent pass-through with no auth layer; the central
+server is the first surface in this project that *consumes* a
+header. ADR-0023 (commit `21e9fa5`) renames the server-auth header
+to `X-LLM-Tracker-Token`; `Authorization` is now reserved for the
+Anthropic credential pass-through (OAuth bearer, or absent for
+`x-api-key` users) and flows through to upstream untouched.
+
+Source change shipped in `af6bd8f`:
+
+- `AuthMiddleware` reads `X-LLM-Tracker-Token` (was: `Authorization:
+  Bearer ...`); the bearer-scheme parse is gone, the new header is
+  a plain opaque value.
+- `proxy.forwarder._LOCAL_ONLY = {"x-llm-tracker-token"}` (was:
+  `{"authorization"}`). The strip set no longer touches
+  `Authorization`, fixing the OAuth pass-through.
+- Two new credential-passthrough tests pin the contract:
+  `test_outbound_strips_x_llm_tracker_token` and
+  `test_outbound_passes_authorization_bearer_through`.
+- Module docstrings (`auth/__init__.py`, `auth/middleware.py`,
+  `proxy/credential.py`, `proxy/forwarder.py`) updated; the
+  Authorization-passthrough case is now explicit at every level.
+
+Docs change in `21e9fa5`:
+
+- ADR-0023 (Accepted) — amends ADR-0020 Axis 1 only; Axis 2
+  (Anthropic credential pass-through) untouched.
+- `docs/deploy.md` Step 5–6 curl + prose moved to
+  `X-LLM-Tracker-Token`.
+- `.env.example` Section 1 swapped; Section 2 extended to list
+  `Authorization: Bearer <oauth-token>` as a third accepted form.
+
+Verification (full transcript in worklog
+`docs/worklog/2026-05-13-auth-header-rename.md` §Verification):
+
+```
+$ .venv/bin/python3.12 -m ruff check <7 modified files>
+All checks passed!
+
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker_server/tests -q
+............................................................. 61 passed in 23.04s
+```
+
+The deployed server is still on the pre-rename build until the next
+`fly deploy`; CP14 will pick up the new build and exercise the
+OAuth case end-to-end. Documentation HEAD advances with this §5.3
+finalize commit.
+
+---
+
+### Prior workstream — Phase 3c CP13-b (closed 2026-05-13)
 
 **Phase 3c CP13-b — first Fly.io + Supabase deploy — closed.**
 The operator drove `docs/deploy.md` end-to-end. Two real-world
@@ -347,6 +405,14 @@ already live at `https://llm-tracker-server.fly.dev/` (CP13-b
 closed); CP14 sends the first real `/v1/messages` request through
 it.
 
+> **Pre-CP14**: the deployed image must be redeployed to pick up
+> ADR-0023 (`fly deploy`). Until then the live server still reads
+> `Authorization: Bearer ...` for our auth and would reject any
+> OAuth Claude Code request with 403. Verify the new build is live
+> by hitting `/v1/messages` *without* either auth header and
+> expecting `401 missing X-LLM-Tracker-Token header` (was: `401
+> missing or malformed Authorization header`).
+
 1. **Mint the demo bearer token** (once; output is shown only at
    issuance time):
 
@@ -357,10 +423,12 @@ it.
    Save the printed plaintext token. The server stores only the
    SHA-256 hash; this string cannot be recovered later.
 2. **Send one real `/v1/messages`** request to the deployed server
-   with a valid Anthropic API key in `x-api-key` and the demo
-   token in `Authorization`. The body should be a real, non-empty
-   `messages` payload (anything trivial that Anthropic will
-   answer; `claude-opus-4-5` works).
+   with a valid Anthropic API key in `x-api-key` (or, equivalently,
+   an OAuth Anthropic bearer in `Authorization`) and the demo
+   token in **`X-LLM-Tracker-Token`** (per ADR-0023; `Authorization`
+   is no longer read by the server). The body should be a real,
+   non-empty `messages` payload (anything trivial that Anthropic
+   will answer; `claude-opus-4-5` works).
 3. **Verify three things, in order:**
    - The response stream returns to the client unchanged (the
      SSE wire bytes match what Anthropic emitted, modulo the
@@ -460,6 +528,7 @@ ready to start.
 - [x] **Phase 3c CP12 — `Dockerfile` + `.dockerignore` (2026-05-12, commit 92ddff7)**
 - [x] **Phase 3c CP13-a — `fly.toml` + `docs/deploy.md` (2026-05-13, commits ef59192 + 59dbae6)**
 - [x] **Phase 3c CP13-b — first Fly.io + Supabase deploy (2026-05-13, commit 3050bcc; server live at `https://llm-tracker-server.fly.dev/`)**
+- [x] **ADR-0023 — server auth header rename to `X-LLM-Tracker-Token` (2026-05-13, commits af6bd8f + 21e9fa5; CP14 prep, fixes OAuth Claude Code collision)**
 - [ ] **Phase 3a — remaining 3 decision ADRs** (#1 fallback / #2 consent / #4 agent language)
 - [ ] Phase 3b — thin local agent (gated on #1 + #4)
 - [ ] Phase 3c — server build-out (13 of 14 plan-checkpoints done; CP14 remaining — operator-only end-to-end smoke. Plan at `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0017/0018/0019/0020/0022)

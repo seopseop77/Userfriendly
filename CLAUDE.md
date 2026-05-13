@@ -1,13 +1,11 @@
 # Claude Code Working Guide (CLAUDE.md)
 
-This document defines the rules Claude Code must follow when working in this
-repository. Strategy and design discussions happen in Claude Cowork; the
-results land in this file and the documents under `docs/`. Claude Code's job
-here is **implementation**.
+Rules Claude Code follows in this repository. Strategy lives in Claude Cowork
+and `docs/`; Claude Code's job here is **implementation**.
 
 ## 1. Project at a glance
 
-- **Purpose**: A local sidecar proxy **framework** between CLI coding agents
+- **Purpose**: A central server **framework** between CLI coding agents
   (Claude Code, etc.) and LLM API servers. The core only provides hook points,
   capability gating, and egress control. Actual *features* (scope guard, drift
   metrics, data upload, etc.) are built as **plugins**.
@@ -17,34 +15,24 @@ here is **implementation**.
      explicitly, every action audited.
   3. Mode-aware — the framework knows the deployment mode (L/A/R) and
      enforces what capabilities each mode permits.
-- **Distribution**: Local sidecar. Collaborators extend functionality via plugins.
-- **Language/stack**: Python 3.11+, FastAPI, httpx, SQLite, Alembic.
+- **Distribution**: Central server. Collaborators extend functionality via plugins.
+- **Language/stack**: Python 3.11+, FastAPI, httpx, PostgreSQL, Alembic.
 - **Scope**: Core targets Claude Code (Anthropic Messages API) first. Adapter
   abstraction exists, but OpenAI/Gemini implementations are deferred. Domain
   features live outside the core — plugins.
 
-For detailed design see `docs/design.md` (especially §4 core principles, §6
-architecture, §7 security model). For plugin authoring see `docs/plugins.md`.
-Don't reverse decisions silently — open an ADR.
+Details: `docs/design.md`, `docs/plugins.md`. Don't reverse decisions silently — open an ADR.
 
-## 2. Engineering principles (general)
-
-These behavioral guidelines apply to all coding work, regardless of project
-specifics. They bias toward caution over speed. For trivial tasks, use judgment.
+## 2. Engineering principles
 
 ### 2.1 Think before coding
 
-Don't assume. Don't hide confusion. Surface tradeoffs.
-
-Before implementing:
-- State your assumptions explicitly. If uncertain, ask.
+- State assumptions explicitly. If uncertain, ask.
 - If multiple interpretations exist, present them — don't pick silently.
 - If a simpler approach exists, say so. Push back when warranted.
 - If something is unclear, stop. Name what's confusing. Ask.
 
 ### 2.2 Simplicity first
-
-Minimum code that solves the problem. Nothing speculative.
 
 - No features beyond what was asked.
 - No abstractions for single-use code.
@@ -52,12 +40,7 @@ Minimum code that solves the problem. Nothing speculative.
 - No error handling for impossible scenarios.
 - If you write 200 lines and it could be 50, rewrite it.
 
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes,
-simplify.
-
 ### 2.3 Surgical changes
-
-Touch only what you must. Clean up only your own mess.
 
 When editing existing code:
 - Don't "improve" adjacent code, comments, or formatting.
@@ -69,11 +52,9 @@ When your changes create orphans:
 - Remove imports/variables/functions that YOUR changes made unused.
 - Don't remove pre-existing dead code unless asked.
 
-Test: every changed line should trace directly to the user's request.
+Scope drift: note observed improvements in a "Suggestions" worklog section; don't mix mass formatting into feature commits; when ambiguous, interpret minimally and ask.
 
 ### 2.4 Goal-driven execution
-
-Define success criteria. Loop until verified.
 
 Transform tasks into verifiable goals:
 - "Add validation" → "Write tests for invalid inputs, then make them pass"
@@ -88,31 +69,18 @@ For multi-step tasks, state a brief plan:
 3. [step] → verify: [check]
 ```
 
-Strong success criteria let you loop independently. Weak criteria ("make it
-work") require constant clarification.
-
-These principles are working if: fewer unnecessary changes in diffs, fewer
-rewrites due to overcomplication, and clarifying questions arrive before
-implementation rather than after mistakes.
-
 ## 3. Language and communication
 
-- **All artifacts** in this repository — source code, comments, commit
-  messages, worklogs, ADRs, design docs, status pages, READMEs — are written
-  in **English**. This applies to anything you create or edit, regardless of
-  the language used in the conversation.
-- **Chat replies to the user** are written in **Korean** (the user's
-  preferred language). Use natural, professional Korean.
-- This split is deliberate: English in artifacts gives consistent search,
-  better tooling and model performance; Korean in chat reduces friction for
-  the user.
+- **All artifacts** (source code, comments, commit messages, worklogs, ADRs,
+  design docs, status pages, READMEs) in **English**.
+- **Chat replies to the user** in **Korean**.
 
 ## 4. Roles (important)
 
 | Area | Owner | Output |
 |---|---|---|
 | Direction, architecture, scope | Human + Claude Cowork | `docs/design.md`, `docs/decisions/*.md` |
-| Code, refactoring, tests, fixes | Claude Code | `src/`, `tests/`, `docs/worklog/*.md` |
+| Code, refactoring, tests, fixes | Claude Code | `packages/`, `tests/`, `docs/worklog/*.md` |
 
 **Claude Code does not make architectural decisions alone.** Examples: adding
 a new dependency, changing storage schema, changing proxy behavior, changing
@@ -122,9 +90,6 @@ the user.
 
 ## 5. Work tracking (required)
 
-This project assumes session cutoffs from rate limits are common. The whole
-point of these conventions is to **lose almost nothing across cutoffs**.
-
 ### 5.1 Three entry points
 
 | File | Role | Updated by |
@@ -133,16 +98,12 @@ point of these conventions is to **lose almost nothing across cutoffs**.
 | `docs/worklog/<YYYY-MM-DD>-<slug>.md` | Current session's narrative — intent, decisions, verification. | Every meaningful unit of work |
 | git log | Code-level checkpoints — what *exactly* changed. | Every commit (automatic) |
 
-These three reference each other (STATUS points to worklog and commit hashes;
-worklog cites commit hashes; commits use worklog as `Refs:`). Read any one
-and you can jump to the other two.
-
 ### 5.2 Worklog rules
 
 - Path: `docs/worklog/YYYY-MM-DD-<slug>.md`
 - Template: `docs/worklog/TEMPLATE.md`
 - One file per (date, topic). New topic → new file.
-- **Update during work, not after.** That's the whole point of cutoff resilience.
+- **Update during work, not after.**
 
 A worklog must contain:
 - The user's request and your interpretation.
@@ -165,7 +126,7 @@ Triggers:
 
 The three units:
 
-1. **Commit code** — per CLAUDE.md §11.
+1. **Commit code** — per CLAUDE.md §10.
 2. **Update worklog** — append the new commit hash to "What was done", and
    rewrite "What's left / Handoff" as of *now*. Don't leave stale mid-work
    notes.
@@ -176,8 +137,6 @@ If you don't bundle these three, the next session is lost.
 
 ### 5.4 ADR
 
-Architecture-level decisions go in **ADRs**, not the worklog.
-
 - Path: `docs/decisions/NNNN-<slug>.md`
 - Template: `docs/decisions/TEMPLATE.md`
 - ADRs are for hard-to-reverse / wide-impact decisions. Smaller
@@ -185,29 +144,19 @@ Architecture-level decisions go in **ADRs**, not the worklog.
 
 ## 6. Pre-task checklist
 
-At the start of any new task:
-
-1. **Read `docs/STATUS.md` first.** Note the worklog it points to and the
-   "Next single step".
-2. Read that worklog, especially its last "Handoff" section.
-3. `git log -5 --oneline` for the most recent commits. `git show` the latest
-   if needed.
-4. Re-read `docs/design.md` and `docs/roadmap.md` for the current phase's
-   priorities.
+1. Read `docs/STATUS.md`. Note the worklog it points to and the "Next single step".
+2. Read that worklog's last "Handoff" section.
+3. `git log -5 --oneline`. `git show` the latest if needed.
+4. Re-read `docs/design.md` and `docs/roadmap.md`.
 5. Check related ADRs in `docs/decisions/`.
-6. **Announce in one line before starting**: "Per STATUS.md the next step
-   is X. Starting that now." Gives the user a chance to redirect.
-7. If anything is unclear or architecture-touching, ask **before** starting.
+6. Announce in one line: "Per STATUS.md the next step is X. Starting that now."
+7. If unclear or architecture-touching, ask **before** starting.
 
 ### 6.1 Standard "resume" prompt
-
-When the user opens a new Claude Code session and says only:
 
 > Resume. Read STATUS.md → the worklog it points to → `git log -5`. Announce
 > the next single step in one line, then execute it. Update per §5.3 along
 > the way.
-
-…that triggers the entire flow above.
 
 ## 7. Code conventions
 
@@ -225,26 +174,18 @@ When the user opens a new Claude Code session and says only:
 
 ## 8. Verification
 
-Before reporting "done", you must have at least one **active verification**.
+Before reporting "done", have at least one **active verification**.
 
-- Added/changed a function → paste the test run output into the worklog.
-- Changed proxy behavior → paste the local end-to-end logs/screenshots.
+- Added/changed a function → test run output in worklog.
+- Changed proxy behavior → local end-to-end logs/screenshots.
 - Documentation only → confirm internal links resolve.
-- Added a dependency → confirm `pip install -e .` (or equivalent) succeeds clean.
+- Added a dependency → confirm install succeeds clean.
 
-No language like "tests should pass". Either run them, or say you couldn't.
+No "tests should pass" language. Either run them, or say you couldn't.
 
-## 9. Scope drift control
+## 9. Public interfaces
 
-- Don't refactor or optimize what wasn't asked. Note observed improvements
-  in a "Suggestions" section of the worklog without acting.
-- Don't mix mass formatting changes into a feature commit. Split.
-- When the request is ambiguous, interpret minimally and ask.
-
-## 10. Public interfaces
-
-The following are contracts — changing them breaks downstream systems and
-plugins. Changes require an ADR.
+Contracts — changes break downstream systems and plugins. Changes require an ADR.
 
 - CLI command names and flags (`llm-tracker ...`).
 - Environment variable names (`LLMTRACK_*`, `ANTHROPIC_BASE_URL`).
@@ -254,11 +195,9 @@ plugins. Changes require an ADR.
 - **Capability vocabulary** — names and meaning of each capability.
 - **Plugin manifest schema** — keys and validation in `plugin.toml`.
 - **Content levels** — definitions of L0/L1/L2/L3.
-- Core SQLite schema (`exchanges`, `events`, `tool_calls`, `audit_log`).
-- Mode policies (what L/A/R each permit and deny).
-- Signing rules for plugin manifests, TaskDefinitions, etc.
+- Core PostgreSQL schema (`exchanges`, `events`, `tool_calls`, `audit_log`).
 
-## 11. Git commit rules (auto-commit on)
+## 10. Git commit rules (auto-commit on)
 
 Claude Code **commits automatically** at every meaningful unit of change.
 **Never push automatically** — humans push.
@@ -317,11 +256,11 @@ In the worklog "What was done" section, cite the short commit hash:
 - Modified tests/test_foo.py (commits a1b2c3d, e4f5g6h)
 ```
 
-## 12. Common commands (fill in over time)
+## 11. Common commands
 
 ```bash
-# Install dependencies (planned; verify after Phase 0)
-pip install -e ".[dev]"
+# Install dependencies (uv workspace)
+uv sync
 
 # Format + lint
 ruff format . && ruff check .
@@ -329,37 +268,40 @@ ruff format . && ruff check .
 # Tests
 pytest -q
 
-# Run the proxy locally (planned)
+# Run the proxy locally
 python -m llm_tracker.proxy
 
-# Run the central receiver app locally (planned; against Supabase)
-DATABASE_URL=$SUPABASE_URL python -m llm_tracker_server
+# Run the central receiver app locally
+python -m llm_tracker_server
 
-# Alembic migrations (planned)
+# Alembic migrations (per package, via alembic.ini)
 alembic revision -m "<message>"
 alembic upgrade head
 ```
 
-## 13. Where to find things
+## 12. Where to find things
 
 ```
-src/llm_tracker/             # local sidecar proxy (core framework)
-  proxy/        # FastAPI app, SSE forwarding, tee
-  adapters/     # provider-specific parsing (anthropic only for now)
-  extractors/   # SSE events → structured records
-  scrubbers/    # PII / secret removal
-  storage/      # SQLite buffer
-  config/       # pydantic-settings
-  cli/          # Typer CLI
-  plugin_host/  # plugin loader, hook dispatcher, capability registry
-  egress_guard/ # single egress path with allowlist
-  audit/        # audit log writers
+packages/llm_tracker/             # core framework (proxy + hook host)
+  src/llm_tracker/
+    proxy/        # FastAPI app, SSE forwarding, tee
+    adapters/     # provider-specific parsing (anthropic only for now)
+    extractors/   # SSE events → structured records
+    scrubbers/    # PII / secret removal
+    storage/      # PostgreSQL buffer
+    config/       # pydantic-settings
+    cli/          # Typer CLI
+    plugin_host/  # plugin loader, hook dispatcher, capability registry
+    egress_guard/ # single egress path with allowlist
+    audit/        # audit log writers
 
-src/llm_tracker_server/      # reference receiver app (Mode R only; pairs with supabase_sink plugin)
-  api/          # HTTP routes
-  domain/       # business logic (no DB)
-  storage/      # SQLAlchemy + Alembic
-  signing/      # ed25519 helpers
+packages/llm_tracker_server/      # central receiver app
+  src/llm_tracker_server/
+    api/          # HTTP routes
+    domain/       # business logic (no DB)
+    storage/      # SQLAlchemy + Alembic
+
+packages/llm_tracker_agent/       # agent-side client / SDK
 
 tests/          # pytest
 docs/           # human-readable documents
@@ -372,5 +314,3 @@ docs/           # human-readable documents
   decisions/    # ADRs
 .claude/        # Claude Code-specific config (slash commands, hooks)
 ```
-
-The skeleton is mostly empty. Filling it in is Claude Code's job.

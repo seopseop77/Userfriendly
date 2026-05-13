@@ -6,83 +6,130 @@
 
 ---
 
-**Last updated**: 2026-05-13 (Claude Code; **CP14 follow-up Option A — production-verified.** Operator ran `fly deploy -a llm-tracker-server` shipping HEAD `237d842` and a fresh `/v1/messages` curl. Supabase MCP confirmed row `01KRG14W5VNV78HN3P9PEF2Z9P` carries `ended_at`=1778654541783 (≈ started_at+1820 ms), `status_code`=200, `model_requested`="claude-opus-4-5", `latency_ms`=1820 — Option A's four close-out columns all populated as predicted. The same deploy's `release_command` ran `alembic upgrade head` and stamped `alembic_version` from `0005_rls_policies` → `0006_grant_app_role_set` (idempotent on the DB side; closes the pending migration-0006 stamp side-quest in one go). Five Option-B response-side columns (`model_served`, `input_tokens`, `output_tokens`, `cache_*`, `stop_reason`) still NULL on the new row — expected, gated on SSE Extractor. No code change in this checkpoint — deploy + verification only.)
-**Updated by**: Claude Code (CP14 follow-up Option A production verification; no new commit — deploy + live observation)
+**Last updated**: 2026-05-13 (Claude Code; **Phase 3b code-complete.** Two ADRs landed (commit `79a0ae9`) — ADR-0024 "agent fallback fail-closed" and ADR-0025 "Python CLI distribution" — settling Phase-3a items #1 and #4. New workspace member `packages/llm_tracker_agent/` shipped (commit `fbd36e4`): `claude-manage setup` writes `~/.llm-tracker/config.toml` (chmod 0o600); `claude-manage` (default) runs a loopback FastAPI proxy that injects `X-LLM-Tracker-Token`, strips hop-by-hop, fail-closes 503 on unreachable upstream per ADR-0024, polls `/healthz` for ≤ 3s, sets `ANTHROPIC_BASE_URL`, and spawns `claude`. Verification: ruff clean; 7/7 agent tests pass; full repo `pytest -q` = 300 passed / 16 skipped; live `claude-manage setup` round-trip confirmed (0o600 perms verified on disk). End-to-end smoke against the live Fly.io central server still owed — needs a second team member.)
+**Updated by**: Claude Code (Phase 3b agent code-complete; awaits external smoke before declaring Phase 3b closed)
 
 ## Current phase
 
-- **Phase**: **Phase 3c — CLOSED (14/14 plan-checkpoints).**
-  CP1–CP12 stand as previously recorded (skeleton, PG storage,
-  orgs+api_tokens, `org_id NOT NULL`, RLS + `llm_tracker_app`
-  role, auth middleware, Anthropic credential pass-through +
-  scrubbing, plugin-host port, org-aware INSERTs, manifest
-  `min_content_level` + per-plugin host clamp, `.env.example` +
-  `docs/plugins.md` refresh, multi-stage Dockerfile +
-  `.dockerignore`). CP13-a/b shipped the first Fly.io +
-  Supabase deploy (live at
-  `https://llm-tracker-server.fly.dev/`). ADR-0023 + migration
-  0006 are the two CP14-prep / CP14-followup side-quests.
-  **CP14 closed today** after surfacing a PG16+ deploy gap
-  (`set_option=false` on Supabase's auto-granted membership),
-  fixing it immediately via Supabase MCP, and persisting the
-  fix as alembic migration 0006 (commit `458a4ba`;
-  PG-version-aware DO-block so the local PG15 fixture stays
-  green). Verification: invalid-token probe returns 403
-  (auth path now reaches `lookup()`); operator-run real curl
-  with valid Anthropic key + `X-LLM-Tracker-Token` returned
-  200; fly logs show `proxy.forward → api.anthropic.com 200
-  → client 200` with no traceback; one row in
-  `public.exchanges` scoped to demo org
-  (`org_id=c6fcdd23-1313-48e7-8c99-d6e7577a4b08`,
-  `org_name=demo`).
-- **Active task**: **None on Option A — fully closed (code + deploy
-  + production verification).** Two natural follow-ups in priority
-  order:
-  1. **Option C — ADR-0024 "exchange row close-out policy"**.
-     Recommended next. After Option A landed the forwarder-known
-     fields, the ADR's surface area is slightly narrower but still
-     owed: decides the error-path row contract (today: no row at
-     all if upstream fails pre-SSE), blocked-path field parity
-     (today: `ended_at`/`latency_ms`/`model_requested` NULL on
-     `record_exchange_blocked` rows even though three are trivially
-     available), and the policy for "guaranteed populated vs.
-     allowed NULL". Drafting *before* Option B so B's signature
-     change lands under a stable contract.
-  2. **Option B — SSE extractor** for the remaining five
-     response-side fields (`model_served`, `input_tokens`,
-     `output_tokens`, `cache_*`, `stop_reason`). New module
-     `extractors/anthropic.py` replaces the `_drain` stub in
-     `proxy/forwarder.py`; parses `message_start` / `delta` /
-     `stop` events; integrates into `record_exchange_timing`'s
-     kwargs surface (signature extension #2 at that point).
-     ~150–300 lines + tests. Doubles as Phase-2 Extractor entry.
-- **Other follow-ups** (unchanged, neither blocking):
+- **Phase**: **Phase 3b — code-complete; live smoke pending.** New
+  `packages/llm_tracker_agent/` workspace member ships the thin
+  local agent (`claude-manage`) that lets a team member route
+  Claude Code through the central server without altering their
+  existing `claude` install. Surface area:
+  - `claude-manage setup <token> [--server-url ...] [--port ...]`
+    writes `~/.llm-tracker/config.toml` (`0o600`).
+  - `claude-manage` (default, no subcommand) loads the config,
+    starts a loopback FastAPI proxy on `127.0.0.1:<port>` that
+    injects `X-LLM-Tracker-Token` + strips hop-by-hop, polls
+    `/healthz` for ≤ 3s readiness, sets `ANTHROPIC_BASE_URL`, and
+    spawns `claude <extra-args>`.
+  - Fail-closed per ADR-0024 — `ConnectError` / `TimeoutException`
+    / `ReadError` / `RemoteProtocolError` → HTTP 503 with body
+    `{"detail": "llm-tracker central server unreachable"}`.
+- **Active task**: **External smoke test.** A second team member
+  must run `pip install -e packages/llm_tracker_agent` (or
+  `uv sync` at the workspace root) → `claude-manage setup
+  <their-real-token> --server-url https://llm-tracker-server.fly.dev`
+  → `claude-manage` → real prompt in Claude Code → confirm exactly
+  one row lands in Supabase `public.exchanges` scoped to their
+  `org_id`. Negative case: point `--server-url` at an unreachable
+  host, confirm 503 with the ADR-0024 detail body. Phase 3b is
+  *not declared closed* until that smoke passes.
+- **Naming flag**: the prior STATUS reserved the next ADR slot
+  ("ADR-0024 exchange row close-out policy") for the Phase-3c
+  follow-up. That slot is now occupied by today's agent fail-closed
+  ADR; the close-out-policy ADR will land as **ADR-0026** when
+  picked up. Flagged here rather than silently renumbered.
+- **Other follow-ups** (queued, none blocking the smoke):
+  - **Phase-3c follow-up Option B — SSE extractor** for the five
+    response-side fields still NULL on exchange rows
+    (`model_served`, `input_tokens`, `output_tokens`, `cache_*`,
+    `stop_reason`). ADR-0026 (close-out policy) lands first so
+    Option B's `record_exchange_timing` signature extension is
+    contract-stable.
   - **ADR-#2 consent + data-handling** still owed *before any
-    external testing*; operator-only smoke not blocked.
+    external (non-team) testing* of the central server. Team
+    smoke is not blocked.
 
 ## Active worklog
 
-`docs/worklog/2026-05-13-cp14-response-side-followup.md`
-(CP14 response-side investigation; finding + options + decision
-ask). Upstream context:
-`docs/worklog/2026-05-13-cp14-operator-smoke.md` (closes Phase
-3c CP14 proper). Earlier in today's session:
-`docs/worklog/2026-05-13-auth-header-rename.md` (ADR-0023
-implementation) and `docs/worklog/2026-05-13-cp13b-fly-deploy.md`
-(CP13-b deploy). `docs/worklog/2026-05-11-phase3c-plan.md` remains
-the plan-of-record across Phase 3c.
+`docs/worklog/2026-05-13-phase3b-agent.md` (Phase 3b — ADRs
+0024 / 0025 + `packages/llm_tracker_agent/` shipped; ruff /
+pytest / live setup outputs captured in §Verification). Prior
+session context preserved in
+`docs/worklog/2026-05-13-cp14-response-side-followup.md` (CP14
+response-side investigation; queued for Option B) and
+`docs/worklog/2026-05-13-cp14-operator-smoke.md` (closes Phase 3c
+CP14 proper).
 
 ## Recent commits
 
 ```
-237d842   server: populate close-out columns on exchange row (CP14 follow-up A)
-f37c95f   docs: CP14 response-side investigation — falsified
-e5e8688   docs: STATUS + worklog for Phase 3c CP14 closure
-458a4ba   server: grant llm_tracker_app SET on deploy user (0006)
-7d57b1d   docs: STATUS + worklog for ADR-0023 checkpoint
+fbd36e4   agent: Phase 3b thin local agent (claude-manage)
+79a0ae9   docs: ADR-0024 fail-closed + ADR-0025 Python agent
+c124458   docs: tighten CLAUDE.md, correct stack/structure
+5cdac47   docs: STATUS + worklog for Option A live verification
+7afa88e   docs: STATUS + worklog for CP14 follow-up Option A closure
 ```
 
 ## Where we paused
+
+**Phase 3b code-complete; external smoke pending.** Three commits in
+this session:
+
+1. `c124458` — pre-step tightening of `CLAUDE.md` (central-server
+   stack/structure correction; token trim). Not Phase 3b proper.
+2. `79a0ae9` — ADR-0024 (agent fail-closed) + ADR-0025 (Python CLI
+   distribution). Both Accepted. Settle Phase-3a items #1 and #4.
+3. `fbd36e4` — agent package. Net +511 lines: `pyproject.toml` +
+   `__init__.py` + `config.py` + `proxy.py` + `cli.py` + 4 config
+   tests + 3 proxy tests + 1 line in root `pyproject.toml`
+   testpaths + uv.lock churn.
+
+Verification recap (full output in
+`docs/worklog/2026-05-13-phase3b-agent.md` §Verification):
+
+```
+$ uv run ruff check packages/llm_tracker_agent
+All checks passed!
+$ uv run pytest packages/llm_tracker_agent/tests/ -v
+7 passed in 0.12s
+$ uv run pytest -q
+300 passed, 16 skipped, 4 warnings in 12.40s
+$ uv run claude-manage setup lts_test_token \
+      --server-url http://localhost:18080 --port 18080
+Saved /Users/minseop/.llm-tracker/config.toml. Run `claude-manage` to start.
+$ ls -la ~/.llm-tracker/config.toml
+-rw-------@ 1 minseop  staff  84 May 13 17:19 ...
+```
+
+`-rw-------` confirms the 0o600 chmod fired. The test token
+(`lts_test_token`) left in the file is junk — the external smoke
+tester needs to re-run `claude-manage setup <real-token>` before
+launching Claude Code through the proxy in earnest.
+
+**Spec deviations** (recorded for the next reader):
+
+- Spec asked for `os.execvp("claude", ...)`; implementation uses
+  `subprocess.run(["claude", ...])` because `os.execvp` replaces
+  the Python process image and kills the in-thread uvicorn proxy
+  before Claude's first request hits it. Inline comment in
+  `cli.py._run` explains; the worklog §Decisions captures the
+  reasoning.
+- Proxy uses `aiter_bytes()` not `aiter_raw()` because
+  `httpx.MockTransport(content=b"...")` returns a response with an
+  already-consumed stream, breaking `aiter_raw()` in tests.
+  `aiter_bytes()` has an explicit fast-path for buffered content
+  and is production-equivalent on SSE (no gzip). Response-side
+  `Content-Encoding` is therefore stripped to keep the downstream
+  client from double-decoding.
+
+End-to-end against the live `https://llm-tracker-server.fly.dev`
+server is still owed. See "Next single step" below.
+
+---
+
+### Prior workstream — Phase 3c CP14 follow-up Option A (closed 2026-05-13)
 
 **Phase 3c CP14 — operator-only end-to-end smoke — CLOSED.** The
 first real `/v1/messages` curl through the live server hit a P0
@@ -545,33 +592,39 @@ reframes them server-side**:
 
 ## Next single step
 
-**Draft ADR-0024 — "exchange row close-out policy"** (Option C).
-With Option A's deploy + live verification closed in this checkpoint,
-the recommended next move is the policy ADR — *before* Option B's SSE
-extractor — so the second signature extension on `record_exchange_timing`
-lands under a stable contract. The ADR should decide three things:
+**Team-member smoke test of Phase 3b agent.** Phase 3b's code is in
+(`fbd36e4`); the missing proof-point is end-to-end traffic from a
+second team member's machine through the live Fly.io server. Steps:
 
-1. **Guaranteed populated vs. allowed NULL** — which columns must be
-   non-NULL on every row in `public.exchanges`, and which are allowed
-   to be NULL (and on which paths).
-2. **Error path** — today there is no INSERT at all if upstream fails
-   before SSE starts; the row is only persisted in the streaming `for`
-   loop's `else` clause. ADR picks: write a row anyway with
-   `status_code` + `ended_at` set, or leave the silence as policy.
-3. **Blocked path parity** — `record_exchange_blocked` writes rows
-   with `ended_at`/`latency_ms`/`model_requested` NULL even though
-   three of the four are trivially available at block time. Pull them
-   into the helper, or leave per-path divergence as policy.
+1. `git pull` to HEAD (`fbd36e4` for the agent code).
+2. From repo root: `uv sync` — or per-package:
+   `pip install -e packages/llm_tracker_agent --break-system-packages`.
+3. `claude-manage setup <real-org-token> --server-url
+   https://llm-tracker-server.fly.dev`. Confirm
+   `~/.llm-tracker/config.toml` is written with mode `0o600`.
+4. `claude-manage` — Claude Code launches with `ANTHROPIC_BASE_URL`
+   pointed at the loopback proxy on `127.0.0.1:18080`. Run any
+   real prompt.
+5. Supabase MCP: `SELECT FROM public.exchanges ORDER BY started_at
+   DESC LIMIT 5;`. Expect exactly one row scoped to the tester's
+   `org_id` matching their token.
+6. Negative case: stop the local proxy or point `--server-url` at
+   an unreachable host. `claude-manage` should return HTTP 503
+   with body `{"detail": "llm-tracker central server unreachable"}`;
+   Claude Code should NOT silently bypass to `api.anthropic.com`.
 
-Reference path: `docs/decisions/0024-exchange-row-close-out-policy.md`
-(new), template at `docs/decisions/TEMPLATE.md`. Once Accepted,
-Option B implementation references it from the SSE Extractor's
-contract.
+Until that smoke succeeds, **Phase 3b is not declared closed**.
+After it lands, the next single step is **ADR-0026 — "exchange row
+close-out policy"** (was previously planned as "ADR-0024" before
+today's slot collision; see Naming flag under Current phase). After
+ADR-0026 lands, Phase-3c follow-up Option B (SSE extractor) becomes
+free to start.
 
-Alternate paths (skip Option C, do Option B directly): the worklog
-`docs/worklog/2026-05-13-cp14-response-side-followup.md` §"What's left
-/ known limits" enumerates the open questions Option B would have to
-re-answer ad-hoc without the ADR.
+The worklog `docs/worklog/2026-05-13-phase3b-agent.md` §Handoff
+captures the smoke recipe in more detail; the worklog
+`docs/worklog/2026-05-13-cp14-response-side-followup.md` §"What's
+left / known limits" remains the reference for the queued
+close-out-policy + SSE-extractor work.
 
 ### Side-quests (do at any time, none blocking)
 

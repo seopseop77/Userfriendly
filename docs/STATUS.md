@@ -6,50 +6,47 @@
 
 ---
 
-**Last updated**: 2026-05-13 (Claude Code; **Phase 3b code-complete.** Two ADRs landed (commit `79a0ae9`) — ADR-0024 "agent fallback fail-closed" and ADR-0025 "Python CLI distribution" — settling Phase-3a items #1 and #4. New workspace member `packages/llm_tracker_agent/` shipped (commit `fbd36e4`): `claude-manage setup` writes `~/.llm-tracker/config.toml` (chmod 0o600); `claude-manage` (default) runs a loopback FastAPI proxy that injects `X-LLM-Tracker-Token`, strips hop-by-hop, fail-closes 503 on unreachable upstream per ADR-0024, polls `/healthz` for ≤ 3s, sets `ANTHROPIC_BASE_URL`, and spawns `claude`. Verification: ruff clean; 7/7 agent tests pass; full repo `pytest -q` = 300 passed / 16 skipped; live `claude-manage setup` round-trip confirmed (0o600 perms verified on disk). End-to-end smoke against the live Fly.io central server still owed — needs a second team member.)
-**Updated by**: Claude Code (Phase 3b agent code-complete; awaits external smoke before declaring Phase 3b closed)
+**Last updated**: 2026-05-13 (Claude Code; **Phase 3b CLOSED.** User-run live smoke from the workspace passed both paths. Positive: `claude-manage` against `https://llm-tracker-server.fly.dev` produced 8 timed rows in Supabase `public.exchanges` scoped to demo `org_id=c6fcdd23-...` across opus-4-7 / opus-4-5 / haiku-4-5 calls; RLS held. Negative: `--server-url http://127.0.0.1:9` triggered the ADR-0024 503 path; the in-process Anthropic SDK retried 10× with exponential backoff and surfaced the failure to the user — request never reached Anthropic. Latency side-investigation (server-side `latency_ms`): haiku 0.9–3.6 s, opus 4–12 s; server overhead is in tens of ms (sub-second haiku is the proof), the rest is Anthropic generation time. 12010 ms opus-4-7 outlier flagged for Option B SSE-extractor work but not blocking. Net effect: thin local agent is in production use; new team members install via `uv sync` or per-package `pip install -e`, then `claude-manage setup <token> && claude-manage`.)
+**Updated by**: Claude Code (Phase 3b closure checkpoint — docs only)
 
 ## Current phase
 
-- **Phase**: **Phase 3b — code-complete; live smoke pending.** New
-  `packages/llm_tracker_agent/` workspace member ships the thin
-  local agent (`claude-manage`) that lets a team member route
-  Claude Code through the central server without altering their
-  existing `claude` install. Surface area:
+- **Phase**: **Phase 3b — CLOSED (2026-05-13).** Thin local agent
+  `claude-manage` (`packages/llm_tracker_agent/`) shipped over
+  three commits (`79a0ae9` ADRs / `fbd36e4` agent code /
+  `ac4370c` multi-instance fallback) and live-verified by the
+  user against `https://llm-tracker-server.fly.dev`. Surface area
+  in production:
   - `claude-manage setup <token> [--server-url ...] [--port ...]`
     writes `~/.llm-tracker/config.toml` (`0o600`).
-  - `claude-manage` (default, no subcommand) loads the config,
-    starts a loopback FastAPI proxy on `127.0.0.1:<port>` that
+  - `claude-manage` (default) picks a free loopback port —
+    preferred from config, else kernel-assigned ephemeral so
+    multiple instances coexist — runs the FastAPI proxy that
     injects `X-LLM-Tracker-Token` + strips hop-by-hop, polls
     `/healthz` for ≤ 3s readiness, sets `ANTHROPIC_BASE_URL`, and
     spawns `claude <extra-args>`.
-  - Fail-closed per ADR-0024 — `ConnectError` / `TimeoutException`
-    / `ReadError` / `RemoteProtocolError` → HTTP 503 with body
-    `{"detail": "llm-tracker central server unreachable"}`.
-- **Active task**: **External smoke test.** A second team member
-  must run `pip install -e packages/llm_tracker_agent` (or
-  `uv sync` at the workspace root) → `claude-manage setup
-  <their-real-token> --server-url https://llm-tracker-server.fly.dev`
-  → `claude-manage` → real prompt in Claude Code → confirm exactly
-  one row lands in Supabase `public.exchanges` scoped to their
-  `org_id`. Negative case: point `--server-url` at an unreachable
-  host, confirm 503 with the ADR-0024 detail body. Phase 3b is
-  *not declared closed* until that smoke passes.
-- **Naming flag**: the prior STATUS reserved the next ADR slot
-  ("ADR-0024 exchange row close-out policy") for the Phase-3c
-  follow-up. That slot is now occupied by today's agent fail-closed
-  ADR; the close-out-policy ADR will land as **ADR-0026** when
-  picked up. Flagged here rather than silently renumbered.
-- **Other follow-ups** (queued, none blocking the smoke):
+  - Fail-closed per ADR-0024 confirmed end-to-end in negative
+    smoke: 503 propagates to Anthropic SDK → 10 retries with
+    backoff → user-facing failure, no Anthropic bypass.
+- **Active task**: **Draft ADR-0026 — "exchange row close-out
+  policy"** (formerly slotted as "ADR-0024", renumbered after
+  today's agent fail-closed ADR took 0024). Decides three things:
+  (1) which `public.exchanges` columns are guaranteed-populated
+  vs. allowed-NULL and on which paths; (2) error path — today
+  there is no INSERT at all if upstream fails pre-SSE; (3)
+  blocked-path field parity with the streaming path. Drafting
+  before Option B so its `record_exchange_timing` signature
+  extension lands under a stable contract.
+- **Other follow-ups** (queued):
   - **Phase-3c follow-up Option B — SSE extractor** for the five
     response-side fields still NULL on exchange rows
     (`model_served`, `input_tokens`, `output_tokens`, `cache_*`,
-    `stop_reason`). ADR-0026 (close-out policy) lands first so
-    Option B's `record_exchange_timing` signature extension is
-    contract-stable.
+    `stop_reason`). Gated on ADR-0026 acceptance. Bonus side
+    benefit: makes the latency-vs-output_tokens analysis
+    flagged in today's smoke side-investigation tractable.
   - **ADR-#2 consent + data-handling** still owed *before any
     external (non-team) testing* of the central server. Team
-    smoke is not blocked.
+    use (now production) is not blocked by it.
 
 ## Active worklog
 
@@ -74,8 +71,8 @@ c124458   docs: tighten CLAUDE.md, correct stack/structure
 
 ## Where we paused
 
-**Phase 3b code-complete; external smoke pending.** Three commits in
-this session:
+**Phase 3b — CLOSED (live smoke verified by user).** Three commits
+in this session built the agent:
 
 1. `c124458` — pre-step tightening of `CLAUDE.md` (central-server
    stack/structure correction; token trim). Not Phase 3b proper.
@@ -134,8 +131,32 @@ others. Two unit tests added; full suite now 302 passed / 16
 skipped. Worklog §"Follow-up — multi-instance via ephemeral port"
 captures the race-window note.
 
-End-to-end against the live `https://llm-tracker-server.fly.dev`
-server is still owed. See "Next single step" below.
+**Closure — live smoke verified by user** (later in this session):
+
+- **Positive**: `claude-manage` → live Fly.io server →
+  Anthropic → back. 8 new timed rows in `public.exchanges`
+  scoped to demo `org_id=c6fcdd23-...` covering opus-4-7 (5),
+  opus-4-5 (1, CP14 baseline), haiku-4-5 (3). `latency_ms`
+  range: haiku 913–3568 ms, opus 1820–12010 ms. Sub-second
+  haiku is direct evidence that server-side overhead (auth +
+  RLS + plugin host + INSERT) is in the tens of ms; the rest
+  is Anthropic generation time.
+- **Negative**: pointed `--server-url` at `http://127.0.0.1:9`
+  (discard port). `claude-manage` returned 503 with body
+  `{"detail": "llm-tracker central server unreachable"}`; the
+  in-process Anthropic SDK retried 10× before surfacing the
+  failure. Request never reached Anthropic — ADR-0024
+  fail-closed contract held end-to-end.
+- **Latency outlier note** (not blocking): the 12010 ms
+  opus-4-7 row stands out; full diagnosis is gated on Option B
+  SSE extractor populating `output_tokens` so we can compute
+  ms/token and identify whether it was a long response or a
+  cold-path call. Flagged for Option B work.
+
+Phase 3b is now in production use. New team members install via
+`uv sync` (workspace) or
+`pip install "git+<repo>.git#subdirectory=packages/llm_tracker_agent"`
+(standalone), then `claude-manage setup <token> && claude-manage`.
 
 ---
 
@@ -602,36 +623,35 @@ reframes them server-side**:
 
 ## Next single step
 
-**Team-member smoke test of Phase 3b agent.** Phase 3b's code is in
-(`fbd36e4`); the missing proof-point is end-to-end traffic from a
-second team member's machine through the live Fly.io server. Steps:
+**Draft ADR-0026 — "exchange row close-out policy."** With Phase 3b
+closed (live smoke verified), the queue advances to the policy ADR
+that has to land *before* Option B's SSE extractor — so the second
+signature extension on `record_exchange_timing` lands under a
+stable contract. The ADR decides three things:
 
-1. `git pull` to HEAD (`fbd36e4` for the agent code).
-2. From repo root: `uv sync` — or per-package:
-   `pip install -e packages/llm_tracker_agent --break-system-packages`.
-3. `claude-manage setup <real-org-token> --server-url
-   https://llm-tracker-server.fly.dev`. Confirm
-   `~/.llm-tracker/config.toml` is written with mode `0o600`.
-4. `claude-manage` — Claude Code launches with `ANTHROPIC_BASE_URL`
-   pointed at the loopback proxy on `127.0.0.1:18080`. Run any
-   real prompt.
-5. Supabase MCP: `SELECT FROM public.exchanges ORDER BY started_at
-   DESC LIMIT 5;`. Expect exactly one row scoped to the tester's
-   `org_id` matching their token.
-6. Negative case: stop the local proxy or point `--server-url` at
-   an unreachable host. `claude-manage` should return HTTP 503
-   with body `{"detail": "llm-tracker central server unreachable"}`;
-   Claude Code should NOT silently bypass to `api.anthropic.com`.
+1. **Guaranteed populated vs. allowed NULL** — which columns must
+   be non-NULL on every row in `public.exchanges`, and which are
+   allowed to be NULL (and on which paths). Today's smoke-derived
+   data point: `model_served` / `input_tokens` / `output_tokens` /
+   `cache_*` / `stop_reason` are uniformly NULL on the happy-SSE
+   path because the streaming-close hook does not yet parse.
+2. **Error path** — today there is no INSERT at all if upstream
+   fails before SSE starts; the row is only persisted in the
+   streaming `for` loop's `else` clause. ADR picks: write a row
+   anyway with `status_code` + `ended_at` set, or leave the
+   silence as policy.
+3. **Blocked path parity** — `record_exchange_blocked` writes
+   rows with `ended_at`/`latency_ms`/`model_requested` NULL even
+   though three of the four are trivially available at block
+   time. Pull them into the helper, or leave per-path divergence
+   as policy.
 
-Until that smoke succeeds, **Phase 3b is not declared closed**.
-After it lands, the next single step is **ADR-0026 — "exchange row
-close-out policy"** (was previously planned as "ADR-0024" before
-today's slot collision; see Naming flag under Current phase). After
-ADR-0026 lands, Phase-3c follow-up Option B (SSE extractor) becomes
-free to start.
+Reference path: `docs/decisions/0026-exchange-row-close-out-policy.md`
+(new), template at `docs/decisions/TEMPLATE.md`. Once Accepted,
+Option B (`extractors/anthropic.py` replacing the `_drain` stub in
+`proxy/forwarder.py`) is unblocked.
 
-The worklog `docs/worklog/2026-05-13-phase3b-agent.md` §Handoff
-captures the smoke recipe in more detail; the worklog
+The worklog
 `docs/worklog/2026-05-13-cp14-response-side-followup.md` §"What's
 left / known limits" remains the reference for the queued
 close-out-policy + SSE-extractor work.

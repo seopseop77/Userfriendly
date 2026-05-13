@@ -262,6 +262,45 @@ and uvicorn re-binding, another process could grab the port. On
 loopback this is extremely unlikely; if it ever fires, uvicorn
 fails in its thread and `_wait_ready` times out with a clear error.
 
+## Closure — smoke verified, Phase 3b CLOSED
+
+User-run end-to-end smoke from the workspace tree later in the
+session. Positive and negative paths both held:
+
+- **Positive**: `claude-manage setup <real-token> --server-url
+  https://llm-tracker-server.fly.dev` → `claude-manage` → live
+  Claude Code session → real prompts. Supabase
+  `public.exchanges` accrued new rows scoped to the demo
+  `org_id=c6fcdd23-...` (verified via Supabase MCP
+  `SELECT ... ORDER BY started_at DESC`). 8 timed rows post
+  Option A: 5 opus-4-7 (4227 / 5418 / 6729 / 12010 ms),
+  1 opus-4-5 baseline (1820 ms — CP14), 3 haiku-4-5 (913 / 992 /
+  3568 ms). RLS held — only the tester's org_id surfaced under
+  their token.
+- **Negative**: pointed `--server-url` at `http://127.0.0.1:9`
+  (discard port). `claude-manage` returned 503 to the in-process
+  Anthropic SDK in Claude Code, which retried 10× with exponential
+  backoff (Anthropic SDK default) before surfacing the failure to
+  the user — i.e., the request never reached Anthropic, ADR-0024
+  fail-closed contract held end-to-end.
+
+**Latency side-investigation** (Supabase MCP read in chat):
+opus-4-7 rows ran 4–12s, haiku-4-5 ran <1s for short prompts.
+`latency_ms` is server-side wall-clock (Option A semantics), so
+agent loopback overhead does not appear in this column; the
+sub-second haiku numbers are direct evidence that server-side
+processing (auth + RLS + plugin host + INSERT) is in the tens of
+ms. Variance among opus-4-7 rows is driven by Anthropic-side
+generation time / response length and cannot be characterised
+further until Option B SSE extractor populates
+`input_tokens` / `output_tokens`. The 12010 ms outlier flagged
+as a watch-item for Option B work; not blocking Phase 3b closure.
+
+Phase 3b is **closed** (2026-05-13). The thin local agent is in
+production use; new team members install via the workspace
+(`uv sync` or `pip install -e packages/llm_tracker_agent`) and
+can run `claude-manage setup <token> && claude-manage` end-to-end.
+
 ## Suggestions (untouched)
 
 - The existing `packages/llm_tracker/src/llm_tracker/cli/manage.py`

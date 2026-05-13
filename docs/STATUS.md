@@ -6,8 +6,8 @@
 
 ---
 
-**Last updated**: 2026-05-13 (Claude Code; **Phase 3c CP14 — operator-only end-to-end smoke — CLOSED.** 14/14 plan-checkpoints done; Phase 3c overall flips to "closed (operator smoke validated)". First real `/v1/messages` curl through the live server hit a P0 500 with `permission denied to set role "llm_tracker_app"` from PG16+ split-role-membership semantics on Supabase (`set_option=false` on the auto-granted `postgres → llm_tracker_app` membership; PG15 coupled membership with SET ROLE, PG16 split them into INHERIT / SET / ADMIN). Immediate unblock via Supabase MCP `GRANT llm_tracker_app TO postgres WITH SET TRUE`; durable fix shipped as alembic migration `0006_grant_app_role_set` (commit `458a4ba`), version-branched so the local PG15 docker fixture stays syntactically valid. Post-fix curl returned 200 OK; demo-scoped row landed in `public.exchanges`; fly logs traceback-free. **Secondary finding** (carved out per user direction): the successful row's response-side columns (`ended_at`, `model_served`, `status_code`, `input_tokens`, `output_tokens`, `latency_ms`, `stop_reason`) are all NULL — request-open INSERT works, stream-close UPDATE silently doesn't fire on a 200-OK SSE. Separate follow-up track.)
-**Updated by**: Claude Code (CP14 closure, commit 458a4ba + this STATUS+worklog commit)
+**Last updated**: 2026-05-13 (Claude Code; **CP14 response-side investigation closed — hypothesis falsified.** STATUS's prior framing ("INSERT-at-open + UPDATE-at-close two-step") is wrong: there is **no UPDATE path anywhere** in the server source, and the happy-path INSERT (`record_exchange_timing` in `storage/exchanges.py`) is a single write at stream-close that *intentionally omits* eight response-side columns. The NULLs are not a silent UPDATE failure — they are "never written by code" — a known unfinished piece of CP8/CP9 documented in `forwarder._drain`'s "Phase-2 will replace this with the Extractor" comment. Three options surfaced for the user (A: quick wins from data the forwarder already has; B: thin SSE extractor for `message_start`/`delta`/`stop`; C: ADR-first then implement). Recommendation: C → A → B in that order. Awaiting user pick. New worklog: `docs/worklog/2026-05-13-cp14-response-side-followup.md`.)
+**Updated by**: Claude Code (CP14 response-side investigation; docs-only checkpoint)
 
 ## Current phase
 
@@ -35,30 +35,56 @@
   `public.exchanges` scoped to demo org
   (`org_id=c6fcdd23-1313-48e7-8c99-d6e7577a4b08`,
   `org_name=demo`).
-- **Active task**: **None on Phase 3c proper.** Two follow-ups
-  queued, neither blocking anything Phase-3c-rated:
-  1. **Investigate response-side NULL columns** on the CP14
-     row. `started_at` + `endpoint` + `provider` +
-     `content_level` + `org_id` populated; `ended_at`,
-     `model_requested`, `model_served`, `status_code`,
-     `input_tokens`, `output_tokens`, `latency_ms`,
-     `stop_reason` all NULL. The request-open INSERT works;
-     the stream-close UPDATE that should fill the response-side
-     fields is silent on a 200-OK SSE. STATUS CP9's
-     closed-checkpoint note flagged `model_served=null` only
-     for HTTP-error (non-SSE) responses as a by-design
-     observability hole — the current finding extends that hole
-     into the happy SSE path. Suspect: CP8's server-side
-     plugin host port either lost the `on_persisted` hook
-     trigger or the follow-up UPDATE is failing silently.
-  2. **ADR-#2 consent + data-handling** remains the most
-     blocking Phase-3a item *before any external testing*;
-     operator-only smoke is already validated and not blocked.
+- **Active task**: **CP14 response-side investigation — finding
+  surfaced, awaiting user pick.** The investigation overturned
+  STATUS's prior hypothesis: there is no two-step INSERT/UPDATE
+  contract — there is **no UPDATE path at all** in the server
+  source, and the happy-path INSERT (`record_exchange_timing`
+  in `packages/llm_tracker_server/src/llm_tracker_server/storage/exchanges.py`)
+  is a single write at stream-close that intentionally omits
+  eight response-side columns (`ended_at`, `model_requested`,
+  `model_served`, `status_code`, `input_tokens`,
+  `output_tokens`, `latency_ms`, `stop_reason`). The NULLs
+  are "never written by code" — explicitly flagged in
+  `proxy/forwarder._drain`'s "Phase-2 will replace this with
+  the Extractor" docstring at CP8/CP9 ship time. Three options
+  enumerated in
+  `docs/worklog/2026-05-13-cp14-response-side-followup.md`
+  §"Decisions needed":
+  1. **Option A** — populate the no-parser-needed fields
+     (`ended_at`, `status_code`, `latency_ms`,
+     `model_requested`) directly from data the forwarder
+     already has. ~30–60 line surgical patch.
+  2. **Option B** — thin SSE extractor for `message_start` /
+     `message_delta` / `message_stop` that fills
+     `model_served`, `input_tokens`, `output_tokens`,
+     `cache_*`, `stop_reason`. ~150–300 lines + tests.
+     Re-uses the existing tee queue (`_drain` seam). Brings
+     forward Phase-2 Extractor work.
+  3. **Option C** — write the ADR ("exchange row close-out
+     policy") *first*, then implement under its contract.
+     Decides: what fields are guaranteed populated, the
+     producer split (request-side / response-side /
+     forwarder-internal), and how the error path lands a row
+     (today it doesn't land any row when upstream fails
+     before SSE starts).
+  Recommendation: **C → A → B** in that order (overlap OK).
+  Awaiting user pick before touching code.
+- **Other follow-ups** (unchanged, neither blocking):
+  - **ADR-#2 consent + data-handling** still owed *before any
+    external testing*; operator-only smoke not blocked.
+  - **Migration 0006 stamp** on live Supabase (live
+    `alembic_version` is still `0005_rls_policies`; migration
+    0006's DB effect is already in place from the manual MCP
+    GRANT). Next deploy fixes it (no-op idempotent upgrade).
 
 ## Active worklog
 
+`docs/worklog/2026-05-13-cp14-response-side-followup.md`
+(CP14 response-side investigation; finding + options + decision
+ask). Upstream context:
 `docs/worklog/2026-05-13-cp14-operator-smoke.md` (closes Phase
-3c CP14). Prior in today's session:
+3c CP14 proper). Earlier in today's session:
 `docs/worklog/2026-05-13-auth-header-rename.md` (ADR-0023
 implementation) and `docs/worklog/2026-05-13-cp13b-fly-deploy.md`
 (CP13-b deploy). `docs/worklog/2026-05-11-phase3c-plan.md` remains
@@ -537,58 +563,32 @@ reframes them server-side**:
 
 ## Next single step
 
-**Investigate the response-side NULL columns on CP14's exchange row.**
-This is the natural follow-up to CP14 closure — the row landed
-(CP14's pass criterion) but the *close-out* half of the
-exchange-persistence contract is silent. Highest-signal,
-self-contained, reuses the already-minted demo org + token.
+**User picks Option A / B / C from
+`docs/worklog/2026-05-13-cp14-response-side-followup.md` §"Decisions
+needed".** The investigation closed with the hypothesis falsified —
+there is no silent UPDATE failure to fix, because there is no UPDATE
+path. The eight currently-NULL columns are intentionally unwritten
+stubs from CP8/CP9. The three options enumerated in the worklog
+differ on design-up-front vs. ship-now, and on how far into Phase-2
+the fix reaches:
 
-The empirically observed shape, post-CP14:
+| Option | Scope | Cost | Closes |
+|---|---|---|---|
+| **A** | Populate `ended_at`, `status_code`, `latency_ms`, `model_requested` from data already in the forwarder | ~30–60 line patch + tests | 4 of 8 columns |
+| **B** | Add `extractors/anthropic.py` SSE parser for `message_start`/`delta`/`stop` events | ~150–300 lines + tests; Phase-2 Extractor entry point | 4 more (`model_served`, `input_tokens`, `output_tokens`, `cache_*`, `stop_reason`) |
+| **C** | Write ADR-0024 "exchange row close-out policy" first, then implement under it | 30 min draft + whatever A/B implementation chosen | the policy itself; A/B then land cleanly under one contract |
 
-| Column | CP14 row | Expected |
-|---|---|---|
-| `started_at` | ✅ populated | populated at request open (INSERT) |
-| `endpoint`, `provider`, `org_id`, `content_level` | ✅ populated | populated at request open (INSERT) |
-| `ended_at` | ❌ NULL | populated at stream close (UPDATE) |
-| `model_requested`, `model_served` | ❌ NULL | populated from request body / upstream response (UPDATE) |
-| `status_code` | ❌ NULL | populated at stream close (UPDATE) |
-| `input_tokens`, `output_tokens` | ❌ NULL | populated from Anthropic `message_stop` usage (UPDATE) |
-| `latency_ms`, `stop_reason` | ❌ NULL | populated at stream close (UPDATE) |
+Claude Code's recommendation: **C → A → B**, in that order
+(overlap OK). All three converge on the same code path
+(`record_exchange_timing` + the forwarder's post-stream block at
+`packages/llm_tracker_server/src/llm_tracker_server/proxy/forwarder.py:305–325`),
+so doing A or B without C risks re-shaping the helper's signature
+twice. Once the user picks a lane, the next session resumes from
+the response-side worklog and either:
 
-STATUS CP9's closed-checkpoint note flagged `model_served=null`
-only for *HTTP-error* (non-SSE) responses as a by-design
-observability hole. The CP14 finding extends that hole into the
-*happy SSE 200* path, which was not the by-design case.
-
-Likely investigation path (one or two sessions):
-
-1. **Read CP8's server-side plugin host port** for the
-   `on_persisted` hook dispatch — does the close-out hook fire
-   on a 200-OK SSE stream end? Compare against the local-proxy
-   plugin host (which the supabase_sink CP9 demo exercised
-   successfully — rows had `model_served` populated for the
-   non-error path).
-2. **Read CP9's storage layer** for the request-close UPDATE.
-   Is it an `UPDATE exchanges SET ... WHERE id = :req_id`
-   issued from a separate `on_persisted` hook, or is the row
-   meant to be a single INSERT at close time? The empirical
-   "INSERT-at-open then UPDATE-at-close" two-step is inferred
-   from the observed mid-state.
-3. **Re-run a CP14-equivalent curl** with the same demo token
-   and watch fly logs for any indication that an UPDATE was
-   *attempted* but failed (e.g. an RLS-context drift between
-   the on-open session that wrote `app.org_id` and a later
-   close-out session that may not have).
-4. Either fix in place (small) or, if the underlying contract
-   is unclear, surface an ADR ("exchange row close-out policy")
-   that resolves both this finding and CP9's HTTP-error
-   observability hole in one design.
-
-Suggested fresh worklog slug:
-`docs/worklog/2026-05-13-cp14-response-side-followup.md` (or a
-CP15-rated slug if this gets fold-in scope work). Treat the
-`docs/worklog/2026-05-13-cp14-operator-smoke.md` worklog as the
-upstream context.
+- Drafts ADR-0024 ("exchange row close-out policy") under Option C, or
+- Lands the surgical patch under Option A as a single small commit, or
+- Stands up `extractors/anthropic.py` under Option B as a Phase-2 entry.
 
 ### Side-quests (do at any time, none blocking)
 

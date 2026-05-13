@@ -101,7 +101,7 @@ async def test_two_org_e2e_isolation(session_factory, monkeypatch) -> None:
             response = await client.post(
                 "/v1/messages",
                 headers={
-                    "Authorization": f"Bearer {plaintext_a}",
+                    "X-LLM-Tracker-Token": plaintext_a,
                     "x-api-key": "sk-ant-test",
                     "content-type": "application/json",
                 },

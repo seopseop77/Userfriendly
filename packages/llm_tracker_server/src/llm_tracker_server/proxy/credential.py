@@ -1,15 +1,17 @@
 """Anthropic credential pass-through helpers (ADR-0020 Axis 2).
 
 The server forwards whichever Anthropic-credential header Claude Code
-natively sends. The canonical name is ``x-api-key``; ``anthropic-api-key``
-is Anthropic's documented alternate. Both are passed through unchanged
-to ``api.anthropic.com``.
+natively sends. The canonical name is ``x-api-key`` (API-key users);
+``anthropic-api-key`` is Anthropic's documented alternate; OAuth users
+ride on ``Authorization: Bearer <oauth-token>``. All three are passed
+through unchanged to ``api.anthropic.com``.
 
-``Authorization: Bearer <token>`` arriving at the proxy is the
-*llm-tracker* per-org token, already consumed by ``AuthMiddleware`` --
-it must not reach Anthropic. The forwarder strips it explicitly; this
-module only enumerates the credential-header set and the redaction
-primitives the logging pipeline relies on.
+The *llm-tracker* per-org token rides on ``X-LLM-Tracker-Token``
+(ADR-0023) and is consumed by ``AuthMiddleware`` before forwarding.
+The forwarder strips it from outbound headers via
+``proxy.forwarder._LOCAL_ONLY``; this module only enumerates the
+Anthropic-credential-header set and the redaction primitives the
+logging pipeline relies on.
 
 The credential must never appear in any persisted artefact: no DB
 column, no log line, no audit row. ``scrub_credential_processor`` is

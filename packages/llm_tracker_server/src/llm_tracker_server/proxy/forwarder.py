@@ -82,10 +82,12 @@ _HOP_BY_HOP: frozenset[str] = frozenset(
     }
 )
 
-# Headers the server consumes locally and must NOT pass through. The
-# llm-tracker bearer is the only one today; CP9+ may add more (e.g. a
-# future `X-LLMTracker-*` family).
-_LOCAL_ONLY: frozenset[str] = frozenset({"authorization"})
+# Headers the server consumes locally and must NOT pass through. Per
+# ADR-0023 the per-org bearer rides on `X-LLM-Tracker-Token`;
+# `Authorization` is intentionally absent from this set so OAuth
+# Claude Code users' Authorization bearer (their Anthropic credential)
+# passes through to upstream unchanged.
+_LOCAL_ONLY: frozenset[str] = frozenset({"x-llm-tracker-token"})
 
 # Response headers httpx will regenerate or that would confuse a
 # streaming client if forwarded verbatim.

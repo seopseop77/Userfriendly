@@ -1,9 +1,9 @@
-"""Per-request auth + RLS binding (ADR-0020 Axis 1 + ADR-0018).
+"""Per-request auth + RLS binding (ADR-0020 Axis 1, header per ADR-0023, + ADR-0018).
 
 A FastAPI/Starlette HTTP middleware. For every request to a non-public
 path:
 
-1. Parse `Authorization: Bearer <token>` -- 401 on missing/malformed.
+1. Read `X-LLM-Tracker-Token: <token>` -- 401 on missing/empty.
 2. Hash the plaintext (SHA-256 hex), look up `api_tokens` filtered to
    non-revoked rows -- 403 on miss.
 3. Open a request-scoped `AsyncSession`, issue
@@ -22,6 +22,10 @@ There is deliberately **no service-role bypass**. ADR-0018 §Decision
 item 2 closes that door; the only escape hatch is the `app.role =
 'admin'` policy branch, which CP10+ admin tooling will set alongside
 `app.org_id` (not in place of it).
+
+`Authorization` is **never read here**: per ADR-0023 it is reserved
+for Anthropic pass-through (OAuth bearer or x-api-key, depending on
+the client) and flows through the proxy untouched.
 
 Healthz stays public so external uptime probes don't need a token. The
 public set is configurable but defaults to `{"/healthz"}` so a config
@@ -68,17 +72,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.url.path in self._public_paths:
             return await call_next(request)
 
-        header = request.headers.get("authorization", "")
-        scheme, _, plaintext = header.partition(" ")
-        if scheme.lower() != "bearer" or not plaintext.strip():
+        plaintext = request.headers.get("x-llm-tracker-token", "").strip()
+        if not plaintext:
             return JSONResponse(
-                {"detail": "missing or malformed Authorization header"},
+                {"detail": "missing X-LLM-Tracker-Token header"},
                 status_code=401,
             )
 
         async with self._session_factory() as session:
             await session.execute(sa.text("SET LOCAL ROLE llm_tracker_app"))
-            token_row = await lookup(session, plaintext.strip())
+            token_row = await lookup(session, plaintext)
             if token_row is None:
                 # Conflated 'unknown' and 'revoked' on purpose -- see tokens.lookup.
                 return JSONResponse(

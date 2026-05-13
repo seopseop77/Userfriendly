@@ -3,8 +3,8 @@
 Three assertions, end to end through ASGITransport against a real
 PostgreSQL:
 
-1. No `Authorization` header on a non-public path → 401.
-2. A `Bearer <token>` whose SHA-256 hex hash does not exist in
+1. No `X-LLM-Tracker-Token` header on a non-public path → 401.
+2. An `X-LLM-Tracker-Token` whose SHA-256 hex hash does not exist in
    `api_tokens` (or is revoked) → 403. The middleware deliberately
    conflates "unknown" and "revoked" so the response cannot be used to
    probe revocation state.
@@ -37,25 +37,25 @@ SKIP_REASON = "LLMTRACK_TEST_DATABASE_URL not set; PG smoke test skipped"
 
 @pytest.mark.skipif(not TEST_DB_URL, reason=SKIP_REASON)
 async def test_missing_authorization_returns_401(session_factory) -> None:
-    """No Authorization header → 401 before any DB lookup."""
+    """No X-LLM-Tracker-Token header → 401 before any DB lookup."""
     app = create_app(session_factory=session_factory)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/admin/whoami")
 
     assert response.status_code == 401
-    assert "Authorization" in response.json()["detail"]
+    assert "X-LLM-Tracker-Token" in response.json()["detail"]
 
 
 @pytest.mark.skipif(not TEST_DB_URL, reason=SKIP_REASON)
 async def test_unknown_token_returns_403(session_factory) -> None:
-    """Bearer whose hash is not in `api_tokens` → 403."""
+    """Token whose hash is not in `api_tokens` → 403."""
     app = create_app(session_factory=session_factory)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(
             "/admin/whoami",
-            headers={"Authorization": f"Bearer {generate_plaintext()}"},
+            headers={"X-LLM-Tracker-Token": generate_plaintext()},
         )
 
     assert response.status_code == 403
@@ -82,7 +82,7 @@ async def test_valid_token_binds_org_axis(session_factory) -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(
             "/admin/whoami",
-            headers={"Authorization": f"Bearer {plaintext}"},
+            headers={"X-LLM-Tracker-Token": plaintext},
         )
 
     assert response.status_code == 200
@@ -131,7 +131,7 @@ async def test_revoked_token_returns_403(session_factory) -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(
             "/admin/whoami",
-            headers={"Authorization": f"Bearer {plaintext}"},
+            headers={"X-LLM-Tracker-Token": plaintext},
         )
 
     assert response.status_code == 403

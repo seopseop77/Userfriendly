@@ -2,10 +2,11 @@
 
 Two surfaces under test:
 
-1. ``forward_request`` propagates the Anthropic credential header
-   (``x-api-key`` / ``anthropic-api-key``) to the outbound request,
-   and strips the llm-tracker bearer (``Authorization``) which was
-   already consumed by ``AuthMiddleware``.
+1. ``forward_request`` propagates the Anthropic credential headers
+   (``x-api-key`` / ``anthropic-api-key`` / ``Authorization`` for
+   OAuth Claude Code) to the outbound request, and strips the
+   llm-tracker bearer (``X-LLM-Tracker-Token``, per ADR-0023) which
+   was already consumed by ``AuthMiddleware``.
 
 2. ``scrub_credential_processor`` redacts credentials from any
    structlog event, by header-name lookup and by value-prefix match
@@ -144,14 +145,14 @@ async def test_outbound_carries_anthropic_api_key_alternate() -> None:
 
 
 @pytest.mark.asyncio
-async def test_outbound_strips_authorization_bearer() -> None:
-    """`Authorization: Bearer <our token>` must NOT reach Anthropic."""
+async def test_outbound_strips_x_llm_tracker_token() -> None:
+    """`X-LLM-Tracker-Token: <our token>` must NOT reach Anthropic (ADR-0023)."""
     captured: list[httpx.Request] = []
     transport = httpx.MockTransport(_capture_handler(captured))
     async with httpx.AsyncClient(transport=transport) as client:
         request = _make_request(
             headers={
-                "authorization": f"Bearer {TRACKER_BEARER}",
+                "x-llm-tracker-token": TRACKER_BEARER,
                 "x-api-key": ANTHROPIC_SECRET,
             },
         )
@@ -161,8 +162,37 @@ async def test_outbound_strips_authorization_bearer() -> None:
         await _drain(response)
 
     outbound = captured[0]
-    assert "authorization" not in {k.lower() for k in outbound.headers}
+    assert "x-llm-tracker-token" not in {k.lower() for k in outbound.headers}
     # The Anthropic credential survives the strip pass.
+    assert outbound.headers.get("x-api-key") == ANTHROPIC_SECRET
+
+
+@pytest.mark.asyncio
+async def test_outbound_passes_authorization_bearer_through() -> None:
+    """`Authorization: Bearer <oauth-token>` MUST reach Anthropic unchanged.
+
+    This is the OAuth Claude Code case: the user's Anthropic
+    credential rides in `Authorization`, not `x-api-key`. Per
+    ADR-0023, our own auth lives on `X-LLM-Tracker-Token`, so
+    `Authorization` is reserved for pass-through.
+    """
+    oauth_token = "oauth-token-xyz"
+    captured: list[httpx.Request] = []
+    transport = httpx.MockTransport(_capture_handler(captured))
+    async with httpx.AsyncClient(transport=transport) as client:
+        request = _make_request(
+            headers={
+                "authorization": f"Bearer {oauth_token}",
+                "x-api-key": ANTHROPIC_SECRET,
+            },
+        )
+        response = await forward_request(
+            request, "v1/messages", http_client=client, upstream_base="http://upstream"
+        )
+        await _drain(response)
+
+    outbound = captured[0]
+    assert outbound.headers.get("authorization") == f"Bearer {oauth_token}"
     assert outbound.headers.get("x-api-key") == ANTHROPIC_SECRET
 
 

@@ -6,165 +6,167 @@
 
 ---
 
-**Last updated**: 2026-05-13 (Claude Code; Phase 3c CP13-a landed — `fly.toml` at the repo root + `docs/deploy.md` runbook. CP13 is split into CP13-a (file-only, this session) and CP13-b (operator runs `docs/deploy.md` end-to-end against real Fly.io + Supabase). CP13-b plus CP14 remain.)
-**Updated by**: Claude Code (Phase 3c CP13-a checkpoint, source commits ef59192 + 59dbae6)
+**Last updated**: 2026-05-13 (Claude Code; Phase 3c CP13-b landed — operator ran `docs/deploy.md` end-to-end against real Fly.io + Supabase. First deploy hit two failures (stale `public.exchanges` from the closed `supabase_sink` workstream; asyncpg / pgbouncer transaction-mode prepared-statement clash), both diagnosed and resolved. Server is live at `https://llm-tracker-server.fly.dev/` with alembic head = `0005_rls_policies`; two `nrt` Machines passing `/healthz`. One source-code commit shipped to make the deploy stick. **CP14 (operator-only smoke) is the only remaining Phase 3c plan-checkpoint.**)
+**Updated by**: Claude Code (Phase 3c CP13-b checkpoint, source commit 3050bcc)
 
 ## Current phase
 
-- **Phase**: **Phase 3c — CP1 through CP12 + CP13-a closed
-  (12/14 plan-checkpoints + file-only half of CP13).** CP1–CP12
-  stand as previously recorded (skeleton, PG storage,
-  orgs+api_tokens, `org_id NOT NULL`, RLS + `llm_tracker_app`
-  role, auth middleware, Anthropic credential pass-through +
-  scrubbing, plugin-host port, org-aware INSERTs, manifest
-  `min_content_level` + per-plugin host clamp, `.env.example` +
-  `docs/plugins.md` refresh, multi-stage Dockerfile +
-  `.dockerignore`). **CP13 was split into CP13-a (this session)
-  and CP13-b (user-executed)** because the back half is genuine
-  flyctl work that must not run inside Claude Code. CP13-a
-  shipped `fly.toml` at the repo root (app
-  `llm-tracker-server`, primary region `nrt`, build via the
-  CP12 Dockerfile, `[http_service]` on internal port 8080 with
-  `force_https`, scale-to-zero, `/healthz` check;
-  `[deploy] release_command = "alembic upgrade head"`; one
-  `[env]` entry — `LLMTRACK_LOG_LEVEL = "INFO"`; secrets via
-  `fly secrets set` only) plus `docs/deploy.md` — the CP13-b
-  runbook (prerequisites checklist, six numbered deploy steps
-  from `fly apps create` → smoke curl, and a troubleshooting
-  section keyed on the three most likely failures: alembic
-  release-command failure, Supabase IPv4-only timeout,
-  `/healthz` unhealthy). Verified the way file-only checkpoints
-  are verified: `fly.toml` parses cleanly through `tomllib` with
-  every spec assertion green, no `LLMTRACK_DATABASE_URL` in
-  `[env]`, internal references in `docs/deploy.md` all resolve
-  against the actual ADR filenames + Dockerfile + alembic
-  assets. Source HEAD now at `59dbae6`.
-- **Active task**: **CP13-b — operator follows
-  `docs/deploy.md` end-to-end** against real Fly.io + Supabase.
-  No Claude Code work happens in CP13-b; CP14 (operator-only
-  smoke) follows once CP13-b returns. **ADR-#2 consent
-  decision** remains the most blocking remaining Phase-3a item
-  before *any external testing*; operator-only smoke (CP14) is
-  not blocked.
+- **Phase**: **Phase 3c — CP1 through CP13 closed (13/14
+  plan-checkpoints).** CP1–CP12 stand as previously recorded
+  (skeleton, PG storage, orgs+api_tokens, `org_id NOT NULL`,
+  RLS + `llm_tracker_app` role, auth middleware, Anthropic
+  credential pass-through + scrubbing, plugin-host port,
+  org-aware INSERTs, manifest `min_content_level` + per-plugin
+  host clamp, `.env.example` + `docs/plugins.md` refresh,
+  multi-stage Dockerfile + `.dockerignore`). CP13-a (file-only
+  half) shipped `fly.toml` at the repo root + `docs/deploy.md`
+  runbook (commits `ef59192` + `59dbae6`). **CP13-b (this
+  checkpoint) ran the runbook against real Fly.io + Supabase**;
+  two real-world failures surfaced and were fixed in flight:
+  (i) the operator's Supabase project still carried a
+  stale-schema `public.exchanges` (7 rows) from the closed
+  Phase-2 `supabase_sink` plugin workstream — dropped via
+  Supabase MCP `execute_sql` after confirming no other stale
+  objects (no `alembic_version`, no `audit_log_reject_modify`
+  function); (ii) once migrations applied cleanly, follow-up
+  commands like `alembic current` and any DB-touching app route
+  failed with `asyncpg.DuplicatePreparedStatementError` against
+  Supabase's pgbouncer transaction-mode pooler — fixed by
+  passing `connect_args={"statement_cache_size": 0}` through
+  both `make_engine()` and `alembic/env.py` (commit `3050bcc`).
+  Server is live at `https://llm-tracker-server.fly.dev/`,
+  alembic head = `0005_rls_policies`, RLS on for the four
+  user-data tables, two `nrt` Machines passing `/healthz`.
+- **Active task**: **CP14 — operator-only end-to-end smoke**
+  (mint demo bearer token via `fly ssh console -C
+  "llm-tracker-server tokens issue --org demo"`, send one real
+  `/v1/messages` request with a valid Anthropic `x-api-key`,
+  verify stream round-trip, one row in `public.exchanges`
+  scoped to demo org, no traceback in `fly logs`). **ADR-#2
+  consent decision** remains the most blocking remaining
+  Phase-3a item before *any external testing*; operator-only
+  smoke (CP14) is not blocked.
 
 ## Active worklog
 
-`docs/worklog/2026-05-11-phase3c-plan.md` (active; plan-only).
-The prior signing-removal worklog
-`docs/worklog/2026-05-11-signing-removal.md` is closed.
+`docs/worklog/2026-05-13-cp13b-fly-deploy.md` (closes CP13-b).
+`docs/worklog/2026-05-11-phase3c-plan.md` remains the plan-of-record
+across the rest of Phase 3c.
 
 ## Recent commits
 
 ```
+3050bcc   server: pgbouncer transaction-mode compat (CP13-b)
+90d29f3   docs: STATUS + worklog for Phase 3c CP13-a checkpoint
 59dbae6   docs: Fly.io + Supabase deploy guide (CP13-b)
 ef59192   infra: fly.toml for the server (CP13-a)
 a8b622b   docs: STATUS + worklog for Phase 3c CP12 checkpoint
-92ddff7   infra: Dockerfile + .dockerignore for the server (CP12)
-ec378fb   docs: STATUS + worklog for Phase 3c CP11 checkpoint
 ```
 
 ## Where we paused
 
-**Phase 3c CP13-a — `fly.toml` + `docs/deploy.md` — closed.**
-CP13 is split into CP13-a (file-only, this session) and CP13-b
-(operator runs `docs/deploy.md` end-to-end against real Fly.io
-+ Supabase). CP13-b is **not** a Claude Code step.
+**Phase 3c CP13-b — first Fly.io + Supabase deploy — closed.**
+The operator drove `docs/deploy.md` end-to-end. Two real-world
+failures surfaced in flight and were fixed inside this session:
 
-- Created `fly.toml` at the repo root (commit `ef59192`).
-  Declares `app = "llm-tracker-server"`, `primary_region =
-  "nrt"` (Tokyo — lowest latency from Korea; either value is
-  rename-safe without code changes), `[build] dockerfile =
-  "Dockerfile"` (re-using the CP12 image), and an
-  `[http_service]` block on internal port 8080 with
-  `force_https = true`, `auto_stop_machines = "stop"`,
-  `auto_start_machines = true`, `min_machines_running = 0`
-  (scale-to-zero), and a `[[http_service.checks]]` entry
-  hitting `/healthz` (`method = "GET"`, `interval = "30s"`,
-  `timeout = "5s"`). `[[vm]] size = "shared-cpu-1x"`,
-  `memory = "512mb"`. `[deploy] release_command = "alembic
-  upgrade head"` — alembic runs in a one-shot ephemeral
-  Machine before the rolling deploy, against the same image
-  and the same secrets (CP12 §Decisions §D5 already shipped
-  the CLI + `alembic.ini` + `alembic/` migrations at `/app`).
-  One `[env]` entry — `LLMTRACK_LOG_LEVEL = "INFO"`. A comment
-  block at the top of the file reminds whoever opens it that
-  `LLMTRACK_DATABASE_URL` is set via `fly secrets set`, *not*
-  in this file, and points at `docs/deploy.md` for the
-  end-to-end procedure.
-- Created `docs/deploy.md` (commit `59dbae6`) — the CP13-b
-  runbook. Sections: prerequisites checklist (flyctl install
-  + login, Supabase pooled URL ready, Supabase IPv4 add-on
-  flag for Fly's IPv4-only egress, local Docker build sanity),
-  six numbered deploy steps (`fly apps create` →
-  `fly secrets set LLMTRACK_DATABASE_URL` → `fly deploy`
-  (release-command runs `alembic upgrade head`) → `fly status`
-  + `curl /healthz` → `fly ssh console -C "llm-tracker-server
-  tokens issue --org demo"` → the auth-middleware-live curl
-  that expects HTTP 400 with a token and HTTP 401 without
-  one), and a troubleshooting section keyed on the three most
-  likely failure modes (alembic release-command failure,
-  Supabase IPv4-only connection timeout, `/healthz`
-  unhealthy). Closes with a "What lands after CP13-b" footer
-  that names CP14 as the follow-up.
+- **Failure 1: stale `public.exchanges` from the closed
+  `supabase_sink` workstream.** The operator's Supabase project
+  was the same one used by the Phase-2 `supabase_sink` plugin
+  (closed 2026-05-08), which had created `public.exchanges` with
+  an *incompatible* schema (`exchange_id` PK, `ts_started_ms`,
+  `mode`, `source`, `request_text/response_text/raw_*`). The new
+  server's `0001_initial_schema` collided
+  (`DuplicateTableError: relation "exchanges" already exists`)
+  on first `fly deploy`. Diagnosis confirmed via Supabase MCP
+  `list_tables` (single stale table, 7 rows, no `alembic_version`
+  yet, no trigger function) — i.e. nothing of the new schema had
+  partially applied. Dropped the stale table via MCP
+  `execute_sql DROP TABLE public.exchanges CASCADE` after
+  confirming with the user that ADR-0007's plugin data is not
+  load-bearing (ADR-0017 supersedes ADR-0007; the plugin's
+  `schema.sql` is checked in so a future revival can rebuild a
+  fresh sink target without depending on these rows). Second
+  `fly deploy` ran `alembic upgrade head` cleanly through 0001
+  → 0005; both `nrt` Machines passed `/healthz`.
+- **Failure 2: asyncpg / pgbouncer transaction-mode prepared-
+  statement clash.** After migrations applied, `alembic current`
+  (and any DB-touching application route) failed with
+  `asyncpg.exceptions.DuplicatePreparedStatementError: prepared
+  statement "__asyncpg_stmt_1__" already exists`. Cause: Supabase's
+  pooled URL (Transaction mode pgbouncer) does not preserve
+  prepared statement names across pooled sessions, while asyncpg
+  caches them by default. Fix shipped in commit `3050bcc`
+  (`server: pgbouncer transaction-mode compat (CP13-b)`):
+  `connect_args={"statement_cache_size": 0}` passed through both
+  `make_engine()` and `alembic/env.py` `create_async_engine`.
+  No-op against direct PG (the local Docker test fixture); the
+  single-token-of-effect lives in `make_engine` so it covers the
+  server, the `llm-tracker-server tokens issue` CLI, and the test
+  fixtures uniformly. Initial false-start (also passing
+  `prepared_statement_cache_size=0` as a top-level kwarg) was
+  reverted — that is a URL-level dialect parameter, not an
+  engine kwarg, and the root-cause error name (`__asyncpg_stmt_N__`)
+  pointed at asyncpg's cache only.
 
-Verification (full transcript in worklog §Verification
-§CP13-a — though CP13-a's verification surface is small
-because it is file-only):
+Verification (post-deploy, full transcript in worklog
+§Verification):
 
-- `fly.toml` parses cleanly through `tomllib` (project venv,
-  Python 3.12) and every required field is asserted against
-  the CP13-a brief: `app`, `primary_region`, `build.dockerfile`,
-  `deploy.release_command`, `env.LLMTRACK_LOG_LEVEL`, every
-  key of `http_service`, the `[[http_service.checks]]` entry,
-  and the `[[vm]]` entry. An explicit `assert
-  'LLMTRACK_DATABASE_URL' not in cfg.get('env', {})` pins the
-  "secrets via fly secrets, not fly.toml" invariant.
-- `docs/deploy.md` internal references all resolve: `Dockerfile`,
-  `fly.toml`, `packages/llm_tracker_server/alembic.ini`,
-  `packages/llm_tracker_server/alembic/`, and four ADR
-  numbers (0017, 0018, 0020, 0022) all present in
-  `docs/decisions/` under their actual slugs
-  (`0017-central-server-deployment-model.md`,
-  `0018-multi-tenancy-per-org-rls.md`,
-  `0020-auth-per-org-token-anthropic-passthrough.md`,
-  `0022-deployment-platform-fly-supabase.md`). The doc
-  references ADRs by number in prose only, so the link
-  surface is empty by design.
-- Pre-commit `git diff --cached` scanned for secret patterns
-  (`Bearer .{20,}`, `sk-[a-zA-Z0-9]{20,}`, `AKIA`, `ghp_`,
-  `xoxb-`, `password=[^<]`, `LLMTRACK_.*_TOKEN=[^<]`) for both
-  commits — only prose "Bearer" hits ("a bearer token",
-  "`Authorization: Bearer <token>`"), confirmed clean.
+```
+$ fly ssh console -C "alembic current"
+0005_rls_policies (head)
 
-Five CP13-a-specific decisions, all flagged in the worklog
-§Decisions §CP13-a; the most load-bearing:
+$ curl -i https://llm-tracker-server.fly.dev/healthz
+HTTP/2 200 ...
+{"status":"ok","version":"0.0.1"}
 
-1. **`auto_stop_machines = "stop"`, not `true`.** The CP13-a
-   brief said boolean; the current `fly.toml` spec at
-   <https://fly.io/docs/reference/configuration/> documents
-   the field as `"off" | "stop" | "suspend"`. The same brief
-   required "use only documented fields" — used the string
-   `"stop"` (which carries the brief's intent).
-2. **`primary_region = "nrt"` (Tokyo), not `iad`.** Brief
-   specified `nrt`; ADR-0022 §Open questions had suggested
-   `iad`. `nrt` is closer to the operator and the brief is
-   authoritative for the demo. Future ADR owed if/when
-   latency or residency requirements bite.
-3. **`release_command = "alembic upgrade head"`.** Resolves
-   ADR-0022's migration-runner open question for the demo
-   scale; the release Machine inherits the same secrets, so
-   `LLMTRACK_DATABASE_URL` is the only knob.
-4. **Three typos in the CP13-a brief repaired silently** —
-   `auto_start_machie` → `auto_start_machines`,
-   `httpsly.io/install.sh` → `https://fly.io/install.sh`,
-   `llm-tracker-se.dev` → `llm-tracker-server.fly.dev`.
-   Recorded so the user can cross-check intent.
-5. **`docs/deploy.md` placed at `docs/deploy.md`, not
-   `docs/runbooks/...`.** Brief said `docs/deploy.md`; no
-   `runbooks/` convention exists in the repo today.
+$ for i in 1 2 3; do curl -s -o /dev/null -w "HTTP %{http_code}\n" \
+   -X POST https://llm-tracker-server.fly.dev/v1/messages \
+   -H "Content-Type: application/json" \
+   -d '{"model":"claude-opus-4-5","max_tokens":1,"messages":[]}'; done
+HTTP 401   HTTP 401   HTTP 401
+```
 
-Source HEAD is now `59dbae6`. Documentation HEAD advances
-with this §5.3 finalize commit.
+Supabase schema state (via MCP `list_tables`, post-deploy):
+
+```
+public.alembic_version  (1 row, version_num = 0005_rls_policies)
+public.exchanges        (RLS on,  0 rows)
+public.events           (RLS on,  0 rows)
+public.tool_calls       (RLS on,  0 rows)
+public.audit_log        (RLS on,  0 rows)
+public.orgs             (RLS off — substrate, by design 0005)
+public.api_tokens       (RLS off — substrate, by design 0005)
+```
+
+CP13-b-specific decisions captured in the worklog
+`docs/worklog/2026-05-13-cp13b-fly-deploy.md` §Decisions; the
+load-bearing ones:
+
+1. **Same Supabase project, drop the stale plugin table.** Plugin
+   workstream is closed; rows are not load-bearing; spinning up
+   a new Supabase project would have doubled secrets + budget for
+   no benefit.
+2. **Disable asyncpg's prepared-statement cache at the engine
+   layer**, not via URL query parameter. Single point of effect
+   across all callers; portable across deploy environments;
+   `LLMTRACK_DATABASE_URL` secret stays untouched.
+3. **Did not also disable SQLAlchemy's compiled prepared-statement
+   cache.** The reproducible failure was asyncpg's
+   `__asyncpg_stmt_N__` only; verified by three consecutive
+   `/v1/messages` 401s post-fix.
+4. **Did not auto-apply the Supabase RLS advisor remediation SQL.**
+   Advisor flagged `alembic_version`, `orgs`, `api_tokens` as
+   RLS-disabled. `alembic_version` is alembic-internal;
+   `orgs`/`api_tokens` are *intentionally* RLS-disabled per the
+   0005 docstring (tenancy substrate the auth path needs to read
+   before any RLS context is set). The advisor's concern is
+   PostgREST-anon exposure — not used by this server, but a
+   defense-in-depth follow-up CP is owed (REVOKE anon/authenticated
+   or RLS-with-`llm_tracker_app`-only policy). Surfaced; not
+   acted on.
+
+Source HEAD is now `3050bcc`. Documentation HEAD advances with
+this §5.3 finalize commit.
 
 ### Prior workstream — Phase-3a decisions (closed 2026-05-11)
 
@@ -340,43 +342,49 @@ reframes them server-side**:
 
 ## Next single step
 
-**Phase 3c CP13-b — operator follows `docs/deploy.md`
-end-to-end against real Fly.io + Supabase.** This is **not** a
-Claude Code step. The runbook at `docs/deploy.md` walks through:
+**Phase 3c CP14 — operator-only end-to-end smoke.** The server is
+already live at `https://llm-tracker-server.fly.dev/` (CP13-b
+closed); CP14 sends the first real `/v1/messages` request through
+it.
 
-1. `flyctl` installed + `fly auth login` completed.
-2. `fly apps create llm-tracker-server` (one-time; rename if
-   the name is taken, then update `fly.toml` to match).
-3. `fly secrets set LLMTRACK_DATABASE_URL="postgresql+asyncpg://
-   <user>:<password>@<host>:5432/<db>?ssl=require"` — Supabase
-   pooled connection string. Enable Supabase's IPv4 add-on if
-   Fly's IPv4-only egress times out against the free-tier
-   IPv6-only endpoint.
-4. `fly deploy` — runs `alembic upgrade head` in a one-shot
-   ephemeral Machine (via `release_command` in `fly.toml`),
-   then rolls out the new image to the app Machines.
-5. `fly status` + `curl https://llm-tracker-server.fly.dev/
-   healthz` to verify (`HTTP 200 {"status":"ok","version":
-   "0.0.1"}`).
-6. `fly ssh console -C "llm-tracker-server tokens issue --org
-   demo"` to mint a demo bearer token; save it once (it is
-   shown only once).
-7. Auth-middleware-live curl: with the token, expect HTTP 400
-   from Anthropic (empty `messages` body); without the token,
-   expect HTTP 401 from `AuthMiddleware`.
+1. **Mint the demo bearer token** (once; output is shown only at
+   issuance time):
 
-CP13-b is complete when steps 1–7 all pass. When the operator
-returns with the bearer token + `fly status` healthy, the next
-Claude Code session opens **CP14 — operator-only end-to-end
-smoke** (one real `/v1/messages` request through the deployed
-server with a valid Anthropic API key in `x-api-key`, response
-stream returns unchanged, one row in `public.exchanges` scoped
-to the demo org, no traceback in `fly logs`).
+   ```
+   fly ssh console -C "llm-tracker-server tokens issue --org demo"
+   ```
 
-Phase-3a dependencies: none for CP13-b or for the operator-only
-flavour of CP14. **External**-tester flavours of CP14 require
-ADR-#2 (consent + data handling) to settle first; flag to start
-that decision alongside CP13-b.
+   Save the printed plaintext token. The server stores only the
+   SHA-256 hash; this string cannot be recovered later.
+2. **Send one real `/v1/messages`** request to the deployed server
+   with a valid Anthropic API key in `x-api-key` and the demo
+   token in `Authorization`. The body should be a real, non-empty
+   `messages` payload (anything trivial that Anthropic will
+   answer; `claude-opus-4-5` works).
+3. **Verify three things, in order:**
+   - The response stream returns to the client unchanged (the
+     SSE wire bytes match what Anthropic emitted, modulo the
+     final `event: message_stop`).
+   - Exactly one row lands in `public.exchanges` scoped to the
+     demo org (`SELECT * FROM exchanges` via Supabase MCP / SQL
+     editor; the row's `org_id` matches `SELECT id FROM orgs
+     WHERE name = 'demo'`).
+   - `fly logs` (since the request timestamp) shows no traceback
+     — the path covers auth middleware → credential
+     pass-through → plugin host → org-aware INSERT.
+
+CP14 is closed when those three pass. After CP14, Phase 3c's
+14-checkpoint plan is fully closed and Phase 3c overall flips
+to "closed (operator smoke validated)". External-tester flavours
+of CP14 require **ADR-#2 (consent + data handling)** to settle
+first.
+
+The asyncpg / pgbouncer compat fix shipped in `3050bcc` should
+be re-verified under CP14's authenticated load — auth middleware
+reads `api_tokens` on *every* request, which is the exact code
+path that triggered the original
+`DuplicatePreparedStatementError` and the place where any
+remaining cache pathology would resurface.
 
 To revive the local dev loop in a new session (Postgres on the
 host for the test-fixture suite; the Dockerised server +
@@ -451,9 +459,10 @@ ready to start.
 - [x] **Phase 3c CP11 — `.env.example` + developer docs refresh (2026-05-12, commit a7e21c9)**
 - [x] **Phase 3c CP12 — `Dockerfile` + `.dockerignore` (2026-05-12, commit 92ddff7)**
 - [x] **Phase 3c CP13-a — `fly.toml` + `docs/deploy.md` (2026-05-13, commits ef59192 + 59dbae6)**
+- [x] **Phase 3c CP13-b — first Fly.io + Supabase deploy (2026-05-13, commit 3050bcc; server live at `https://llm-tracker-server.fly.dev/`)**
 - [ ] **Phase 3a — remaining 3 decision ADRs** (#1 fallback / #2 consent / #4 agent language)
 - [ ] Phase 3b — thin local agent (gated on #1 + #4)
-- [ ] Phase 3c — server build-out (12 of 14 plan-checkpoints + CP13-a done; CP13-b is user-executed per `docs/deploy.md`; CP14 follows. Plan at `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0017/0018/0019/0020/0022)
+- [ ] Phase 3c — server build-out (13 of 14 plan-checkpoints done; CP14 remaining — operator-only end-to-end smoke. Plan at `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0017/0018/0019/0020/0022)
 - [ ] Phase 1c — `scope_guard` (paused; reframed server-side per ADR-0019; gated on Phase 3c readiness)
 - [ ] Phase 3d — carry-overs: OpenAI/Gemini adapters, analytics interface, response-side policy plugins
 

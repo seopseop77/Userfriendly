@@ -47,7 +47,12 @@ def run_migrations_offline() -> None:
 
 async def run_migrations_online() -> None:
     url = config.get_main_option("sqlalchemy.url")
-    engine = create_async_engine(url)
+    # `statement_cache_size=0` disables asyncpg's prepared-statement cache for
+    # pgbouncer transaction-mode pooling (Supabase). No-op on direct PG.
+    engine = create_async_engine(
+        url,
+        connect_args={"statement_cache_size": 0},
+    )
     async with engine.connect() as conn:
         await conn.run_sync(do_run_migrations)
     await engine.dispose()

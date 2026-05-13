@@ -11,7 +11,15 @@ from sqlalchemy.ext.asyncio import (
 def make_engine(database_url: str) -> AsyncEngine:
     if not database_url:
         raise ValueError("database_url is required (set LLMTRACK_DATABASE_URL)")
-    return create_async_engine(database_url, echo=False, future=True)
+    # `statement_cache_size=0` disables asyncpg's prepared-statement cache,
+    # required under pgbouncer transaction-mode pooling (Supabase) which does
+    # not preserve statement names across pooled sessions. No-op on direct PG.
+    return create_async_engine(
+        database_url,
+        echo=False,
+        future=True,
+        connect_args={"statement_cache_size": 0},
+    )
 
 
 def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

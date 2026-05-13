@@ -116,7 +116,9 @@ fly ssh console -C "llm-tracker-server tokens issue --org demo"
 
 Save the printed token — it is shown **once**. This bearer token is what
 goes in the client's `ANTHROPIC_BASE_URL` setup (the client sends
-`Authorization: Bearer <token>` on each request to the proxy).
+`X-LLM-Tracker-Token: <token>` on each request to the proxy; per
+ADR-0023, `Authorization` is reserved for the Anthropic credential
+pass-through and is never read by the server).
 
 ### 6. Verify auth middleware is live
 
@@ -127,7 +129,7 @@ body is intentionally malformed):
 
 ```
 curl -X POST https://llm-tracker-server.fly.dev/v1/messages \
-  -H "Authorization: Bearer <token>" \
+  -H "X-LLM-Tracker-Token: <token>" \
   -H "Content-Type: application/json" \
   -d '{"model":"claude-opus-4-5","max_tokens":1,"messages":[]}'
 ```
@@ -136,8 +138,8 @@ Expected: **HTTP 400** (Anthropic rejecting the empty `messages` array).
 A 401/403 here means auth middleware rejected the token; a 502/504 means
 the server reached Anthropic but something else failed upstream.
 
-A request **without** the `Authorization` header should be rejected with
-401:
+A request **without** the `X-LLM-Tracker-Token` header should be rejected
+with 401:
 
 ```
 curl -i -X POST https://llm-tracker-server.fly.dev/v1/messages \

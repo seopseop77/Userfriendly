@@ -58,6 +58,7 @@ from starlette.requests import Request
 from ulid import ULID
 
 from llm_tracker_server.audit_context import bind_request_context
+from llm_tracker_server.extractors.anthropic import parse_sse_stream
 from llm_tracker_server.plugin_host.host import PluginHost
 from llm_tracker_server.proxy.sse import block_response
 from llm_tracker_server.storage.exchanges import (
@@ -130,18 +131,6 @@ def _parse_model_requested(body: bytes) -> str | None:
     return model if isinstance(model, str) else None
 
 
-async def _drain(queue: asyncio.Queue[bytes | None]) -> None:
-    """No-op consumer for the internal tee queue.
-
-    Phase-2 will replace this with the Extractor (parse SSE events
-    into the structured ``events`` / ``tool_calls`` records). For
-    CP8/CP9 the queue exists so the plumbing is in place; the
-    consumer side is empty.
-    """
-    while await queue.get() is not None:
-        pass
-
-
 async def forward_request(
     request: Request,
     path: str,
@@ -172,6 +161,20 @@ async def forward_request(
     # `on_request_received` can see it through `HookContext.request_text()`.
     body = await request.body()
     headers = _outbound_headers(request.headers)
+    # Computed once: shared by the happy-path INSERT and all three
+    # blocked-path INSERTs (ADR-0027 axis 3) so every row carries
+    # `model_requested` whenever it is parseable.
+    _model_requested = _parse_model_requested(body)
+
+    def _close_out_now() -> tuple[int, int]:
+        """(ended_at_ms, latency_ms) anchored to the monotonic start.
+
+        Used by the blocked-path helpers per ADR-0027 axis 3. The happy
+        path computes the same pair inline at stream close.
+        """
+        t_now_mono = time.monotonic()
+        ended_ms = t0_epoch_ms + int((t_now_mono - t0_mono) * 1000)
+        return ended_ms, ended_ms - t0_epoch_ms
 
     # `AuthMiddleware` populates these; tests that exercise the
     # forwarder directly skip the middleware and therefore the
@@ -191,11 +194,16 @@ async def forward_request(
 
     with outer_bind:
         if plugin_host is not None:
-            plugin_host.begin_exchange(exchange_id, request_body=body)
+            ctx = plugin_host.begin_exchange(exchange_id, request_body=body)
+            # ADR-0026: surface tenancy on the ctx so org-scoped sink
+            # plugins (e.g. analytics_sink) can populate their own
+            # `org_id` column without reaching past the SDK boundary.
+            ctx.org_id = org_id
 
             result = await plugin_host.on_request_received(exchange_id)
             if isinstance(result, Block):
                 if has_request_scope:
+                    blocked_ended_ms, blocked_latency = _close_out_now()
                     await record_exchange_blocked(
                         session,
                         exchange_id=exchange_id,
@@ -203,6 +211,9 @@ async def forward_request(
                         endpoint=path,
                         blocked_by=result.plugin,
                         started_at_ms=t0_epoch_ms,
+                        ended_at_ms=blocked_ended_ms,
+                        latency_ms=blocked_latency,
+                        model_requested=_model_requested,
                     )
                 return block_response(result.reason, exchange_id, plugin_host)
 
@@ -222,6 +233,7 @@ async def forward_request(
             result = await plugin_host.before_forward(exchange_id)
             if isinstance(result, Block):
                 if has_request_scope:
+                    blocked_ended_ms, blocked_latency = _close_out_now()
                     await record_exchange_blocked(
                         session,
                         exchange_id=exchange_id,
@@ -229,6 +241,9 @@ async def forward_request(
                         endpoint=path,
                         blocked_by=result.plugin,
                         started_at_ms=t0_epoch_ms,
+                        ended_at_ms=blocked_ended_ms,
+                        latency_ms=blocked_latency,
+                        model_requested=_model_requested,
                     )
                 return block_response(result.reason, exchange_id, plugin_host)
             if isinstance(result, Transform):
@@ -252,6 +267,7 @@ async def forward_request(
             if isinstance(result, Abort):
                 await upstream.aclose()
                 if has_request_scope:
+                    blocked_ended_ms, blocked_latency = _close_out_now()
                     await record_exchange_blocked(
                         session,
                         exchange_id=exchange_id,
@@ -259,6 +275,9 @@ async def forward_request(
                         endpoint=path,
                         blocked_by=result.plugin,
                         started_at_ms=t0_epoch_ms,
+                        ended_at_ms=blocked_ended_ms,
+                        latency_ms=blocked_latency,
+                        model_requested=_model_requested,
                     )
                 return block_response(result.reason, exchange_id, plugin_host)
 
@@ -296,7 +315,11 @@ async def forward_request(
                     )
                     stack.enter_context(bind_request_context(fresh, org_id))
 
-                drain_task = asyncio.create_task(_drain(internal))
+                # ADR-0026 Option B: parse the SSE stream in parallel
+                # with the iter loop that feeds it. The task is owned
+                # by this generator; the sentinel `None` (below) is
+                # what unblocks it.
+                extract_task = asyncio.create_task(parse_sse_stream(internal))
                 completed = False
                 first_byte = True
                 try:
@@ -320,10 +343,16 @@ async def forward_request(
                         completed = True
                 finally:
                     await internal.put(None)
-                    await drain_task
+                    parsed = await extract_task
                     await upstream.aclose()
 
                 if completed and plugin_host is not None:
+                    # ADR-0026: stash the parsed response on the ctx
+                    # so `on_persisted` plugins read it via the
+                    # accessors. Done before on_response_complete so
+                    # both hooks see the same value.
+                    ctx_post = plugin_host._ctx_for(exchange_id)
+                    ctx_post._parsed_response = parsed
                     await plugin_host.on_response_complete(exchange_id)
                     if fresh is not None and "t1" in timing and "t2" in timing:
                         t_up = t0_epoch_ms + int((timing["t1"] - t0_mono) * 1000)
@@ -344,8 +373,18 @@ async def forward_request(
                             t_client_first_byte_ms=t_cli,
                             ended_at_ms=ended_at_ms,
                             status_code=upstream.status_code,
-                            model_requested=_parse_model_requested(body),
+                            model_requested=_model_requested,
                             latency_ms=ended_at_ms - t0_epoch_ms,
+                            # ADR-0026 / ADR-0027 axis 1: extractor
+                            # output rides through here. Each field is
+                            # `None` when the stream did not surface a
+                            # parseable value (best-effort NULL).
+                            model_served=parsed.usage.model_served,
+                            input_tokens=parsed.usage.input_tokens,
+                            output_tokens=parsed.usage.output_tokens,
+                            cache_read_tokens=parsed.usage.cache_read_tokens,
+                            cache_write_tokens=parsed.usage.cache_write_tokens,
+                            stop_reason=parsed.usage.stop_reason,
                         )
                     # design.md §6.3.2: on_persisted fires *after* the
                     # DB write so plugins can read the exchange row

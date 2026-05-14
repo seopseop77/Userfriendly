@@ -27,6 +27,7 @@ owns its lifecycle.
 from __future__ import annotations
 
 import hashlib
+import uuid
 from dataclasses import dataclass, field
 
 from .egress import EgressClient
@@ -54,6 +55,12 @@ class HookContext:
     mode: str
     user_opted_in: bool = False
     egress: EgressClient | None = None
+    # ADR-0026: tenancy axis for server-side plugins that write to
+    # org-scoped tables (e.g. ``analytics_sink``). The forwarder sets
+    # this in ``begin_exchange`` from ``request.state.org_id``. Stays
+    # ``None`` on the local-sidecar path; plugins that need it must
+    # guard against ``None``.
+    org_id: uuid.UUID | None = None
     _raw_request_body: bytes | None = field(default=None, repr=False)
     # ADR-0019 §Open questions / CP10: per-plugin clamp set by the
     # server-side host from the plugin manifest's ``min_content_level``.
@@ -61,6 +68,12 @@ class HookContext:
     # local-sidecar path (mode L/A/R) leaves it ``None`` so legacy
     # callers keep their existing ceiling semantics.
     _ceiling: ContentLevel | None = field(default=None, repr=False)
+    # ADR-0026: the server core sets this after `parse_sse_stream`
+    # finishes. Typed as ``object`` (not ``ParsedResponse``) so the SDK
+    # does not import from the server package — plugins read structured
+    # data via the ``response_usage()`` / ``response_content_json()``
+    # accessors below, which know the concrete shape.
+    _parsed_response: object | None = field(default=None, repr=False)
 
     def effective_ceiling(self) -> ContentLevel:
         """The highest level this plugin may see.
@@ -128,3 +141,32 @@ class HookContext:
         if self.effective_ceiling() < ContentLevel.L1:
             return None
         return len(self._raw_request_body)
+
+    def response_usage(self) -> object | None:
+        """Return the extractor's `ResponseUsage`, or `None` if not yet parsed.
+
+        ADR-0026 Option B: the server core's `parse_sse_stream` populates
+        `_parsed_response` on stream completion; plugins that run in
+        `on_persisted` read the usage block (model_served + token counts
+        + stop_reason) via this accessor. The return type is `object`
+        rather than `ResponseUsage` so the SDK does not import from the
+        server package; plugins that want typing should
+        ``from llm_tracker_server.extractors.anthropic import ResponseUsage``
+        under ``if TYPE_CHECKING:``.
+        """
+        if self._parsed_response is None:
+            return None
+        return getattr(self._parsed_response, "usage", None)
+
+    def response_content_json(self) -> str | None:
+        """Return the assembled response body as a JSON string, or `None`.
+
+        The JSON mirrors the non-stream Anthropic shape:
+        ``{"model": ..., "content": [{"type": "text", "text": "..."}],
+        "stop_reason": ..., "usage": {...}}``. Returns `None` when the
+        extractor has not run on this exchange (e.g. blocked path,
+        pre-SSE upstream failure).
+        """
+        if self._parsed_response is None:
+            return None
+        return getattr(self._parsed_response, "response_json", None)

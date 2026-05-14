@@ -1,10 +1,10 @@
-"""Tests for the test-only keyword_block plugin."""
+"""Tests for the keyword_block plugin."""
 
 from __future__ import annotations
 
 from llm_tracker_plugin_keyword_block import (
     DEFAULT_KEYWORDS,
-    KEYWORDS_ENV,
+    KEYWORD_BLOCK_LIST_ENV,
     KeywordBlockPlugin,
 )
 from llm_tracker_sdk import HookContext
@@ -32,7 +32,7 @@ def _ctx(body: bytes | None, *, mode: str = "R", user_opted_in: bool = True) -> 
     )
 
 
-async def test_blocks_when_body_contains_keyword():
+async def test_blocks_on_keyword_match():
     plugin = KeywordBlockPlugin(keywords=("secret",))
     harness = PluginHarness(plugin)
     result = await harness.on_request_received(
@@ -41,7 +41,7 @@ async def test_blocks_when_body_contains_keyword():
     harness.assert_block(result, reason_contains="secret")
 
 
-async def test_passes_when_no_keyword_present():
+async def test_passes_on_no_match():
     plugin = KeywordBlockPlugin(keywords=("secret",))
     harness = PluginHarness(plugin)
     result = await harness.on_request_received(
@@ -83,19 +83,22 @@ async def test_passes_when_body_is_not_utf8():
     harness.assert_pass(result)
 
 
-async def test_env_overrides_default(monkeypatch):
-    monkeypatch.setenv(KEYWORDS_ENV, "alpha, beta ,, gamma")
+async def test_env_supplies_keywords(monkeypatch):
+    monkeypatch.setenv(KEYWORD_BLOCK_LIST_ENV, "alpha, beta ,, gamma")
     plugin = KeywordBlockPlugin()
     assert plugin._keywords == ("alpha", "beta", "gamma")
 
 
-async def test_default_keywords_used_when_env_unset(monkeypatch):
-    monkeypatch.delenv(KEYWORDS_ENV, raising=False)
+async def test_empty_default_when_env_unset(monkeypatch):
+    """Without the env var, the plugin loads with zero keywords (never blocks)."""
+    monkeypatch.delenv(KEYWORD_BLOCK_LIST_ENV, raising=False)
     plugin = KeywordBlockPlugin()
-    assert plugin._keywords == tuple(k.lower() for k in DEFAULT_KEYWORDS)
+    assert plugin._keywords == ()
+    assert DEFAULT_KEYWORDS == ()
 
 
-async def test_default_keywords_used_when_env_blank(monkeypatch):
-    monkeypatch.setenv(KEYWORDS_ENV, "  ,, ")
+async def test_empty_default_when_env_blank(monkeypatch):
+    """A blank / comma-only env var falls back to the empty default."""
+    monkeypatch.setenv(KEYWORD_BLOCK_LIST_ENV, "  ,, ")
     plugin = KeywordBlockPlugin()
-    assert plugin._keywords == tuple(k.lower() for k in DEFAULT_KEYWORDS)
+    assert plugin._keywords == ()

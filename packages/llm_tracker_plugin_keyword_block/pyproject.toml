@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "llm-tracker-plugin-keyword-block"
-version = "0.0.1"
-description = "TEST-ONLY plugin for llm-tracker — blocks requests containing forbidden keywords. Verification artefact for the block path; replaced by Phase-1c scope_guard."
+version = "0.1.0"
+description = "Server-side request gate for llm-tracker. Blocks requests whose body matches a keyword from `LLMTRACK_KEYWORD_BLOCK_LIST` (comma-separated, case-insensitive). Empty list → never blocks. Phase-1c `scope_guard` remains the proper full-scale content-policy surface."
 requires-python = ">=3.11"
 authors = [{ name = "Userfriendly Team" }]
 license = { text = "Proprietary (internal research use)" }

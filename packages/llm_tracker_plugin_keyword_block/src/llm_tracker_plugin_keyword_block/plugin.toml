@@ -1,6 +1,7 @@
 name = "keyword_block"
-version = "0.0.1"
-description = "TEST-ONLY: blocks requests whose body contains a forbidden keyword. Verification artefact for the block path — remove when Phase-1c scope_guard lands."
+version = "0.1.0"
+description = "Server-side request gate. Blocks any request whose raw body matches a keyword from `LLMTRACK_KEYWORD_BLOCK_LIST` (case-insensitive, comma-separated). Empty list → never blocks."
 hooks = ["on_request_received"]
-capabilities = ["read_request_content", "block_request"]
-allowed_modes = ["L", "A", "R"]
+capabilities = []
+allowed_modes = ["R"]
+min_content_level = "L3"

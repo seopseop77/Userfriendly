@@ -1,14 +1,16 @@
-"""TEST-ONLY keyword-block plugin.
+"""Keyword-block plugin — server-side request gate.
 
-Returns `Block(...)` from `on_request_received` if the raw request body
-contains any keyword from the configured list (case-insensitive). The
-list is whatever `LLMTRACK_KEYWORDS_BLOCK_LIST` (comma-separated) holds
-at construction time, falling back to a tiny built-in default that's
-just enough to exercise the block path manually.
+Returns `Block(...)` from `on_request_received` when the raw request
+body contains any keyword from the configured list (case-insensitive).
+The list is read from `LLMTRACK_KEYWORD_BLOCK_LIST` (comma-separated)
+at construction time; absent or empty → no keywords → the plugin
+loads but never blocks.
 
-This is a verification artefact for the Block lifecycle. The real
-content-policy plugin is Phase-1c `scope_guard`; delete this once that
-lands. See `docs/worklog/2026-05-06-test-plugins.md`.
+This was originally a TEST-ONLY artefact for the Block lifecycle
+under the local-sidecar host. It now ships in the central server's
+Docker image alongside `analytics_sink` as a small, operator-
+configurable content gate. The Phase-1c `scope_guard` plugin remains
+the proper full-scale content-policy surface.
 """
 
 from __future__ import annotations
@@ -17,12 +19,14 @@ import os
 
 from llm_tracker_sdk import BasePlugin, Block, ContentLevel, HookContext, Pass
 
-DEFAULT_KEYWORDS: tuple[str, ...] = ("forbidden_word", "do_not_send")
-KEYWORDS_ENV = "LLMTRACK_KEYWORDS_BLOCK_LIST"
+KEYWORD_BLOCK_LIST_ENV = "LLMTRACK_KEYWORD_BLOCK_LIST"
+# Empty default: plugin loads but never blocks unless the operator
+# supplies a non-empty list via the env var.
+DEFAULT_KEYWORDS: tuple[str, ...] = ()
 
 
 def _load_keywords() -> tuple[str, ...]:
-    raw = os.environ.get(KEYWORDS_ENV)
+    raw = os.environ.get(KEYWORD_BLOCK_LIST_ENV)
     if raw is None:
         return DEFAULT_KEYWORDS
     parsed = tuple(part.strip().lower() for part in raw.split(",") if part.strip())
@@ -56,4 +60,4 @@ class KeywordBlockPlugin(BasePlugin):
         return Pass()
 
 
-__all__ = ["DEFAULT_KEYWORDS", "KEYWORDS_ENV", "KeywordBlockPlugin"]
+__all__ = ["DEFAULT_KEYWORDS", "KEYWORD_BLOCK_LIST_ENV", "KeywordBlockPlugin"]

@@ -50,7 +50,7 @@ Other reinterpretations from the task as written:
 
 ## What was done
 
-### Checkpoint α — ADR-0026 + ADR-0027 (commit `<pending>`)
+### Checkpoint α — ADR-0026 + ADR-0027 (commit `f02f516`)
 
 - Created `docs/decisions/0026-hookcontext-response-accessors.md` — Accepted.
   Amends ADR-0012; adds `_parsed_response: object | None` field +
@@ -64,6 +64,35 @@ Other reinterpretations from the task as written:
   into `record_exchange_blocked` (impl in checkpoint β alongside the helper
   signature change).
 - Created this worklog scaffold (`docs/worklog/2026-05-14-plugin-ecosystem.md`).
+
+### Checkpoint β — SSE extractor + SDK + forwarder + storage (commit `61c8aeb`)
+
+- Created `packages/llm_tracker_server/src/llm_tracker_server/extractors/__init__.py`
+  and `extractors/anthropic.py` — the parser + dataclasses
+  (`ResponseUsage`, `ParsedResponse`, `parse_sse_stream`). ~135 lines
+  excluding docstrings; never raises; handles `message_start` /
+  `message_delta` / `content_block_delta` + assembles `response_json`
+  to the non-stream Anthropic shape.
+- Modified `packages/llm_tracker_sdk/src/llm_tracker_sdk/hook_context.py`
+  — added `org_id: uuid.UUID | None` and
+  `_parsed_response: object | None` fields plus `response_usage()` /
+  `response_content_json()` read-only accessors (ADR-0026 surface).
+- Modified `packages/llm_tracker_server/src/llm_tracker_server/storage/exchanges.py`
+  — `record_exchange_timing` gains six keyword-only params
+  (`model_served`, `input_tokens`, `output_tokens`, `cache_read_tokens`,
+  `cache_write_tokens`, `stop_reason`), each defaulting to None.
+  `record_exchange_blocked` gains `ended_at_ms`, `latency_ms`,
+  `model_requested` per ADR-0027 axis 3.
+- Modified `packages/llm_tracker_server/src/llm_tracker_server/proxy/forwarder.py`
+  — replaced `_drain` no-op with `parse_sse_stream`; stashed parsed
+  result on per-exchange ctx; threaded six new args into the timing
+  helper; threaded three new args into all three `record_exchange_blocked`
+  call sites via a small `_close_out_now()` closure; set
+  `ctx.org_id = org_id` after `begin_exchange`.
+- Created `packages/llm_tracker_server/tests/test_sse_extractor.py`
+  — 6 tests: realistic stream, truncated stream (no-raise),
+  malformed JSON, assembled `response_json`, byte-boundary splits,
+  empty stream.
 
 ## Decisions
 
@@ -83,23 +112,50 @@ Other reinterpretations from the task as written:
 
 ## Verification
 
-(per-checkpoint blocks appended below)
+### Checkpoint β
+
+```
+$ .venv/bin/python3.12 -m ruff format \
+    packages/llm_tracker_server/src/llm_tracker_server/extractors/ \
+    packages/llm_tracker_server/src/llm_tracker_server/proxy/forwarder.py \
+    packages/llm_tracker_server/src/llm_tracker_server/storage/exchanges.py \
+    packages/llm_tracker_sdk/src/llm_tracker_sdk/hook_context.py \
+    packages/llm_tracker_server/tests/test_sse_extractor.py
+1 file reformatted, 5 files left unchanged
+
+$ .venv/bin/python3.12 -m ruff check <same paths>
+All checks passed!
+
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker_server/tests -q
+51 passed, 16 skipped in 5.82s
+
+$ LLMTRACK_TEST_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker_test \
+    .venv/bin/python3.12 -m pytest packages/llm_tracker_server/tests -q
+67 passed in 21.97s
+# includes test_two_org_e2e_isolation through the new extractor.
+
+$ .venv/bin/python3.12 -m pytest -q   # full repo
+308 passed, 16 skipped, 4 warnings in 12.98s
+# 6 new SSE-extractor tests; was 302 before this checkpoint.
+```
 
 ## What's left / known limits
 
-- Checkpoint β — SSE extractor module + SDK changes + forwarder wire-up +
-  storage helper signature extension + tests.
 - Checkpoint γ — migration 0007 `plugin_analytics` table.
 - Checkpoint δ — `analytics_sink` plugin package.
-- Checkpoint ε — `keyword_block` plugin polish (env var rename, default empty,
-  drop "TEST-ONLY" framing).
+- Checkpoint ε — `keyword_block` plugin polish (env var rename, default
+  empty, drop "TEST-ONLY" framing).
 - Checkpoint ζ — Dockerfile + fly.toml bundling.
 - Pre-SSE failure-path row write (ADR-0027 axis 2 impl) — deferred to a
-  follow-up checkpoint after ζ ships. Listed here so the next session does
-  not re-litigate the policy.
+  follow-up checkpoint after ζ ships.
+- Tool-use extraction (`tool_call_count > 0` on `exchanges`) — extractor
+  currently parses text content only; flagged in `extractors/anthropic.py`
+  docstring.
 
 ## Handoff
 
-Both gating ADRs landed in checkpoint α. The next checkpoint (β — SSE
-extractor + SDK changes + forwarder wiring + tests) is the largest code
-change of this session and is unblocked.
+Checkpoint β shipped (`61c8aeb`). The extractor wires through the
+forwarder end-to-end and is exercised by `test_two_org_e2e_isolation`
+under the DB fixture. The HookContext accessors are ready for plugin
+consumers; the first one (`analytics_sink`, checkpoint δ) is unblocked
+once γ lands the `plugin_analytics` table it writes to.

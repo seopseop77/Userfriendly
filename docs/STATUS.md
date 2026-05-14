@@ -6,8 +6,8 @@
 
 ---
 
-**Last updated**: 2026-05-13 (Claude Code; **Phase 3b CLOSED.** User-run live smoke from the workspace passed both paths. Positive: `claude-manage` against `https://llm-tracker-server.fly.dev` produced 8 timed rows in Supabase `public.exchanges` scoped to demo `org_id=c6fcdd23-...` across opus-4-7 / opus-4-5 / haiku-4-5 calls; RLS held. Negative: `--server-url http://127.0.0.1:9` triggered the ADR-0024 503 path; the in-process Anthropic SDK retried 10× with exponential backoff and surfaced the failure to the user — request never reached Anthropic. Latency side-investigation (server-side `latency_ms`): haiku 0.9–3.6 s, opus 4–12 s; server overhead is in tens of ms (sub-second haiku is the proof), the rest is Anthropic generation time. 12010 ms opus-4-7 outlier flagged for Option B SSE-extractor work but not blocking. Net effect: thin local agent is in production use; new team members install via `uv sync` or per-package `pip install -e`, then `claude-manage setup <token> && claude-manage`.)
-**Updated by**: Claude Code (Phase 3b closure checkpoint — docs only)
+**Last updated**: 2026-05-14 (Claude Code; **Checkpoint α of the Option B + plugin-ecosystem workstream**. ADR-0026 (HookContext response accessors — Option B prerequisite, amends ADR-0012) and ADR-0027 (exchange row close-out policy — best-effort NULL on response-side columns; write a row on pre-SSE upstream failure (documented, impl deferred to follow-up); pull `ended_at`/`latency_ms`/`model_requested` into `record_exchange_blocked`) both Accepted. STATUS.md's prior "Next single step" (draft a close-out policy ADR before Option B) is now settled by ADR-0027; the queued numbering note that called it "ADR-NNNN" resolves to 0027. The HookContext response accessors ADR landed as 0026, not 0024 — the task as written collided with ADR-0024 (agent fail-closed, commit `79a0ae9`); resolution surfaced via `AskUserQuestion` before any file write. Both ADRs are docs-only; no code change in this commit.)
+**Updated by**: Claude Code (Checkpoint α — ADR-0026 + ADR-0027)
 
 ## Current phase
 
@@ -50,12 +50,14 @@
 
 ## Active worklog
 
+`docs/worklog/2026-05-14-plugin-ecosystem.md` (Option B SSE
+extractor + analytics_sink + keyword_block multi-checkpoint
+session; ADR-0026 + ADR-0027 land in checkpoint α). Prior session
+worklogs preserved:
 `docs/worklog/2026-05-13-phase3b-agent.md` (Phase 3b — ADRs
-0024 / 0025 + `packages/llm_tracker_agent/` shipped; ruff /
-pytest / live setup outputs captured in §Verification). Prior
-session context preserved in
+0024 / 0025 + `packages/llm_tracker_agent/` shipped),
 `docs/worklog/2026-05-13-cp14-response-side-followup.md` (CP14
-response-side investigation; queued for Option B) and
+response-side investigation — now Option B execution), and
 `docs/worklog/2026-05-13-cp14-operator-smoke.md` (closes Phase 3c
 CP14 proper).
 
@@ -623,38 +625,36 @@ reframes them server-side**:
 
 ## Next single step
 
-**Draft ADR-0026 — "exchange row close-out policy."** With Phase 3b
-closed (live smoke verified), the queue advances to the policy ADR
-that has to land *before* Option B's SSE extractor — so the second
-signature extension on `record_exchange_timing` lands under a
-stable contract. The ADR decides three things:
+**Checkpoint β — Option B SSE Extractor + HookContext SDK
+changes + forwarder wire-up + storage helper signature extension
++ tests.** ADR-0026 + ADR-0027 (checkpoint α, this commit)
+unblock the code change. Concretely:
 
-1. **Guaranteed populated vs. allowed NULL** — which columns must
-   be non-NULL on every row in `public.exchanges`, and which are
-   allowed to be NULL (and on which paths). Today's smoke-derived
-   data point: `model_served` / `input_tokens` / `output_tokens` /
-   `cache_*` / `stop_reason` are uniformly NULL on the happy-SSE
-   path because the streaming-close hook does not yet parse.
-2. **Error path** — today there is no INSERT at all if upstream
-   fails before SSE starts; the row is only persisted in the
-   streaming `for` loop's `else` clause. ADR picks: write a row
-   anyway with `status_code` + `ended_at` set, or leave the
-   silence as policy.
-3. **Blocked path parity** — `record_exchange_blocked` writes
-   rows with `ended_at`/`latency_ms`/`model_requested` NULL even
-   though three of the four are trivially available at block
-   time. Pull them into the helper, or leave per-path divergence
-   as policy.
+1. New module `packages/llm_tracker_server/src/llm_tracker_server/extractors/anthropic.py`
+   with `ResponseUsage` + `ParsedResponse` dataclasses and an
+   `async def parse_sse_stream(queue)` consumer that replaces the
+   `_drain` no-op stub in `proxy/forwarder.py`. Never raises;
+   missing fields default to `None` (ADR-0027 axis 1).
+2. SDK changes in `packages/llm_tracker_sdk/src/llm_tracker_sdk/hook_context.py`:
+   add `_parsed_response: object | None`, `org_id: uuid.UUID | None`,
+   and the two read-only accessors `response_usage()` /
+   `response_content_json()` (ADR-0026).
+3. Forwarder: swap `_drain` for `parse_sse_stream`, store the
+   result on the per-exchange `HookContext`, pass six new
+   keyword-only args to `record_exchange_timing`. Also pull the
+   three cheap fields (`ended_at`, `latency_ms`, `model_requested`)
+   into `record_exchange_blocked` (ADR-0027 axis 3).
+4. New tests in `packages/llm_tracker_server/tests/test_sse_extractor.py`;
+   update `test_credential_passthrough.py` if needed.
 
-Reference path: `docs/decisions/0026-exchange-row-close-out-policy.md`
-(new), template at `docs/decisions/TEMPLATE.md`. Once Accepted,
-Option B (`extractors/anthropic.py` replacing the `_drain` stub in
-`proxy/forwarder.py`) is unblocked.
+Then checkpoints γ–ζ (migration 0007 `plugin_analytics`,
+`analytics_sink` plugin package, `keyword_block` polish, Dockerfile +
+fly.toml bundling) — see `docs/worklog/2026-05-14-plugin-ecosystem.md`
+§"What's left" for the running list.
 
-The worklog
-`docs/worklog/2026-05-13-cp14-response-side-followup.md` §"What's
-left / known limits" remains the reference for the queued
-close-out-policy + SSE-extractor work.
+The pre-SSE upstream-failure-path row write (ADR-0027 axis 2 impl)
+is deliberately deferred to a follow-up checkpoint after ζ so
+this session does not balloon further.
 
 ### Side-quests (do at any time, none blocking)
 

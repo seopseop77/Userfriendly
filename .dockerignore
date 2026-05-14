@@ -51,13 +51,16 @@ logs/
 .claude/
 .mcp.json
 
-# Workspace packages the server does not need at runtime
+# Workspace packages the server does not need at runtime.
+# `keyword_block` + `analytics_sink` are bundled in Phase-3c ζ; the
+# rest stay excluded so the build context stays small.
 packages/llm_tracker/
 packages/llm_tracker_plugin_hello_world/
-packages/llm_tracker_plugin_keyword_block/
 packages/llm_tracker_plugin_supabase_sink/
 packages/llm_tracker_plugin_token_counter/
 
 # Tests are not shipped in the image
 packages/llm_tracker_sdk/tests/
 packages/llm_tracker_server/tests/
+packages/llm_tracker_plugin_analytics_sink/tests/
+packages/llm_tracker_plugin_keyword_block/tests/

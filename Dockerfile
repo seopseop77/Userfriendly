@@ -25,22 +25,32 @@ WORKDIR /build
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Install both workspace packages plus runtime deps that the server's
-# pyproject.toml does not yet declare:
+# Install the server stack + the two server-side plugin packages.
+# Worklog Suggestions still track the implicit deps that don't yet live
+# in the server's `pyproject.toml`:
 #   - `llm-tracker-sdk` — workspace member; the server imports from it
 #     (forwarder.py, content_levels/levels.py) but the dep is implicit
 #     via the uv workspace.
 #   - `python-ulid` — used by storage/audit.py and proxy/forwarder.py;
 #     present in dev because the local-sidecar `llm_tracker` package
 #     provides it transitively, but absent in a server-only install.
-# Both are tracked as worklog Suggestions for a proper pyproject fix.
-COPY packages/llm_tracker_sdk    /build/packages/llm_tracker_sdk
-COPY packages/llm_tracker_server /build/packages/llm_tracker_server
+# Plugin packages ship in the same image (Phase-3c δ + ε):
+#   - `llm-tracker-plugin-analytics-sink` — writes `plugin_analytics`
+#     rows via its own async engine (LLMTRACK_DATABASE_URL).
+#   - `llm-tracker-plugin-keyword-block` — request gate;
+#     LLMTRACK_KEYWORD_BLOCK_LIST controls the active list (defaults
+#     to empty = never blocks).
+COPY packages/llm_tracker_sdk                    /build/packages/llm_tracker_sdk
+COPY packages/llm_tracker_server                 /build/packages/llm_tracker_server
+COPY packages/llm_tracker_plugin_analytics_sink  /build/packages/llm_tracker_plugin_analytics_sink
+COPY packages/llm_tracker_plugin_keyword_block   /build/packages/llm_tracker_plugin_keyword_block
 
 RUN pip install \
     python-ulid \
     /build/packages/llm_tracker_sdk \
-    /build/packages/llm_tracker_server
+    /build/packages/llm_tracker_server \
+    /build/packages/llm_tracker_plugin_analytics_sink \
+    /build/packages/llm_tracker_plugin_keyword_block
 
 # ---------- runtime ---------------------------------------------------------
 FROM python:3.11-slim AS runtime

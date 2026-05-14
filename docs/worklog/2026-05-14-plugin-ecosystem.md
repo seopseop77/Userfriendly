@@ -105,6 +105,60 @@ Other reinterpretations from the task as written:
   `created_at`. Idempotent up/down: round-tripped via
   `alembic downgrade -1` + `alembic upgrade head`.
 
+### Checkpoint δ — analytics_sink plugin (commit `b3f9ed2`)
+
+- New package `packages/llm_tracker_plugin_analytics_sink/`:
+  `pyproject.toml`, `plugin.toml`, `__init__.py`, `plugin.py`,
+  `tests/test_analytics_sink.py` (5 tests).
+- Plugin owns its own async engine
+  (`LLMTRACK_DATABASE_URL` + `statement_cache_size=0` for
+  pgbouncer transaction-mode), stashes the request body + the
+  extracted Anthropic system prompt on `on_request_received`,
+  and writes one row to `plugin_analytics` on `on_persisted`.
+  Reads `ctx.org_id` + `ctx.response_usage()` +
+  `ctx.response_content_json()` via the ADR-0026 accessors.
+- System-prompt extraction handles all three Anthropic shapes:
+  top-level `system` string, top-level `system` list of blocks,
+  legacy `messages[0]` with role="system".
+- Defensive guards: skips silently when `ctx.org_id` is missing
+  or the engine is disabled.
+- Root `pyproject.toml` testpaths gains the new tests dir; uv
+  workspace auto-discovers + installs the package via `uv sync`.
+
+### Checkpoint ε — keyword_block plugin polish (commit `7741c13`)
+
+- Renamed env var `LLMTRACK_KEYWORDS_BLOCK_LIST` →
+  `LLMTRACK_KEYWORD_BLOCK_LIST` (canonical singular; no
+  production consumers to migrate).
+- Changed `DEFAULT_KEYWORDS` from
+  `("forbidden_word", "do_not_send")` → `()`. Empty default
+  means the plugin loads but never blocks unless the operator
+  supplies a non-empty list. The TEST-ONLY framing in the
+  docstring + `pyproject.toml` description was scrubbed; the
+  package now ships in the central server's Docker image
+  alongside `analytics_sink`. `version`: `0.0.1` → `0.1.0`.
+- `plugin.toml`: `capabilities = []` (server-side host ignores
+  capabilities per ADR-0019); `allowed_modes = ["R"]`;
+  `min_content_level = "L3"`; description rewritten.
+- Tests updated for new env-var name + empty-default
+  expectations. 9 tests pass.
+
+### Checkpoint ζ — Dockerfile + fly.toml (commit `854d4ee`)
+
+- Dockerfile: builder stage COPY + `pip install` for both
+  new plugin packages.
+- `.dockerignore`: dropped the keyword_block exclusion;
+  `analytics_sink` was never excluded. `tests/` subtrees of
+  both plugin packages added to the exclusion list.
+- fly.toml `[env]`: `LLMTRACK_KEYWORD_BLOCK_LIST = ""` declared
+  explicitly. `analytics_sink` reads `LLMTRACK_DATABASE_URL`
+  which is already a fly secret — no fly.toml change.
+- Image build verified locally (`docker build -t
+  llm-tracker-server:zeta .`); inside the image, the plugin
+  entry-points discovery returns
+  `['analytics_sink', 'keyword_block']`; `/healthz` returns
+  `{"status":"ok"}` after `docker run`.
+
 ## Decisions
 
 - **ADR number split**: HookContext response accessors → ADR-0026; exchange row
@@ -177,19 +231,99 @@ $ LLMTRACK_TEST_DATABASE_URL=... .venv/bin/python3.12 -m pytest \
 67 passed in 22.19s
 ```
 
+### Checkpoint δ
+
+```
+$ uv sync
+... + llm-tracker-plugin-analytics-sink==0.1.0
+
+$ .venv/bin/python3.12 -m ruff check \
+    packages/llm_tracker_plugin_analytics_sink
+All checks passed!
+
+$ .venv/bin/python3.12 -m pytest \
+    packages/llm_tracker_plugin_analytics_sink/tests -q
+5 passed in 0.28s
+
+$ LLMTRACK_TEST_DATABASE_URL=... .venv/bin/python3.12 -m pytest -q
+329 passed, 4 warnings in 30.06s
+# Was 308 before δ (no DB) / 324 with DB (308 + 16 DB skips lifted);
+# adds 5 new analytics_sink tests.
+```
+
+### Checkpoint ε
+
+```
+$ .venv/bin/python3.12 -m ruff check \
+    packages/llm_tracker_plugin_keyword_block
+All checks passed!
+
+$ .venv/bin/python3.12 -m pytest \
+    packages/llm_tracker_plugin_keyword_block/tests -q
+9 passed in 0.10s
+
+$ LLMTRACK_TEST_DATABASE_URL=... .venv/bin/python3.12 -m pytest -q
+329 passed, 4 warnings in 30.49s
+# No new tests in ε (rename + default-change only); full suite green.
+```
+
+### Checkpoint ζ
+
+```
+$ docker build -t llm-tracker-server:zeta .
+exporting to image ... DONE 4.7s
+naming to docker.io/library/llm-tracker-server:zeta done
+
+$ docker run --rm --entrypoint python llm-tracker-server:zeta \
+    -c "from importlib.metadata import entry_points; \
+    print(sorted(ep.name for ep in \
+    entry_points(group='llm_tracker.plugins')))"
+['analytics_sink', 'keyword_block']
+
+$ docker run -d -p 18081:8080 --name lts-zeta-smoke \
+    llm-tracker-server:zeta
+$ curl -sS http://localhost:18081/healthz
+{"status":"ok","version":"0.0.1"}
+$ docker stop lts-zeta-smoke
+```
+
 ## What's left / known limits
 
-- Checkpoint δ — `analytics_sink` plugin package.
-- Checkpoint ε — `keyword_block` plugin polish (env var rename, default
-  empty, drop "TEST-ONLY" framing).
-- Checkpoint ζ — Dockerfile + fly.toml bundling.
-- Pre-SSE failure-path row write (ADR-0027 axis 2 impl) — deferred to a
-  follow-up checkpoint after ζ ships.
+- **Operator-run smoke** (instructions for the operator, not auto-runnable
+  from this session):
+  1. `fly deploy` to push the new image (release_command runs `alembic
+     upgrade head`, advancing the stamp to `0007_plugin_analytics`).
+  2. Verify both plugins loaded:
+     `curl -H "X-LLM-Tracker-Token: <token>" \
+      https://llm-tracker-server.fly.dev/admin/plugins`
+     — expect `analytics_sink` and `keyword_block` in the list.
+  3. Fire a real request through `claude-manage` (any small prompt).
+  4. Confirm via Supabase MCP that exactly one row landed in
+     `public.plugin_analytics` for the operator's org with non-NULL
+     `model_served`, `input_tokens`, `output_tokens`, `stop_reason`,
+     and a non-empty `response_json`.
+- **ADR-#2 consent + data-handling**: now elevated in priority — the
+  `analytics_sink` plugin stores the *full* request + response payloads.
+  Currently the central server is **operator-only**; any external testing
+  blocks on this ADR.
+- Pre-SSE failure-path row write (ADR-0027 axis 2 impl) — deferred.
 - Tool-use extraction (`tool_call_count > 0` on `exchanges` and
-  `plugin_analytics`) — extractor currently parses text content only;
-  flagged in `extractors/anthropic.py` docstring.
+  `plugin_analytics`) — extractor parses text content only; flagged in
+  `extractors/anthropic.py` docstring.
 
 ## Handoff
 
-Checkpoints β + γ shipped (`61c8aeb`, `49804f5`). Schema is now in
-place for the `analytics_sink` plugin; checkpoint δ is unblocked.
+All six checkpoints landed:
+
+```
+α   f02f516   docs: ADR-0026 HookContext response accessors + ADR-0027 close-out policy
+β   61c8aeb   server: Option B SSE extractor + HookContext response accessors
+γ   49804f5   storage: migration 0007 plugin_analytics table
+δ   b3f9ed2   agent: analytics_sink plugin (on_request_received + on_persisted)
+ε   7741c13   agent: keyword_block plugin package (promoted from test harness)
+ζ   854d4ee   infra: bundle analytics_sink + keyword_block in Docker image
+```
+
+Plus per-checkpoint docs commits (β `6d84b24`, γ `4d4ea9f`, plus this
+final session-end commit). Next session: operator-run smoke on Fly
+(see "What's left" above for the four-step recipe).

@@ -6,8 +6,8 @@
 
 ---
 
-**Last updated**: 2026-05-14 (Claude Code; **Checkpoint γ of the Option B + plugin-ecosystem workstream**. Alembic migration 0007 (`plugin_analytics`) landed (commit `49804f5`). New table: ULID PK, `org_id UUID NOT NULL REFERENCES orgs(id)`, request/response JSON columns, extractor token counts, `stop_reason`, `tool_call_count`. No FK on `exchange_id` (cross-session ordering not enforced). No RLS (internal analytics surface). Indices on `org_id` and `created_at`. Round-tripped via `alembic upgrade head` → `downgrade -1` → `upgrade head`; full server test suite remains 67 passed under the DB fixture. The `analytics_sink` plugin (checkpoint δ) is now unblocked.)
-**Updated by**: Claude Code (Checkpoint γ — migration 0007 plugin_analytics)
+**Last updated**: 2026-05-14 (Claude Code; **Option B + plugin-ecosystem workstream complete — all six checkpoints shipped, awaiting operator-run smoke on Fly**. (α `f02f516` ADR-0026 + ADR-0027 / β `61c8aeb` SSE extractor + HookContext accessors + record_exchange_timing extended / γ `49804f5` migration 0007 plugin_analytics / δ `b3f9ed2` analytics_sink plugin / ε `7741c13` keyword_block polish — env var canonicalised, default empty, TEST-ONLY framing dropped / ζ `854d4ee` Docker + fly.toml bundle both plugins; image build verified locally — entry_points discovery returns both plugins, /healthz returns ok in a docker run). Full repo test suite 329 passed under the DB fixture. ADR-#2 (consent + data-handling) is now urgent — `analytics_sink` stores full request + response payloads.)
+**Updated by**: Claude Code (Session-end — six checkpoints complete)
 
 ## Current phase
 
@@ -64,11 +64,11 @@ CP14 proper).
 ## Recent commits
 
 ```
+854d4ee   infra: bundle analytics_sink + keyword_block in Docker image
+7741c13   agent: keyword_block plugin package (promoted from test harness)
+b3f9ed2   agent: analytics_sink plugin (on_request_received + on_persisted)
+4d4ea9f   docs: STATUS + worklog for Checkpoint γ (migration 0007)
 49804f5   storage: migration 0007 plugin_analytics table
-6d84b24   docs: STATUS + worklog for Checkpoint β (Option B SSE extractor)
-61c8aeb   server: Option B SSE extractor + HookContext response accessors
-f02f516   docs: ADR-0026 HookContext response accessors + ADR-0027 close-out policy
-55cb2e3   docs: STATUS + worklog — Phase 3b CLOSED
 ```
 
 ## Where we paused
@@ -625,23 +625,40 @@ reframes them server-side**:
 
 ## Next single step
 
-**Checkpoint δ — `analytics_sink` plugin package.** New package
-at `packages/llm_tracker_plugin_analytics_sink/` mirroring the
-shape of the existing `llm_tracker_plugin_supabase_sink` /
-`llm_tracker_plugin_keyword_block` packages. The plugin reads
-`ctx.request_text()` + extracts the system prompt on
-`on_request_received` and writes one row to `plugin_analytics`
-on `on_persisted` using its own async engine (separate from the
-forwarder's request-scoped session, same `LLMTRACK_DATABASE_URL`
-secret). Reads `ctx.org_id` + `ctx.response_usage()` +
-`ctx.response_content_json()` per ADR-0026. Tests mock the
-engine and pin three contract surfaces: request stashed on
-received, row written on persisted, missing-parsed-response
-writes nulls without crashing.
+**Operator-run smoke on Fly.io.** All six checkpoints in the
+Option B + plugin-ecosystem workstream are local-verified
+(`docker build` clean, full repo test suite 329 passed under
+the DB fixture, in-image entry_points discovery returns both
+new plugins, `/healthz` ok). The remaining proof-point is a
+real fly deploy + curl + Supabase row check.
 
-After δ: ε (`keyword_block` polish), ζ (Dockerfile + fly.toml
-bundle both plugin packages). Final step is operator-run smoke
-(`fly deploy` + curl + Supabase row check on `plugin_analytics`).
+Operator recipe (manual, four steps):
+
+1. `fly deploy` — release_command runs `alembic upgrade head`,
+   advancing the live Supabase `alembic_version` stamp to
+   `0007_plugin_analytics`.
+2. `curl -H "X-LLM-Tracker-Token: <token>" \
+    https://llm-tracker-server.fly.dev/admin/plugins`
+   Both `analytics_sink` and `keyword_block` should appear.
+3. Fire a real `/v1/messages` request through `claude-manage`
+   (any small prompt against haiku is fastest).
+4. Confirm via Supabase MCP that exactly one row landed in
+   `public.plugin_analytics` for the operator's org with
+   non-NULL `model_served`, `input_tokens`, `output_tokens`,
+   `stop_reason`, and a non-empty `response_json` — the
+   end-to-end proof that Option B's SSE extractor populates
+   the new schema as advertised. Same query also reveals
+   whether `public.exchanges` is now closing out *all*
+   response-side columns on the happy path.
+
+After the smoke, the next blocking item moves to **ADR-#2
+consent + data-handling**. It rose in priority this session:
+`analytics_sink` now stores the full request + response
+payloads, so any external (non-team) testing requires the
+ADR before being safe to enable.
+
+The pre-SSE upstream-failure-path row write (ADR-0027 axis 2
+impl) remains queued as a follow-up checkpoint.
 
 ### Side-quests (do at any time, none blocking)
 
@@ -731,6 +748,7 @@ ready to start.
 - [x] **ADR-0023 — server auth header rename to `X-LLM-Tracker-Token` (2026-05-13, commits af6bd8f + 21e9fa5; CP14 prep, fixes OAuth Claude Code collision)**
 - [x] **Phase 3c CP14 — operator-only end-to-end smoke (2026-05-13, commit 458a4ba; first 200-OK roundtrip with operator-minted demo token; demo-scoped row in `public.exchanges`; PG16+ deploy gap surfaced + fixed in migration 0006; response-side metadata NULL on the success row flagged as separate follow-up track)**
 - [x] **CP14 follow-up Option A — close-out columns populated (`ended_at`/`status_code`/`model_requested`/`latency_ms`) (2026-05-13, commit 237d842; production-verified on row `01KRG14W5VNV78HN3P9PEF2Z9P` after `fly deploy` — same deploy stamped `alembic_version` to `0006_grant_app_role_set`; investigation falsified the prior "INSERT-at-open + UPDATE-at-close" hypothesis — there is no UPDATE path; 4 of 8 response-side NULLs closed; remaining 5 (`model_served`, `input_tokens`, `output_tokens`, `cache_*`, `stop_reason`) need Option B's SSE Extractor)**
+- [x] **Option B + plugin-ecosystem workstream (2026-05-14, commits `f02f516` α / `61c8aeb` β / `49804f5` γ / `b3f9ed2` δ / `7741c13` ε / `854d4ee` ζ); ADR-0026 (HookContext response accessors) + ADR-0027 (exchange row close-out policy) Accepted; `extractors/anthropic.py` populates the five SSE-derived columns end-to-end on the happy path; migration 0007 adds `plugin_analytics`; `analytics_sink` writes one row per exchange; `keyword_block` polished from TEST-ONLY to operator-configurable; Docker image bundles both plugins. Awaiting operator-run fly-deploy smoke for production sign-off; full repo test suite 329 passed under DB fixture.**
 - [ ] **Phase 3a — remaining 3 decision ADRs** (#1 fallback / #2 consent / #4 agent language)
 - [ ] Phase 3b — thin local agent (gated on #1 + #4)
 - [x] **Phase 3c — server build-out (14 of 14 plan-checkpoints done; closed 2026-05-13 with operator smoke validated. Plan at `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0017/0018/0019/0020/0022/0023)**

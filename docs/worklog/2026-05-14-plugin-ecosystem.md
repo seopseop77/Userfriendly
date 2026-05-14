@@ -94,6 +94,17 @@ Other reinterpretations from the task as written:
   malformed JSON, assembled `response_json`, byte-boundary splits,
   empty stream.
 
+### Checkpoint γ — alembic migration 0007 (commit `49804f5`)
+
+- Created `packages/llm_tracker_server/alembic/versions/0007_plugin_analytics.py`
+  — new `plugin_analytics` table (ULID PK, `org_id` FK to
+  `orgs(id)`, request/response JSON columns + extractor token
+  counts + `stop_reason` + `tool_call_count`). No FK on
+  `exchange_id` (ordering not enforced); no RLS (internal
+  analytics, not user-data scoped); indices on `org_id` and
+  `created_at`. Idempotent up/down: round-tripped via
+  `alembic downgrade -1` + `alembic upgrade head`.
+
 ## Decisions
 
 - **ADR number split**: HookContext response accessors → ADR-0026; exchange row
@@ -139,23 +150,46 @@ $ .venv/bin/python3.12 -m pytest -q   # full repo
 # 6 new SSE-extractor tests; was 302 before this checkpoint.
 ```
 
+### Checkpoint γ
+
+```
+$ LLMTRACK_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker_test \
+    .venv/bin/python3.12 -m alembic upgrade head
+INFO  Running upgrade  -> 0001_initial_schema
+INFO  Running upgrade 0001_initial_schema -> 0002_audit_log_triggers
+INFO  Running upgrade 0002_audit_log_triggers -> 0003_orgs_and_tokens
+INFO  Running upgrade 0003_orgs_and_tokens -> 0004_org_id_on_user_data
+INFO  Running upgrade 0004_org_id_on_user_data -> 0005_rls_policies
+INFO  Running upgrade 0005_rls_policies -> 0006_grant_app_role_set
+INFO  Running upgrade 0006_grant_app_role_set -> 0007_plugin_analytics
+
+$ alembic current
+0007_plugin_analytics (head)
+
+$ alembic downgrade -1
+INFO  Running downgrade 0007_plugin_analytics -> 0006_grant_app_role_set
+
+$ alembic upgrade head
+INFO  Running upgrade 0006_grant_app_role_set -> 0007_plugin_analytics
+
+$ LLMTRACK_TEST_DATABASE_URL=... .venv/bin/python3.12 -m pytest \
+    packages/llm_tracker_server/tests -q
+67 passed in 22.19s
+```
+
 ## What's left / known limits
 
-- Checkpoint γ — migration 0007 `plugin_analytics` table.
 - Checkpoint δ — `analytics_sink` plugin package.
 - Checkpoint ε — `keyword_block` plugin polish (env var rename, default
   empty, drop "TEST-ONLY" framing).
 - Checkpoint ζ — Dockerfile + fly.toml bundling.
 - Pre-SSE failure-path row write (ADR-0027 axis 2 impl) — deferred to a
   follow-up checkpoint after ζ ships.
-- Tool-use extraction (`tool_call_count > 0` on `exchanges`) — extractor
-  currently parses text content only; flagged in `extractors/anthropic.py`
-  docstring.
+- Tool-use extraction (`tool_call_count > 0` on `exchanges` and
+  `plugin_analytics`) — extractor currently parses text content only;
+  flagged in `extractors/anthropic.py` docstring.
 
 ## Handoff
 
-Checkpoint β shipped (`61c8aeb`). The extractor wires through the
-forwarder end-to-end and is exercised by `test_two_org_e2e_isolation`
-under the DB fixture. The HookContext accessors are ready for plugin
-consumers; the first one (`analytics_sink`, checkpoint δ) is unblocked
-once γ lands the `plugin_analytics` table it writes to.
+Checkpoints β + γ shipped (`61c8aeb`, `49804f5`). Schema is now in
+place for the `analytics_sink` plugin; checkpoint δ is unblocked.

@@ -6,8 +6,8 @@
 
 ---
 
-**Last updated**: 2026-05-14 (Claude Code; **Checkpoint β of the Option B + plugin-ecosystem workstream**. SSE extractor + HookContext response accessors landed (commit `61c8aeb`). New module `llm_tracker_server.extractors.anthropic` parses the upstream stream once per request and produces `ResponseUsage` + assembled `response_json`; SDK `HookContext` gained `org_id` + `_parsed_response` fields and the two read-only accessors per ADR-0026; `record_exchange_timing` extended with six new keyword-only response-side params, `record_exchange_blocked` extended with three (ADR-0027 axis 3); forwarder threads `ctx.org_id` from `request.state`. 6 new SSE tests + DB-fixture happy path exercised through `test_two_org_e2e_isolation`. Full suite 308 passed / 16 skipped (was 302). Pre-SSE upstream-failure-path row write (ADR-0027 axis 2 impl) intentionally deferred to a follow-up checkpoint after ζ.)
-**Updated by**: Claude Code (Checkpoint β — Option B SSE extractor)
+**Last updated**: 2026-05-14 (Claude Code; **Checkpoint γ of the Option B + plugin-ecosystem workstream**. Alembic migration 0007 (`plugin_analytics`) landed (commit `49804f5`). New table: ULID PK, `org_id UUID NOT NULL REFERENCES orgs(id)`, request/response JSON columns, extractor token counts, `stop_reason`, `tool_call_count`. No FK on `exchange_id` (cross-session ordering not enforced). No RLS (internal analytics surface). Indices on `org_id` and `created_at`. Round-tripped via `alembic upgrade head` → `downgrade -1` → `upgrade head`; full server test suite remains 67 passed under the DB fixture. The `analytics_sink` plugin (checkpoint δ) is now unblocked.)
+**Updated by**: Claude Code (Checkpoint γ — migration 0007 plugin_analytics)
 
 ## Current phase
 
@@ -64,11 +64,11 @@ CP14 proper).
 ## Recent commits
 
 ```
+49804f5   storage: migration 0007 plugin_analytics table
+6d84b24   docs: STATUS + worklog for Checkpoint β (Option B SSE extractor)
 61c8aeb   server: Option B SSE extractor + HookContext response accessors
 f02f516   docs: ADR-0026 HookContext response accessors + ADR-0027 close-out policy
 55cb2e3   docs: STATUS + worklog — Phase 3b CLOSED
-fd6e25d   docs: STATUS + worklog for multi-instance agent fix
-ac4370c   agent: multi-instance via ephemeral port fallback
 ```
 
 ## Where we paused
@@ -625,25 +625,23 @@ reframes them server-side**:
 
 ## Next single step
 
-**Checkpoint γ — alembic migration `0007_plugin_analytics`.** A
-new table `plugin_analytics` (ULID PK, `org_id UUID NOT NULL
-REFERENCES orgs(id)`, request/response JSON columns + token
-counts + `stop_reason` + `tool_call_count`) is the write target
-for the upcoming `analytics_sink` plugin (checkpoint δ). No FK
-on `exchange_id` — the plugin writes after the forwarder's
-`record_exchange_timing`, and we do not enforce ordering. No
-RLS on this table (internal analytics; not user-data scoped).
-Indices on `org_id` and `created_at`.
+**Checkpoint δ — `analytics_sink` plugin package.** New package
+at `packages/llm_tracker_plugin_analytics_sink/` mirroring the
+shape of the existing `llm_tracker_plugin_supabase_sink` /
+`llm_tracker_plugin_keyword_block` packages. The plugin reads
+`ctx.request_text()` + extracts the system prompt on
+`on_request_received` and writes one row to `plugin_analytics`
+on `on_persisted` using its own async engine (separate from the
+forwarder's request-scoped session, same `LLMTRACK_DATABASE_URL`
+secret). Reads `ctx.org_id` + `ctx.response_usage()` +
+`ctx.response_content_json()` per ADR-0026. Tests mock the
+engine and pin three contract surfaces: request stashed on
+received, row written on persisted, missing-parsed-response
+writes nulls without crashing.
 
-After γ: δ (`analytics_sink` plugin package consuming the new
-HookContext accessors), ε (`keyword_block` polish — env var
-canonicalised, default empty, drop "TEST-ONLY" framing now that
-it ships in the server image), ζ (Dockerfile + fly.toml bundle
-both plugin packages in the runtime image). Final step is an
-operator-run smoke (`fly deploy` + curl + Supabase row check).
-
-The pre-SSE upstream-failure-path row write (ADR-0027 axis 2 impl)
-remains deferred to a follow-up checkpoint after ζ.
+After δ: ε (`keyword_block` polish), ζ (Dockerfile + fly.toml
+bundle both plugin packages). Final step is operator-run smoke
+(`fly deploy` + curl + Supabase row check on `plugin_analytics`).
 
 ### Side-quests (do at any time, none blocking)
 

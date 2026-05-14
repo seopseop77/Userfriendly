@@ -10,6 +10,7 @@ resolution-markers = [
 members = [
     "llm-tracker",
     "llm-tracker-agent",
+    "llm-tracker-plugin-analytics-sink",
     "llm-tracker-plugin-hello-world",
     "llm-tracker-plugin-keyword-block",
     "llm-tracker-plugin-supabase-sink",
@@ -511,6 +512,27 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
+]
+
+[[package]]
+name = "llm-tracker-plugin-analytics-sink"
+version = "0.1.0"
+source = { editable = "packages/llm_tracker_plugin_analytics_sink" }
+dependencies = [
+    { name = "asyncpg" },
+    { name = "llm-tracker-sdk" },
+    { name = "python-ulid" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "structlog" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "asyncpg", specifier = ">=0.29" },
+    { name = "llm-tracker-sdk", editable = "packages/llm_tracker_sdk" },
+    { name = "python-ulid", specifier = ">=2" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
+    { name = "structlog" },
 ]
 
 [[package]]

@@ -1,0 +1,7 @@
+name = "analytics_sink"
+version = "0.1.0"
+description = "Internal analytics sink. Persists one row per exchange to the central server's `plugin_analytics` table via its own async engine, scoped by `ctx.org_id`. Reads `ctx.response_usage()` + `ctx.response_content_json()` per ADR-0026."
+hooks = ["on_request_received", "on_persisted"]
+capabilities = []
+allowed_modes = ["R"]
+min_content_level = "L3"

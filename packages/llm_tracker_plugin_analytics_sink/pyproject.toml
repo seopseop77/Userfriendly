@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llm-tracker-plugin-analytics-sink"
+version = "0.1.0"
+description = "Internal analytics sink. Persists one row per exchange (request + assembled response + token counts) to the central server's `plugin_analytics` table via its own async engine, scoped by `ctx.org_id`. Consumes the ADR-0026 HookContext response accessors."
+requires-python = ">=3.11"
+authors = [{ name = "Userfriendly Team" }]
+license = { text = "Proprietary (internal research use)" }
+
+dependencies = [
+    "llm-tracker-sdk",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "python-ulid>=2",
+    "structlog",
+]
+
+[project.entry-points."llm_tracker.plugins"]
+analytics_sink = "llm_tracker_plugin_analytics_sink.plugin:AnalyticsSink"
+
+[tool.uv.sources]
+llm-tracker-sdk = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/llm_tracker_plugin_analytics_sink"]

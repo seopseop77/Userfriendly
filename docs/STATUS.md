@@ -6,8 +6,8 @@
 
 ---
 
-**Last updated**: 2026-05-16 (Claude Code; **ADR-0028 follow-up — extractor `response_json` now faithfully reassembles every block the model emits**. Triggered by a live `plugin_analytics` row where `stop_reason: "tool_use"` + `output_tokens: 112` landed with `content: []` because the extractor's text-only narrow path dropped the tool_use block. ADR-0028 sets "faithful reassembly" as the extractor contract; `content_block_start` / `content_block_delta` (dispatched by `delta.type` with an unknown-delta fallback) / `content_block_stop` (parses `input_json_delta` buffer into `block["input"]`, raw-string fallback on parse failure) all handled. 5 new tests pin tool_use / mixed / thinking / unknown-delta / malformed-input paths. Full repo 334 passed under the DB fixture (was 329; +5 new tests). Single commit `8138d91`. Still awaiting operator-run smoke on Fly — same `fly deploy` covers both the 2026-05-14 workstream and this CP.)
-**Updated by**: Claude Code (ADR-0028 follow-up)
+**Last updated**: 2026-05-16 (Claude Code; **operator smoke on Fly — PASS. Closes 2026-05-14 Option B + plugin-ecosystem AND 2026-05-16 ADR-0028 faithful reassembly in one shot.** Post-deploy `plugin_analytics` row carried `response_json` of the exact ADR-0028 shape — `content` with both a thinking block (`signature_delta` preserved) and a tool_use block whose `input` was a parsed dict (`{"command": "date ...", "description": "..."}`), under `stop_reason: "tool_use"` with all five SSE-derived columns populated (`model_served=claude-opus-4-7`, `input_tokens=6`, `output_tokens=152`, `cache_read_input_tokens=75512`, `cache_creation_input_tokens=133`). Independently confirms Option B and ADR-0028 in the same row. `keyword_block` also exercised: `fly.toml` `LLMTRACK_KEYWORD_BLOCK_LIST = "no_response"` (was the empty default) — kept as the live operator config post-smoke. Smoke gate closed; next blocking item is **ADR-#2 consent + data-handling**.)
+**Updated by**: Claude Code (operator smoke closure)
 
 ## Current phase
 
@@ -50,10 +50,11 @@
 
 ## Active worklog
 
-`docs/worklog/2026-05-16-extractor-faithful-response.md` (ADR-0028
-follow-up — extractor faithful reassembly; single code commit
-`8138d91` atop the 2026-05-14 workstream). Prior session worklogs
-preserved:
+`docs/worklog/2026-05-16-extractor-faithful-response.md` — now closes
+with §"Closure — production smoke validated (2026-05-16)" carrying
+the post-deploy `plugin_analytics` row verbatim. Single code commit
+`8138d91` (ADR-0028) on top of the 2026-05-14 workstream image is
+production-validated. Prior session worklogs preserved:
 `docs/worklog/2026-05-14-plugin-ecosystem.md` (Option B SSE
 extractor + analytics_sink + keyword_block multi-checkpoint
 session; ADR-0026 + ADR-0027 land in checkpoint α),
@@ -67,53 +68,74 @@ CP14 proper).
 ## Recent commits
 
 ```
+8cd9566   infra: enable keyword_block on Fly (live config)
+c95e60c   docs: STATUS + worklog — ADR-0028 extractor faithful reassembly
 8138d91   server: faithful Anthropic response reassembly (ADR-0028)
 a3c8df4   docs: STATUS + worklog — Option B + plugin-ecosystem session-end
 854d4ee   infra: bundle analytics_sink + keyword_block in Docker image
-7741c13   agent: keyword_block plugin package (promoted from test harness)
-b3f9ed2   agent: analytics_sink plugin (on_request_received + on_persisted)
 ```
 
 ## Where we paused
 
-**ADR-0028 follow-up landed (2026-05-16, commit `8138d91`).** The
-2026-05-14 Option B + plugin-ecosystem workstream shipped the SSE
-extractor with text-only delta handling — a tool-use stop_reason
-response surfaced this as `content: []` on `plugin_analytics`. User
-direction: `response_json` is the canonical store; analysis is
-downstream. ADR-0028 codifies "faithful reassembly" as the extractor
-contract.
+**Operator smoke on Fly — PASS (2026-05-16).** One `fly deploy`
+exercises the same image for the 2026-05-14 Option B + plugin-ecosystem
+workstream *and* the 2026-05-16 ADR-0028 follow-up; the post-deploy
+`plugin_analytics` row the operator showed back closes both in one
+shot.
 
-Code change scope: `extractors/anthropic.py` gained
-`content_block_start` (seed block from the event payload as-is),
-`content_block_delta` type-dispatched on `delta.type`
-(`text_delta` / `input_json_delta` / `thinking_delta` /
-`signature_delta` + unknown-delta capture under `_extra_deltas`),
-and `content_block_stop` (parse `input_json_delta` buffer into
-`block["input"]`, raw-string fallback under `_input_json_raw` on
-parse failure). 5 new tests in `test_sse_extractor.py` pin the
-tool_use / mixed / thinking / unknown-delta / malformed-input
-paths.
+The verbatim `response_json` shape from production:
 
-Full repo test suite **334 passed** under the DB fixture (was 329;
-+5 new SSE-extractor tests). Ruff format + check clean.
+```json
+{
+  "model": "claude-opus-4-7",
+  "content": [
+    {"type": "thinking", "thinking": "", "signature": "EoEC..."},
+    {"type": "tool_use",
+     "id": "toolu_01HgwgDtcBKBChGSpUBQeLoj",
+     "name": "Bash",
+     "input": {"command": "date \"+%Y-%m-%d %H:%M:%S %Z\"",
+               "description": "Print current date and time"}}
+  ],
+  "stop_reason": "tool_use",
+  "usage": {"input_tokens": 6, "output_tokens": 152,
+            "cache_read_input_tokens": 75512,
+            "cache_creation_input_tokens": 133}
+}
+```
 
-Auxiliary decisions during this CP:
+What this row independently proves:
 
-- **`exchanges.tool_call_count` stays at 0 placeholder.** User
-  pushed back on caching a derived count alongside the canonical
-  body; deriving it from `response_json.content` is one
-  `jsonb_path_query` per analysis query. Column's fate (deprecate /
-  drop / leave) queued as a separate decision.
-- **One new ADR, not an ADR-0026 amendment.** ADR-0026's public
-  surface (`response_content_json()`) is unchanged; ADR-0028
-  strengthens the contract behind that surface. Sibling Accepted
-  ADRs keep the supersede chain clean.
+- **ADR-0028 faithful reassembly is live.** `content` carries both
+  the thinking block (with `signature_delta` preserved despite an
+  empty `thinking_delta` stream) and the tool_use block, whose
+  `input` is a *parsed dict* — `_finalize_input_json` parsed the
+  `input_json_delta` buffer cleanly, no `_input_json_raw` fallback.
+  Pre-`8138d91` this row would have been `content: []`.
+- **Option B (2026-05-14) is live on the same image.** All five
+  SSE-derived columns are populated: `model_served`, `input_tokens`,
+  `output_tokens`, `cache_read_input_tokens`,
+  `cache_creation_input_tokens`, and `stop_reason`. The 2026-05-14
+  worklog's four-step recipe (deploy → `/admin/plugins` → real
+  request → Supabase MCP check) is end-to-end satisfied.
 
-**Backfill posture**: historical `plugin_analytics` rows with
-`content: []` under a tool_use `stop_reason` are unrecoverable —
-upstream bytes were not retained. Operator queries on past rows
-must filter `WHERE created_at >= <deploy_time_of_8138d91>`.
+`keyword_block` also exercised in production: operator set
+`LLMTRACK_KEYWORD_BLOCK_LIST = "no_response"` in `fly.toml` (was the
+empty default), redeployed, and confirmed the operator-configurable
+block path. Kept as the live operator config post-smoke — see the
+`infra:` commit in "Recent commits" below.
+
+Both workstreams are **production-validated as of this CP**. Smoke
+gate closed.
+
+Auxiliary CP carry-overs (unchanged from 2026-05-16 worklog):
+
+- **`exchanges.tool_call_count` stays at 0 placeholder.** Derive
+  from `response_json.content` via `jsonb_path_query` at analysis
+  time; column's fate (deprecate / drop / leave) queued.
+- **Backfill posture**: pre-`8138d91` `plugin_analytics` rows
+  under a tool_use `stop_reason` carry `content: []` irrecoverably.
+  Operator queries on historical rows must filter
+  `WHERE created_at >= <deploy_time_of_8138d91>`.
 
 ---
 
@@ -671,40 +693,37 @@ reframes them server-side**:
 
 ## Next single step
 
-**Operator-run smoke on Fly.io.** All six checkpoints in the
-Option B + plugin-ecosystem workstream are local-verified
-(`docker build` clean, full repo test suite 329 passed under
-the DB fixture, in-image entry_points discovery returns both
-new plugins, `/healthz` ok). The remaining proof-point is a
-real fly deploy + curl + Supabase row check.
+**Draft ADR-#2 — consent + data-handling.** Smoke is closed; the
+production `plugin_analytics` row demonstrably stores the full
+parsed request *and* response (including tool_use `input` dicts
+like `{"command": "date ...", ...}`), so any external (non-team)
+testing of the central server requires this ADR before being safe
+to enable. Operator-only / team use stays unblocked.
 
-Operator recipe (manual, four steps):
+ADR-#2 is a strategy/decision item, not a Claude Code
+implementation task (CLAUDE.md §4). Next session's opening move is
+either:
 
-1. `fly deploy` — release_command runs `alembic upgrade head`,
-   advancing the live Supabase `alembic_version` stamp to
-   `0007_plugin_analytics`.
-2. `curl -H "X-LLM-Tracker-Token: <token>" \
-    https://llm-tracker-server.fly.dev/admin/plugins`
-   Both `analytics_sink` and `keyword_block` should appear.
-3. Fire a real `/v1/messages` request through `claude-manage`
-   (any small prompt against haiku is fastest).
-4. Confirm via Supabase MCP that exactly one row landed in
-   `public.plugin_analytics` for the operator's org with
-   non-NULL `model_served`, `input_tokens`, `output_tokens`,
-   `stop_reason`, and a non-empty `response_json` — the
-   end-to-end proof that Option B's SSE extractor populates
-   the new schema as advertised. Same query also reveals
-   whether `public.exchanges` is now closing out *all*
-   response-side columns on the happy path.
+- **(a)** Open the ADR draft in conversation with the user — surface
+  options (consent surface: per-task UX vs blanket env knob;
+  retention scope; redaction defaults; out-of-band deletion API);
+  user picks, Claude Code drafts; or
+- **(b)** Pick up the queued follow-ups below first and defer ADR-#2
+  to a later session.
 
-After the smoke, the next blocking item moves to **ADR-#2
-consent + data-handling**. It rose in priority this session:
-`analytics_sink` now stores the full request + response
-payloads, so any external (non-team) testing requires the
-ADR before being safe to enable.
+Queued follow-ups (none gating ADR-#2; safe to interleave):
 
-The pre-SSE upstream-failure-path row write (ADR-0027 axis 2
-impl) remains queued as a follow-up checkpoint.
+- **Pre-SSE upstream-failure-path row write** (ADR-0027 axis 2 impl).
+  Today an upstream failure before the first SSE event yields no
+  `public.exchanges` row at all; the open-INSERT happens after the
+  bytes start flowing. ADR-0027 axis 2 names the desired behavior.
+- **`exchanges.tool_call_count` fate.** Still at the `0` placeholder
+  — derive via `jsonb_path_query` on `response_json.content`, or
+  deprecate / drop the column. Separate decision.
+- **`docs/deploy.md` paragraph on PG16+ `set_option` quirk.** Sits
+  naturally next to the existing pgbouncer/asyncpg note from
+  CP13-b. Any future PG16+ managed deploy (RDS, Cloud SQL, Neon)
+  will hit the same trap.
 
 ### Side-quests (do at any time, none blocking)
 
@@ -794,8 +813,8 @@ ready to start.
 - [x] **ADR-0023 — server auth header rename to `X-LLM-Tracker-Token` (2026-05-13, commits af6bd8f + 21e9fa5; CP14 prep, fixes OAuth Claude Code collision)**
 - [x] **Phase 3c CP14 — operator-only end-to-end smoke (2026-05-13, commit 458a4ba; first 200-OK roundtrip with operator-minted demo token; demo-scoped row in `public.exchanges`; PG16+ deploy gap surfaced + fixed in migration 0006; response-side metadata NULL on the success row flagged as separate follow-up track)**
 - [x] **CP14 follow-up Option A — close-out columns populated (`ended_at`/`status_code`/`model_requested`/`latency_ms`) (2026-05-13, commit 237d842; production-verified on row `01KRG14W5VNV78HN3P9PEF2Z9P` after `fly deploy` — same deploy stamped `alembic_version` to `0006_grant_app_role_set`; investigation falsified the prior "INSERT-at-open + UPDATE-at-close" hypothesis — there is no UPDATE path; 4 of 8 response-side NULLs closed; remaining 5 (`model_served`, `input_tokens`, `output_tokens`, `cache_*`, `stop_reason`) need Option B's SSE Extractor)**
-- [x] **Option B + plugin-ecosystem workstream (2026-05-14, commits `f02f516` α / `61c8aeb` β / `49804f5` γ / `b3f9ed2` δ / `7741c13` ε / `854d4ee` ζ); ADR-0026 (HookContext response accessors) + ADR-0027 (exchange row close-out policy) Accepted; `extractors/anthropic.py` populates the five SSE-derived columns end-to-end on the happy path; migration 0007 adds `plugin_analytics`; `analytics_sink` writes one row per exchange; `keyword_block` polished from TEST-ONLY to operator-configurable; Docker image bundles both plugins. Awaiting operator-run fly-deploy smoke for production sign-off; full repo test suite 329 passed under DB fixture.**
-- [x] **ADR-0028 follow-up — extractor faithful reassembly (2026-05-16, commit `8138d91`); `response_json` now captures tool_use, thinking, signature, and unknown future block types instead of text-only; surfaced by a live `plugin_analytics` row whose `content: []` had silently dropped a 112-token tool_use payload. Full repo test suite 334 passed under the DB fixture (+5 new tests). Same Fly-deploy smoke window as 2026-05-14.**
+- [x] **Option B + plugin-ecosystem workstream (2026-05-14, commits `f02f516` α / `61c8aeb` β / `49804f5` γ / `b3f9ed2` δ / `7741c13` ε / `854d4ee` ζ); ADR-0026 (HookContext response accessors) + ADR-0027 (exchange row close-out policy) Accepted; `extractors/anthropic.py` populates the five SSE-derived columns end-to-end on the happy path; migration 0007 adds `plugin_analytics`; `analytics_sink` writes one row per exchange; `keyword_block` polished from TEST-ONLY to operator-configurable; Docker image bundles both plugins. **Production-validated 2026-05-16 by operator smoke** (post-deploy `plugin_analytics` row carried all five columns populated with `usage.input_tokens=6 / output_tokens=152 / cache_read=75512 / cache_creation=133` under `stop_reason=tool_use`).**
+- [x] **ADR-0028 follow-up — extractor faithful reassembly (2026-05-16, commit `8138d91`); `response_json` now captures tool_use, thinking, signature, and unknown future block types instead of text-only; surfaced by a live `plugin_analytics` row whose `content: []` had silently dropped a 112-token tool_use payload. Full repo test suite 334 passed under the DB fixture (+5 new tests). **Production-validated 2026-05-16 in the same operator-smoke window** — verbatim row carried both a thinking block (signature preserved) and a tool_use block with `input` as a parsed dict (no `_input_json_raw` fallback). `keyword_block` also exercised live via `LLMTRACK_KEYWORD_BLOCK_LIST = "no_response"` in `fly.toml`.**
 - [ ] **Phase 3a — remaining 3 decision ADRs** (#1 fallback / #2 consent / #4 agent language)
 - [ ] Phase 3b — thin local agent (gated on #1 + #4)
 - [x] **Phase 3c — server build-out (14 of 14 plan-checkpoints done; closed 2026-05-13 with operator smoke validated. Plan at `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0017/0018/0019/0020/0022/0023)**

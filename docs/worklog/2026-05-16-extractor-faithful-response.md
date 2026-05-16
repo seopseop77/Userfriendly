@@ -150,19 +150,88 @@ $ LLMTRACK_TEST_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tr
 - **Pre-SSE upstream failure path row write** (ADR-0027 axis 2 impl)
   remains queued.
 
+## Closure — production smoke validated (2026-05-16)
+
+Operator ran `fly deploy` (advancing the image past `c95e60c`),
+re-exercised `claude-manage` against the live server, and confirmed
+Supabase rows again. A representative post-deploy `plugin_analytics`
+row (shown verbatim by the operator) carried `response_json` of the
+shape:
+
+```json
+{
+  "model": "claude-opus-4-7",
+  "content": [
+    {"type": "thinking", "thinking": "", "signature": "EoEC..."},
+    {"type": "tool_use",
+     "id": "toolu_01HgwgDtcBKBChGSpUBQeLoj",
+     "name": "Bash",
+     "input": {"command": "date \"+%Y-%m-%d %H:%M:%S %Z\"",
+               "description": "Print current date and time"}}
+  ],
+  "stop_reason": "tool_use",
+  "usage": {"input_tokens": 6, "output_tokens": 152,
+            "cache_read_input_tokens": 75512,
+            "cache_creation_input_tokens": 133}
+}
+```
+
+This is the exact ADR-0028 success-shape the previous Handoff named.
+Two independent things proved in one row:
+
+- **ADR-0028 faithful reassembly is live.** `content` carries the
+  thinking block (signature preserved via `signature_delta` even with
+  empty `thinking_delta` stream) and the tool_use block with `input`
+  as a *parsed dict* — `_finalize_input_json` ran the
+  `input_json_delta` buffer through `json.loads` cleanly, no
+  `_input_json_raw` fallback. Pre-ADR-0028 this row would have had
+  `content: []`.
+- **Option B (2026-05-14) is live on the same image.** All five
+  SSE-derived columns the workstream targeted are populated:
+  `model_served=claude-opus-4-7`, `input_tokens=6`, `output_tokens=152`,
+  `cache_read_input_tokens=75512`, `cache_creation_input_tokens=133`,
+  `stop_reason=tool_use`. The 2026-05-14 worklog's four-step recipe
+  (deploy → `/admin/plugins` → real request → Supabase MCP check) is
+  now satisfied end-to-end.
+
+`keyword_block` also exercised in production: operator set
+`LLMTRACK_KEYWORD_BLOCK_LIST = "no_response"` in `fly.toml` (was the
+empty default), redeployed, and confirmed the plugin's
+operator-configurable block path works. The setting is kept post-smoke
+as the active live configuration — commit `8cd9566`.
+
+Both 2026-05-14 and 2026-05-16 workstreams are **production-validated
+as of this CP**.
+
 ## Handoff
 
-Single follow-up CP landed atop the Option B + plugin-ecosystem
-workstream. Two commits this session:
+CP commits, in order:
 
 ```
 8138d91   server: faithful Anthropic response reassembly (ADR-0028)
-<this commit>   docs: STATUS + worklog — extractor faithful reassembly
+c95e60c   docs: STATUS + worklog — ADR-0028 extractor faithful reassembly
+8cd9566   infra: enable keyword_block on Fly (live config)
+<this commit>   docs: STATUS + worklog — operator smoke closure
 ```
 
-Next single step: **operator-run smoke on Fly.io** (carry-over from
-2026-05-14). `fly deploy` advances the image to include `8138d91`; the
-operator's `claude-manage` round-trip then exercises the new path. If a
-post-deploy `plugin_analytics` row for a tool_use response shows a
-non-empty `content` with `{"type":"tool_use","id":...,"name":...,"input":{...}}`,
-this CP is production-validated.
+Smoke gate closed. Next blocking item moves to **ADR-#2 consent +
+data-handling** — `analytics_sink` now stores full request + response
+payloads (now demonstrably including tool_use `input` dicts), so any
+external (non-team) testing requires this ADR before being safe to
+enable. Operator-only use stays unblocked.
+
+Queued follow-ups (none gating ADR-#2):
+
+- **Pre-SSE upstream-failure-path row write** (ADR-0027 axis 2 impl).
+  Today an upstream failure before the first SSE event yields no
+  `public.exchanges` row at all; the open-INSERT happens after the
+  bytes start flowing.
+- **`exchanges.tool_call_count` fate.** Still at the `0` placeholder;
+  derive via `jsonb_path_query` on `response_json.content` or
+  deprecate / drop the column. Separate decision.
+- **Response-side scrubbing.** Compatible with faithful reassembly
+  (`extractor → scrubber → storage`); lands behind ADR-#2.
+- **Backfill posture (unchanged).** Pre-`8138d91` `plugin_analytics`
+  rows under a tool_use `stop_reason` carry `content: []`
+  irrecoverably. Operator queries on historical rows must filter on
+  `created_at >= <deploy_time_of_8138d91>`.

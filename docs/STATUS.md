@@ -6,8 +6,8 @@
 
 ---
 
-**Last updated**: 2026-05-17 (Claude Code; **ADR-0029 consent + data-handling — Accepted; HookContext-level scrubber landed.** Six-axis policy: full L3 storage, docs-only disclosure, 6-month retention, operator-handled deletion, `sk-`/`lts_`/`Bearer <value>`/email scrubbing at the SDK accessor surface (`request_text` + `response_content_json` pipe through `llm_tracker_sdk.scrubbers.scrub`; raw `_raw_request_body` + `_parsed_response` left untouched so storage stays canonical per ADR-0028). New module `packages/llm_tracker_sdk/src/llm_tracker_sdk/scrubbers.py` + 16 scrubber unit tests + 4 accessor-level wiring tests. `docs/deploy.md` gains a "Data collection & privacy" section; `docs/plugins.md` gains §3.2 documenting the storage-vs-accessor asymmetry. Full repo test suite 354 passed under DB fixture (+20 new), 338 passed no-DB. External (non-team) testing of the central server is no longer blocked on consent + data-handling policy — operator deploying the new image is the operational next step before external traffic.)
-**Updated by**: Claude Code (ADR-0029 + accessor-level scrubber)
+**Last updated**: 2026-05-17 (Claude Code; **two-task housekeeping pass — archive + sidecar removal.** Task 1 (commit `8ef166d`): moved 7 superseded ADRs into `docs/decisions/archive/` and updated `docs/decisions/README.md` with the historical-only notice. Task 2 (commit `3d76d1f`): deleted `packages/llm_tracker/` (the original local sidecar, superseded by `llm_tracker_server` + `llm_tracker_agent` per ADR-0017) and `packages/llm_tracker_plugin_supabase_sink/` (closed workstream from 2026-05-08). Rescued 5 SDK-only test files into a new `packages/llm_tracker_sdk/tests/` (test_egress_protocol, test_harness, test_hook_context, test_manifest, test_scrubbers — these test currently-shipped SDK code including the ADR-0029 scrubber + accessor-wiring tests). Local branch `archive/local-sidecar` preserves the full pre-deletion state (NOT pushed). `uv sync` dropped `llm-tracker`, `llm-tracker-plugin-supabase-sink`, `respx`. Full repo test suite 143 passed / 16 skipped no-DB (down from 338; the 195-test drop is sidecar + supabase_sink tests dying with their packages, partially offset by the 55 rescued SDK tests).)
+**Updated by**: Claude Code (archive + sidecar removal housekeeping)
 
 ## Current phase
 
@@ -51,12 +51,15 @@
 
 ## Active worklog
 
+`docs/worklog/2026-05-17-archive-sidecar-housekeeping.md` — two-task
+housekeeping pass (ADR archive + sidecar removal). Prior session
+worklog from earlier today preserved:
 `docs/worklog/2026-05-17-adr-0029-consent.md` — ADR-0029 (Accepted)
 records the six-axis policy; code commit `a4c08b3` lands the SDK
 scrubber + HookContext wiring + deploy/plugins disclosure paragraphs.
 Operator-deploy of the new image is the operational next step (no
 plugin-side edits needed — `analytics_sink` already imports the SDK
-that picks up the scrubber). Prior session worklogs preserved:
+that picks up the scrubber). Earlier worklogs preserved:
 `docs/worklog/2026-05-16-extractor-faithful-response.md` (ADR-0028 +
 operator smoke closure),
 `docs/worklog/2026-05-14-plugin-ecosystem.md` (Option B SSE
@@ -72,14 +75,83 @@ CP14 proper).
 ## Recent commits
 
 ```
+3d76d1f   chore: remove llm_tracker local sidecar (archived to archive/local-sidecar branch)
+8ef166d   docs: archive superseded ADRs
+25a2aac   docs: STATUS + worklog — ADR-0029 consent + data-handling
 a4c08b3   sdk: HookContext scrubbing + ADR-0029 (consent)
 140b5d4   chore: add pptx file to .gitignore
-3162864   docs: STATUS + worklog — operator smoke closure
-8cd9566   infra: enable keyword_block on Fly (live config)
-c95e60c   docs: STATUS + worklog — ADR-0028 extractor faithful reassembly
 ```
 
 ## Where we paused
+
+**Housekeeping pass — archive + sidecar removal (2026-05-17, commits
+`8ef166d` + `3d76d1f`).** Two user-supplied tasks executed in
+sequence:
+
+- Task 1 — moved 7 superseded ADRs into `docs/decisions/archive/`
+  (0001, 0004, 0006, 0007, 0008, 0016, 0021). `docs/decisions/README.md`
+  now documents the archive directory as historical-only. The 22
+  remaining top-level ADRs are the active set.
+- Task 2 — deleted `packages/llm_tracker/` (the original local
+  sidecar; superseded by `llm_tracker_server` + `llm_tracker_agent`
+  per ADR-0017) and `packages/llm_tracker_plugin_supabase_sink/` (the
+  closed Phase 2 reference plugin from 2026-05-08). Local branch
+  `archive/local-sidecar` was created at the pre-deletion HEAD to
+  preserve the full history; it is **not pushed** (per CLAUDE.md §10
+  and the user's closing instruction).
+
+Two correctness corrections came up during Task 2 and were resolved
+via `AskUserQuestion`:
+
+1. `supabase_sink/tests/test_e2e.py` imported from the sidecar's
+   internals (`llm_tracker.plugin_host.host`,
+   `llm_tracker.egress_guard.guard`,
+   `llm_tracker.storage.models`). User chose to archive the whole
+   supabase_sink package alongside the sidecar — its workstream is
+   already closed, its runtime depends only on `llm_tracker_sdk +
+   structlog`, and only the e2e test tied it to the sidecar.
+2. Five test files under `packages/llm_tracker/tests/` were
+   misplaced SDK tests, importing only from `llm_tracker_sdk` (the
+   kept package). Including the freshly-added ADR-0029 scrubber +
+   accessor-wiring tests from commit `a4c08b3` (~20 tests dated
+   2026-05-17). User chose to rescue them into a new
+   `packages/llm_tracker_sdk/tests/` directory (added to pytest
+   testpaths). Git auto-detected them as renames in the commit.
+
+The 12 other test files in `packages/llm_tracker/tests/` tied to
+sidecar internals (`test_cli_manage`, `test_cli_plugins`,
+`test_config`, `test_content_levels`, `test_audit_triggers`,
+`test_egress_client`, `test_egress_guard`, `test_plugin_host`,
+`test_policy`, and three under `proxy/`) died with their package as
+intended.
+
+Test count deltas (no-DB baseline):
+
+```
+pre-housekeeping (post-ADR-0029):  338 passed, 16 skipped
+post-housekeeping:                 143 passed, 16 skipped
+```
+
+The 195-test drop = sidecar (~140) + supabase_sink (~55) tests dying
+with their packages, partially offset by the 55 rescued SDK tests.
+DB-fixture count not re-measured this session — rescued tests are
+pure unit tests; deleted sidecar/proxy tests had been the DB-fixture
+consumers, so the next DB-fixture run will drop by a similar margin
+with no information loss (the deleted tests covered deleted code).
+
+`uv sync` cleaned the lockfile by uninstalling `llm-tracker`,
+`llm-tracker-plugin-supabase-sink`, and `respx` (the latter only used
+by the now-deleted test suites). `[tool.uv.workspace].members` glob
+(`packages/*`) needed no edit; the deleted packages disappear
+automatically.
+
+`grep` for inbound references to the moved ADR paths surfaced 11 hits
+in historical worklog files. Left untouched per CLAUDE.md §2.3
+(surgical changes; worklogs are frozen narratives of past sessions).
+
+---
+
+### Prior workstream — ADR-0029 consent + data-handling (closed earlier 2026-05-17)
 
 **ADR-0029 — consent + data-handling — Accepted (2026-05-17).** The
 six-axis decision packet the user supplied lands as policy + code in
@@ -857,6 +929,7 @@ ready to start.
 - [x] **Option B + plugin-ecosystem workstream (2026-05-14, commits `f02f516` α / `61c8aeb` β / `49804f5` γ / `b3f9ed2` δ / `7741c13` ε / `854d4ee` ζ); ADR-0026 (HookContext response accessors) + ADR-0027 (exchange row close-out policy) Accepted; `extractors/anthropic.py` populates the five SSE-derived columns end-to-end on the happy path; migration 0007 adds `plugin_analytics`; `analytics_sink` writes one row per exchange; `keyword_block` polished from TEST-ONLY to operator-configurable; Docker image bundles both plugins. **Production-validated 2026-05-16 by operator smoke** (post-deploy `plugin_analytics` row carried all five columns populated with `usage.input_tokens=6 / output_tokens=152 / cache_read=75512 / cache_creation=133` under `stop_reason=tool_use`).**
 - [x] **ADR-0028 follow-up — extractor faithful reassembly (2026-05-16, commit `8138d91`); `response_json` now captures tool_use, thinking, signature, and unknown future block types instead of text-only; surfaced by a live `plugin_analytics` row whose `content: []` had silently dropped a 112-token tool_use payload. Full repo test suite 334 passed under the DB fixture (+5 new tests). **Production-validated 2026-05-16 in the same operator-smoke window** — verbatim row carried both a thinking block (signature preserved) and a tool_use block with `input` as a parsed dict (no `_input_json_raw` fallback). `keyword_block` also exercised live via `LLMTRACK_KEYWORD_BLOCK_LIST = "no_response"` in `fly.toml`.**
 - [x] **ADR-0029 — consent + data-handling policy + HookContext accessor-level scrubber (2026-05-17, commit `a4c08b3`); six-axis decision packet (full L3 storage / docs-only disclosure / 6-month retention / operator-handled deletion / `sk-`+`lts_`+`Bearer`+email scrubbing / SDK-accessor location) lands as Accepted ADR plus `llm_tracker_sdk.scrubbers` + HookContext wiring + `docs/deploy.md` "Data collection & privacy" section + `docs/plugins.md` §3.2. Test suite 354 passed under DB fixture (+20 new). External (non-team) testing no longer blocked on policy — operator-deploy of the new image is the operational step that brings the scrubber to production.**
+- [x] **Housekeeping — archive superseded ADRs + remove local sidecar (2026-05-17, commits `8ef166d` + `3d76d1f`); 7 superseded ADRs moved into `docs/decisions/archive/`, `packages/llm_tracker/` (local sidecar) and `packages/llm_tracker_plugin_supabase_sink/` (closed workstream) deleted, 5 SDK-only test files rescued into new `packages/llm_tracker_sdk/tests/`; local branch `archive/local-sidecar` preserves full pre-deletion history (not pushed); no-DB test count 143 passed / 16 skipped.**
 - [ ] **Phase 3a — remaining 2 decision ADRs** (#1 fallback / #4 agent language)
 - [ ] Phase 3b — thin local agent (gated on #1 + #4)
 - [x] **Phase 3c — server build-out (14 of 14 plan-checkpoints done; closed 2026-05-13 with operator smoke validated. Plan at `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0017/0018/0019/0020/0022/0023)**

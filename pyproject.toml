@@ -16,11 +16,10 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = [
-    "packages/llm_tracker/tests",
+    "packages/llm_tracker_sdk/tests",
     "packages/llm_tracker_server/tests",
     "packages/llm_tracker_agent/tests",
     "packages/llm_tracker_plugin_token_counter/tests",
     "packages/llm_tracker_plugin_keyword_block/tests",
-    "packages/llm_tracker_plugin_supabase_sink/tests",
     "packages/llm_tracker_plugin_analytics_sink/tests",
 ]

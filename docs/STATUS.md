@@ -6,8 +6,8 @@
 
 ---
 
-**Last updated**: 2026-05-16 (Claude Code; **operator smoke on Fly — PASS. Closes 2026-05-14 Option B + plugin-ecosystem AND 2026-05-16 ADR-0028 faithful reassembly in one shot.** Post-deploy `plugin_analytics` row carried `response_json` of the exact ADR-0028 shape — `content` with both a thinking block (`signature_delta` preserved) and a tool_use block whose `input` was a parsed dict (`{"command": "date ...", "description": "..."}`), under `stop_reason: "tool_use"` with all five SSE-derived columns populated (`model_served=claude-opus-4-7`, `input_tokens=6`, `output_tokens=152`, `cache_read_input_tokens=75512`, `cache_creation_input_tokens=133`). Independently confirms Option B and ADR-0028 in the same row. `keyword_block` also exercised: `fly.toml` `LLMTRACK_KEYWORD_BLOCK_LIST = "no_response"` (was the empty default) — kept as the live operator config post-smoke. Smoke gate closed; next blocking item is **ADR-#2 consent + data-handling**.)
-**Updated by**: Claude Code (operator smoke closure)
+**Last updated**: 2026-05-17 (Claude Code; **ADR-0029 consent + data-handling — Accepted; HookContext-level scrubber landed.** Six-axis policy: full L3 storage, docs-only disclosure, 6-month retention, operator-handled deletion, `sk-`/`lts_`/`Bearer <value>`/email scrubbing at the SDK accessor surface (`request_text` + `response_content_json` pipe through `llm_tracker_sdk.scrubbers.scrub`; raw `_raw_request_body` + `_parsed_response` left untouched so storage stays canonical per ADR-0028). New module `packages/llm_tracker_sdk/src/llm_tracker_sdk/scrubbers.py` + 16 scrubber unit tests + 4 accessor-level wiring tests. `docs/deploy.md` gains a "Data collection & privacy" section; `docs/plugins.md` gains §3.2 documenting the storage-vs-accessor asymmetry. Full repo test suite 354 passed under DB fixture (+20 new), 338 passed no-DB. External (non-team) testing of the central server is no longer blocked on consent + data-handling policy — operator deploying the new image is the operational next step before external traffic.)
+**Updated by**: Claude Code (ADR-0029 + accessor-level scrubber)
 
 ## Current phase
 
@@ -44,17 +44,21 @@
     `stop_reason`). Gated on ADR-0026 acceptance. Bonus side
     benefit: makes the latency-vs-output_tokens analysis
     flagged in today's smoke side-investigation tractable.
-  - **ADR-#2 consent + data-handling** still owed *before any
-    external (non-team) testing* of the central server. Team
-    use (now production) is not blocked by it.
+  - ~~**ADR-#2 consent + data-handling**~~ **Closed 2026-05-17**
+    by ADR-0029. External (non-team) testing no longer blocked on
+    policy; operator-deploy of `a4c08b3` is the operational next
+    step.
 
 ## Active worklog
 
-`docs/worklog/2026-05-16-extractor-faithful-response.md` — now closes
-with §"Closure — production smoke validated (2026-05-16)" carrying
-the post-deploy `plugin_analytics` row verbatim. Single code commit
-`8138d91` (ADR-0028) on top of the 2026-05-14 workstream image is
-production-validated. Prior session worklogs preserved:
+`docs/worklog/2026-05-17-adr-0029-consent.md` — ADR-0029 (Accepted)
+records the six-axis policy; code commit `a4c08b3` lands the SDK
+scrubber + HookContext wiring + deploy/plugins disclosure paragraphs.
+Operator-deploy of the new image is the operational next step (no
+plugin-side edits needed — `analytics_sink` already imports the SDK
+that picks up the scrubber). Prior session worklogs preserved:
+`docs/worklog/2026-05-16-extractor-faithful-response.md` (ADR-0028 +
+operator smoke closure),
 `docs/worklog/2026-05-14-plugin-ecosystem.md` (Option B SSE
 extractor + analytics_sink + keyword_block multi-checkpoint
 session; ADR-0026 + ADR-0027 land in checkpoint α),
@@ -68,20 +72,60 @@ CP14 proper).
 ## Recent commits
 
 ```
+a4c08b3   sdk: HookContext scrubbing + ADR-0029 (consent)
+140b5d4   chore: add pptx file to .gitignore
+3162864   docs: STATUS + worklog — operator smoke closure
 8cd9566   infra: enable keyword_block on Fly (live config)
 c95e60c   docs: STATUS + worklog — ADR-0028 extractor faithful reassembly
-8138d91   server: faithful Anthropic response reassembly (ADR-0028)
-a3c8df4   docs: STATUS + worklog — Option B + plugin-ecosystem session-end
-854d4ee   infra: bundle analytics_sink + keyword_block in Docker image
 ```
 
 ## Where we paused
 
-**Operator smoke on Fly — PASS (2026-05-16).** One `fly deploy`
-exercises the same image for the 2026-05-14 Option B + plugin-ecosystem
-workstream *and* the 2026-05-16 ADR-0028 follow-up; the post-deploy
-`plugin_analytics` row the operator showed back closes both in one
-shot.
+**ADR-0029 — consent + data-handling — Accepted (2026-05-17).** The
+six-axis decision packet the user supplied lands as policy + code in
+one commit (`a4c08b3`):
+
+- **Axis 1** — full L3 storage; `LLMTRACK_PLUGINS_DISABLED` stays the
+  operator off-switch for `analytics_sink`.
+- **Axis 2** — documentation-only disclosure (`docs/deploy.md` new
+  "Data collection & privacy" section; `docs/plugins.md` §3.2). No
+  per-task consent UI.
+- **Axis 3** — 6-month retention policy stated; automated deletion
+  deferred.
+- **Axis 4** — operator-handled SQL deletion on `org_id` / `session_id`;
+  typed endpoint deferred until `session_id` is real (currently
+  hardcoded `"server"`).
+- **Axis 5** — `sk-`/`lts_`/`Bearer <value>`/email regex redaction with
+  kind-tagged replacements (`[REDACTED:secret|token|bearer|email]`).
+  Privacy-tilted: `\bsk-` over-redacts after `-` (documented + pinned
+  by test).
+- **Axis 6** — scrubbing at the SDK accessor (`HookContext.request_text`,
+  `HookContext.response_content_json`); raw `_raw_request_body` and
+  `_parsed_response` left untouched so storage stays canonical per
+  ADR-0028.
+
+The pre-existing structlog log-side scrubber
+(`llm_tracker_server.proxy.credential`) stays as defence-in-depth for
+log event dicts; ADR-0029 explicitly does not unify the two layers
+today.
+
+Test deltas (verified with and without the DB fixture):
+
+```
+no-DB:  338 passed, 16 skipped, 4 warnings in 13.05s   (was 318 / +20)
+DB:     354 passed, 4 warnings in 30.88s               (was 334 / +20)
+```
+
+The +20 splits into 16 new scrubber unit tests
+(`packages/llm_tracker/tests/test_scrubbers.py`) + 4 new accessor-level
+wiring tests in `packages/llm_tracker/tests/test_hook_context.py`.
+
+Smoke from the 2026-05-16 closure remains the latest production
+state — the central server is still on commit `8138d91` until the
+operator runs `fly deploy` to pick up `a4c08b3`. No code-side
+operator-smoke is owed for this CP because the scrubber is in the SDK
+that `analytics_sink` already imports; the next routine deploy lands
+it without plugin-side changes.
 
 The verbatim `response_json` shape from production:
 
@@ -573,17 +617,19 @@ preserved in `docs/worklog/2026-05-11-phase-3a-decisions.md`
 | # | Topic | Status | ADR |
 |---|---|---|---|
 | 1 | Fallback policy when server unreachable | **Pending** (defers Phase 3b; not on critical path under server-first reframe) | — |
-| 2 | Consent + data-handling policy | **Pending** (most blocking remaining item *before any external testing*; operator-only demo not blocked) | — |
+| 2 | Consent + data-handling policy | **Settled 2026-05-17** | **ADR-0029** |
 | 3 | Agent-to-server auth model | **Settled 2026-05-11** | **ADR-0020** |
 | 4 | Local agent language/distribution | **Pending** (defers Phase 3b; not on critical path under server-first reframe) | — |
 | 5 | Multi-tenancy boundary | **Settled 2026-05-11** | **ADR-0018** |
 | 6 | What survives of ADR-0006 L/A/R modes | **Settled 2026-05-11** | **ADR-0019** |
 | 7 | What survives of ADR-0008 signing | **Settled 2026-05-11** — fully retired | **ADR-0021** |
 
-Items 1, 2, 4 do **not** block Phase 3c (server build-out): the
+Items 1 and 4 do **not** block Phase 3c (server build-out): the
 server can be built against ADR-0018/0019/0020 schemas and surfaces
-without resolving them. #2 is required before the server is shown
-to anyone outside the operator.
+without resolving them. Item #2 (consent + data-handling) is **now
+settled** by ADR-0029, so external (non-team) testing is no longer
+blocked on policy — operator-deploy of the new image is the
+operational next step.
 
 ## Phase 3c kick-off — deployment platform (2026-05-11)
 
@@ -693,25 +739,21 @@ reframes them server-side**:
 
 ## Next single step
 
-**Draft ADR-#2 — consent + data-handling.** Smoke is closed; the
-production `plugin_analytics` row demonstrably stores the full
-parsed request *and* response (including tool_use `input` dicts
-like `{"command": "date ...", ...}`), so any external (non-team)
-testing of the central server requires this ADR before being safe
-to enable. Operator-only / team use stays unblocked.
+**Operator deploy of `a4c08b3` to Fly** to pick up the new scrubber
+on production traffic. No code-side changes are owed; the next
+`fly deploy` picks up the new SDK that `analytics_sink` and
+`keyword_block` already import. Post-deploy, the operator can
+confirm on a fresh `plugin_analytics` row that any sensitive tokens
+echoed in a tool_result or user prompt come back as `[REDACTED:…]`
+tags through the `ctx.request_text()` / `ctx.response_content_json()`
+accessors (rows in the database itself remain canonical — that is
+the documented storage-vs-accessor asymmetry, see
+`docs/plugins.md` §3.2).
 
-ADR-#2 is a strategy/decision item, not a Claude Code
-implementation task (CLAUDE.md §4). Next session's opening move is
-either:
+Once the deploy lands, the next blocking item moves down to one of
+the queued follow-ups below.
 
-- **(a)** Open the ADR draft in conversation with the user — surface
-  options (consent surface: per-task UX vs blanket env knob;
-  retention scope; redaction defaults; out-of-band deletion API);
-  user picks, Claude Code drafts; or
-- **(b)** Pick up the queued follow-ups below first and defer ADR-#2
-  to a later session.
-
-Queued follow-ups (none gating ADR-#2; safe to interleave):
+Queued follow-ups (none gate the deploy step above; safe to interleave):
 
 - **Pre-SSE upstream-failure-path row write** (ADR-0027 axis 2 impl).
   Today an upstream failure before the first SSE event yields no
@@ -730,11 +772,10 @@ Queued follow-ups (none gating ADR-#2; safe to interleave):
 - ~~**Stamp migration 0006 on live Supabase.**~~ **Closed** by this
   checkpoint's `fly deploy` (release-command-run `alembic upgrade
   head` advanced `alembic_version` to `0006_grant_app_role_set`).
-- **ADR-#2 consent + data-handling.** Still owed *before any
-  external testing* of the central server. Operator-only smoke
-  (now validated) is not blocked. Legal/privacy input may take
-  longer than internal ADR drafting; flag to start alongside the
-  response-side investigation.
+- ~~**ADR-#2 consent + data-handling.**~~ **Closed 2026-05-17** by
+  ADR-0029 (six-axis policy + SDK accessor scrubber). External
+  testing is no longer policy-blocked; operator-deploy of `a4c08b3`
+  is the operational next step.
 - **`docs/deploy.md` paragraph on PG16+ `set_option` quirk.** Sits
   naturally next to the existing pgbouncer/asyncpg note from
   CP13-b. Any future PG16+ managed deploy (RDS, Cloud SQL, Neon)
@@ -770,10 +811,10 @@ ready to start.
 
 ## Blocking / decisions needed
 
-- **#2 consent + data-handling**: still owed before *any external
-  testing* of the central server. Not blocking the operator-only
-  demo path. Legal/privacy review may take longer than internal
-  ADR drafting; flag to start in parallel with Phase 3c.
+- **#2 consent + data-handling**: **Settled 2026-05-17 by ADR-0029.**
+  External (non-team) testing is no longer blocked on policy;
+  operator-deploy of `a4c08b3` is the operational next step before
+  routing external traffic.
 - **#1 fallback** and **#4 agent language**: deferred to Phase 3b
   scoping; not blocking anything Phase 3a or 3c.
 
@@ -815,7 +856,8 @@ ready to start.
 - [x] **CP14 follow-up Option A — close-out columns populated (`ended_at`/`status_code`/`model_requested`/`latency_ms`) (2026-05-13, commit 237d842; production-verified on row `01KRG14W5VNV78HN3P9PEF2Z9P` after `fly deploy` — same deploy stamped `alembic_version` to `0006_grant_app_role_set`; investigation falsified the prior "INSERT-at-open + UPDATE-at-close" hypothesis — there is no UPDATE path; 4 of 8 response-side NULLs closed; remaining 5 (`model_served`, `input_tokens`, `output_tokens`, `cache_*`, `stop_reason`) need Option B's SSE Extractor)**
 - [x] **Option B + plugin-ecosystem workstream (2026-05-14, commits `f02f516` α / `61c8aeb` β / `49804f5` γ / `b3f9ed2` δ / `7741c13` ε / `854d4ee` ζ); ADR-0026 (HookContext response accessors) + ADR-0027 (exchange row close-out policy) Accepted; `extractors/anthropic.py` populates the five SSE-derived columns end-to-end on the happy path; migration 0007 adds `plugin_analytics`; `analytics_sink` writes one row per exchange; `keyword_block` polished from TEST-ONLY to operator-configurable; Docker image bundles both plugins. **Production-validated 2026-05-16 by operator smoke** (post-deploy `plugin_analytics` row carried all five columns populated with `usage.input_tokens=6 / output_tokens=152 / cache_read=75512 / cache_creation=133` under `stop_reason=tool_use`).**
 - [x] **ADR-0028 follow-up — extractor faithful reassembly (2026-05-16, commit `8138d91`); `response_json` now captures tool_use, thinking, signature, and unknown future block types instead of text-only; surfaced by a live `plugin_analytics` row whose `content: []` had silently dropped a 112-token tool_use payload. Full repo test suite 334 passed under the DB fixture (+5 new tests). **Production-validated 2026-05-16 in the same operator-smoke window** — verbatim row carried both a thinking block (signature preserved) and a tool_use block with `input` as a parsed dict (no `_input_json_raw` fallback). `keyword_block` also exercised live via `LLMTRACK_KEYWORD_BLOCK_LIST = "no_response"` in `fly.toml`.**
-- [ ] **Phase 3a — remaining 3 decision ADRs** (#1 fallback / #2 consent / #4 agent language)
+- [x] **ADR-0029 — consent + data-handling policy + HookContext accessor-level scrubber (2026-05-17, commit `a4c08b3`); six-axis decision packet (full L3 storage / docs-only disclosure / 6-month retention / operator-handled deletion / `sk-`+`lts_`+`Bearer`+email scrubbing / SDK-accessor location) lands as Accepted ADR plus `llm_tracker_sdk.scrubbers` + HookContext wiring + `docs/deploy.md` "Data collection & privacy" section + `docs/plugins.md` §3.2. Test suite 354 passed under DB fixture (+20 new). External (non-team) testing no longer blocked on policy — operator-deploy of the new image is the operational step that brings the scrubber to production.**
+- [ ] **Phase 3a — remaining 2 decision ADRs** (#1 fallback / #4 agent language)
 - [ ] Phase 3b — thin local agent (gated on #1 + #4)
 - [x] **Phase 3c — server build-out (14 of 14 plan-checkpoints done; closed 2026-05-13 with operator smoke validated. Plan at `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0017/0018/0019/0020/0022/0023)**
 - [ ] Phase 1c — `scope_guard` (paused; reframed server-side per ADR-0019; gated on Phase 3c readiness)

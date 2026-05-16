@@ -28,7 +28,7 @@ primary_region = "nrt"
   # Empty default — the `keyword_block` plugin loads but never blocks.
   # Operator overrides with `fly secrets set` only if real keyword
   # blocking is desired (the value isn't sensitive, so [env] is fine).
-  LLMTRACK_KEYWORD_BLOCK_LIST = ""
+  LLMTRACK_KEYWORD_BLOCK_LIST = "no_response"
 
 [http_service]
   internal_port = 8080

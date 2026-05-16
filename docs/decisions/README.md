@@ -25,3 +25,9 @@ When an ADR needs revising, **don't overwrite it** — write a new ADR that
 supersedes it. The history of reasoning is preserved.
 
 Template: `TEMPLATE.md`.
+
+## archive/
+
+`archive/` contains ADRs that have been superseded or otherwise retired.
+They are kept for historical context only — do not treat anything inside
+as in force. Active decisions live at the top level of this directory.

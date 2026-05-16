@@ -53,7 +53,6 @@ async def test_exchange_without_org_id_rejected(session_factory) -> None:
                 started_at=now_ms,
                 provider="anthropic",
                 endpoint="/v1/messages",
-                tool_call_count=0,
                 content_level="L3",
             )
         )
@@ -78,7 +77,6 @@ async def test_exchange_with_unknown_org_id_rejected(session_factory) -> None:
                 started_at=now_ms,
                 provider="anthropic",
                 endpoint="/v1/messages",
-                tool_call_count=0,
                 content_level="L3",
             )
         )

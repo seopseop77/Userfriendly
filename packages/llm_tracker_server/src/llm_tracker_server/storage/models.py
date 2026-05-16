@@ -68,7 +68,6 @@ class Exchange(Base):
     t_request_received_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     t_upstream_first_byte_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     t_client_first_byte_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    tool_call_count: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     content_level: Mapped[str] = mapped_column(String, nullable=False)
     blocked_by: Mapped[str | None] = mapped_column(String, nullable=True)
 

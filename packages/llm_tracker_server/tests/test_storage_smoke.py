@@ -63,7 +63,6 @@ async def test_exchange_round_trip(session_factory) -> None:
                 started_at=now_ms,
                 provider="anthropic",
                 endpoint="/v1/messages",
-                tool_call_count=0,
                 content_level="L3",
             )
         )

@@ -95,7 +95,6 @@ async def record_exchange_timing(
             latency_ms=latency_ms,
             stop_reason=stop_reason,
             content_level="L3",
-            tool_call_count=0,
             t_request_received_ms=t_request_received_ms,
             t_upstream_first_byte_ms=t_upstream_first_byte_ms,
             t_client_first_byte_ms=t_client_first_byte_ms,
@@ -136,7 +135,6 @@ async def record_exchange_blocked(
             model_requested=model_requested,
             latency_ms=latency_ms,
             content_level="L3",
-            tool_call_count=0,
             t_request_received_ms=started_at_ms,
             blocked_by=blocked_by,
         )

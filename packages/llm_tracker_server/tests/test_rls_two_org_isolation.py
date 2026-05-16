@@ -56,7 +56,6 @@ def _make_exchange(row_id: str, org_id, *, session_id: str, now_ms: int) -> Exch
         started_at=now_ms,
         provider="anthropic",
         endpoint="/v1/messages",
-        tool_call_count=0,
         content_level="L3",
     )
 

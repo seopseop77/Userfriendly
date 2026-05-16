@@ -6,8 +6,8 @@
 
 ---
 
-**Last updated**: 2026-05-17 (Claude Code; **two-task housekeeping pass — archive + sidecar removal.** Task 1 (commit `8ef166d`): moved 7 superseded ADRs into `docs/decisions/archive/` and updated `docs/decisions/README.md` with the historical-only notice. Task 2 (commit `3d76d1f`): deleted `packages/llm_tracker/` (the original local sidecar, superseded by `llm_tracker_server` + `llm_tracker_agent` per ADR-0017) and `packages/llm_tracker_plugin_supabase_sink/` (closed workstream from 2026-05-08). Rescued 5 SDK-only test files into a new `packages/llm_tracker_sdk/tests/` (test_egress_protocol, test_harness, test_hook_context, test_manifest, test_scrubbers — these test currently-shipped SDK code including the ADR-0029 scrubber + accessor-wiring tests). Local branch `archive/local-sidecar` preserves the full pre-deletion state (NOT pushed). `uv sync` dropped `llm-tracker`, `llm-tracker-plugin-supabase-sink`, `respx`. Full repo test suite 143 passed / 16 skipped no-DB (down from 338; the 195-test drop is sidecar + supabase_sink tests dying with their packages, partially offset by the 55 rescued SDK tests).)
-**Updated by**: Claude Code (archive + sidecar removal housekeeping)
+**Last updated**: 2026-05-17 (Claude Code; **ADR-0029 production smoke + doc reconciliation.** Operator deploy of `a4c08b3` to Fly (release `v11`) completed; live smoke injected `sk-deadbeef12345678` through `claude-manage` and verified two `plugin_analytics` rows (`01KRRS5S2VNPPCS5QNM4P2HG37`, `01KRRS5PJGVDK4J6XND3JWKCEH`) carry `[REDACTED:secret]` in `messages_json` rather than the raw value — scrubber confirmed live. The verification falsified one descriptive assumption baked into ADR-0029 Axis 6 + ADR-0028 Open questions + `docs/plugins.md` §3.2 + `hook_context.py` module docstring + the prior ADR-0029 consent worklog: **`analytics_sink` reads through `ctx.request_text()` / `ctx.response_content_json()` at `plugin.py:113`** (not raw body parsing), so `public.plugin_analytics` rows are scrubbed, not canonical. User chose Option A (align docs to production, privacy-first). Commit `d7f17c0` reconciles ADR-0029/0028, plugins.md, the SDK docstring, and adds a Correction blockquote to the prior worklog (frozen narrative preserved per CLAUDE.md §2.3). Side-finding: `claude-manage` was `command not found` after yesterday's `uv sync` — agent package was editable-installed but the console_script in `.venv/bin/` had been skipped; restored by `uv sync --reinstall-package llm-tracker-agent` (env fix only, no commit). Secondary discovery: `public.plugin_analytics` is RLS-off and was added in migration 0007 *after* the CP13-b "intentionally RLS-off" list — added to side-quests.)
+**Updated by**: Claude Code (ADR-0029 production smoke + doc reconciliation)
 
 ## Current phase
 
@@ -28,38 +28,45 @@
   - Fail-closed per ADR-0024 confirmed end-to-end in negative
     smoke: 503 propagates to Anthropic SDK → 10 retries with
     backoff → user-facing failure, no Anthropic bypass.
-- **Active task**: **Draft ADR-0026 — "exchange row close-out
-  policy"** (formerly slotted as "ADR-0024", renumbered after
-  today's agent fail-closed ADR took 0024). Decides three things:
-  (1) which `public.exchanges` columns are guaranteed-populated
-  vs. allowed-NULL and on which paths; (2) error path — today
-  there is no INSERT at all if upstream fails pre-SSE; (3)
-  blocked-path field parity with the streaming path. Drafting
-  before Option B so its `record_exchange_timing` signature
-  extension lands under a stable contract.
-- **Other follow-ups** (queued):
-  - **Phase-3c follow-up Option B — SSE extractor** for the five
-    response-side fields still NULL on exchange rows
-    (`model_served`, `input_tokens`, `output_tokens`, `cache_*`,
-    `stop_reason`). Gated on ADR-0026 acceptance. Bonus side
-    benefit: makes the latency-vs-output_tokens analysis
-    flagged in today's smoke side-investigation tractable.
-  - ~~**ADR-#2 consent + data-handling**~~ **Closed 2026-05-17**
-    by ADR-0029. External (non-team) testing no longer blocked on
-    policy; operator-deploy of `a4c08b3` is the operational next
-    step.
+- **Active task**: **No active task — between cycles.** ADR-0029 is
+  production-validated as of 2026-05-17 (Fly release `v11`, live
+  scrubber smoke). External (non-team) testing of the central server
+  is fully unblocked. The remaining queue contains follow-ups only;
+  none are gating any next CP.
+- **Queued follow-ups** (pick one if continuing the session):
+  - **`plugin_analytics` RLS enablement.** Newly surfaced 2026-05-17
+    by Supabase advisor — the table was added in migration 0007 after
+    the CP13-b "intentionally RLS-off" decision (which named only
+    `orgs`, `api_tokens`, `alembic_version`). `plugin_analytics` was
+    not on that list and needs a policy.
+  - **ADR-0027 axis 2 impl** — pre-SSE upstream-failure-path row write
+    in `public.exchanges`. Today an upstream failure before the first
+    SSE event yields no row at all.
+  - **`exchanges.tool_call_count` fate** — deprecate / drop / leave
+    at the `0` placeholder. Derivable from `response_json.content`
+    via `jsonb_path_query`.
+  - **`docs/deploy.md` PG16+ `set_option` quirk paragraph** — alongside
+    the pgbouncer/asyncpg note from CP13-b.
+  - **Empty package-directory shells cleanup** —
+    `packages/llm_tracker/` and `packages/llm_tracker_plugin_supabase_sink/`
+    are empty directories left over from `git rm`. `rmdir` if the user
+    wants the tree clean.
+  - ~~**ADR-#2 consent + data-handling**~~ **Closed 2026-05-17** by
+    ADR-0029, production-validated same day.
 
 ## Active worklog
 
+`docs/worklog/2026-05-17-adr-0029-production-smoke.md` — production
+smoke verification of ADR-0029 scrubber after Fly `v11` deploy, plus
+doc reconciliation against falsified `messages_json` canonical
+assumption. Prior worklogs from earlier today preserved:
 `docs/worklog/2026-05-17-archive-sidecar-housekeeping.md` — two-task
-housekeeping pass (ADR archive + sidecar removal). Prior session
-worklog from earlier today preserved:
+housekeeping pass (ADR archive + sidecar removal);
 `docs/worklog/2026-05-17-adr-0029-consent.md` — ADR-0029 (Accepted)
 records the six-axis policy; code commit `a4c08b3` lands the SDK
-scrubber + HookContext wiring + deploy/plugins disclosure paragraphs.
-Operator-deploy of the new image is the operational next step (no
-plugin-side edits needed — `analytics_sink` already imports the SDK
-that picks up the scrubber). Earlier worklogs preserved:
+scrubber + HookContext wiring + deploy/plugins disclosure paragraphs;
+production-validated 2026-05-17 by the new smoke worklog. Earlier
+worklogs preserved:
 `docs/worklog/2026-05-16-extractor-faithful-response.md` (ADR-0028 +
 operator smoke closure),
 `docs/worklog/2026-05-14-plugin-ecosystem.md` (Option B SSE
@@ -75,14 +82,102 @@ CP14 proper).
 ## Recent commits
 
 ```
+d7f17c0   docs: reconcile ADR-0029 storage-canonical with prod
+eb498f6   docs: STATUS + worklog — sidecar archive housekeeping
 3d76d1f   chore: remove llm_tracker local sidecar (archived to archive/local-sidecar branch)
 8ef166d   docs: archive superseded ADRs
 25a2aac   docs: STATUS + worklog — ADR-0029 consent + data-handling
-a4c08b3   sdk: HookContext scrubbing + ADR-0029 (consent)
-140b5d4   chore: add pptx file to .gitignore
 ```
 
 ## Where we paused
+
+**ADR-0029 production smoke + doc reconciliation (2026-05-17, commit
+`d7f17c0` + finalize commit).** Operator deployed `a4c08b3` to Fly
+(release `v11`, completed ~16m before the smoke). Two threads in this
+session: planned verification of the ADR-0029 scrubber on real
+production traffic; unplanned `claude-manage` recovery + doc
+reconciliation against a falsified assumption that the smoke
+surfaced.
+
+**Production smoke results.** Two `plugin_analytics` rows from the
+live smoke (`01KRRS5S2VNPPCS5QNM4P2HG37` end_turn /
+`01KRRS5PJGVDK4J6XND3JWKCEH` prior turn, both 2026-05-16 16:16 UTC,
+under `model_served=claude-opus-4-7`). Injected `sk-deadbeef12345678`
+lands as `[REDACTED:secret]` in `messages_json`; raw value absent.
+`response_json` was not affected on this exchange because the model
+did not echo the token. Scrubber is live on production traffic.
+
+**Falsified assumption.** The prior ADR-0029 consent worklog +
+ADR-0029 §Axis 6 + ADR-0028 §Open questions + `docs/plugins.md` §3.2
++ `hook_context.py` module docstring all claimed `analytics_sink`
+parses the request body on its own path and writes the canonical body
+to `plugin_analytics`. Inspection of
+`packages/llm_tracker_plugin_analytics_sink/.../plugin.py:113` shows
+the plugin actually reads through `ctx.request_text()` (and
+`ctx.response_content_json()` in `_build_row`), and the SDK accessors
+at `hook_context.py:120` + `hook_context.py:188` both run `scrub()`
+before returning. So `plugin_analytics` rows inherit the scrubbed
+shape from the accessor, not the canonical one — verified live by the
+`sk-deadbeef12345678` injection. The descriptive paragraph in five
+places was factually wrong.
+
+**Resolution (user picked Option A).** Align docs to production; keep
+privacy-first posture. No code change to plugins or accessors. Commit
+`d7f17c0` reconciles all five locations:
+
+- ADR-0029 §Axis 6 body + §Open questions (`messages_json` bullet
+  rewritten as "Canonical-body retention for incident response";
+  the prior bullet's premise was the load-bearing wrong claim).
+- ADR-0028 §Open questions: 2026-05-17 update note clarifying that
+  the scrubber landed at the SDK accessor — not a post-extractor
+  pass — so faithful-reassembly governs the in-memory
+  `_parsed_response` only, not the row written by the current
+  plugin.
+- `docs/plugins.md` §3.2: replaced the "storage layer reads
+  canonical" paragraph with the actual split — server-core writes
+  store metadata only; plugin-mediated writes carry the scrubbed
+  shape.
+- `hook_context.py` module docstring: same correction in SDK source
+  so plugin authors reading the SDK have the right picture.
+- Prior worklog `2026-05-17-adr-0029-consent.md`:
+  `> Correction (2026-05-17, ...)` blockquote under the wrong bullet.
+  Frozen-narrative rule from CLAUDE.md §2.3 preserved: the original
+  bullet is untouched.
+
+**Side-finding (env, not code).** `claude-manage` returned `command
+not found` immediately after the deploy. The agent package was still
+editable-installed (`uv pip list` showed `llm-tracker-agent`), but
+the console_script in `.venv/bin/` had been skipped by yesterday's
+housekeeping `uv sync` (which dropped three packages). Restored with
+`uv sync --reinstall-package llm-tracker-agent`. Environment-only fix;
+no commit. Documented in the new worklog §"What was done".
+
+**Secondary discovery (queued, not blocking).** Supabase advisor
+flagged `public.plugin_analytics` as RLS-off. CP13-b §Decisions 4
+named only `orgs`, `api_tokens`, `alembic_version` as intentionally
+RLS-off; `plugin_analytics` was added in migration 0007 *after* that
+decision and needs its own RLS policy. Added to side-quests below.
+
+**Verification recap:**
+
+```
+$ .venv/bin/python3.12 -m ruff check packages/llm_tracker_sdk/src/llm_tracker_sdk/hook_context.py
+All checks passed!
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker_sdk/tests/test_hook_context.py -q
+19 passed in 0.06s
+$ fly releases -a llm-tracker-server | head -3
+ v11     │ complete │ Release │ ... │ 16m24s ago      ← ADR-0029 image (a4c08b3)
+ v10     │ complete │ Release │ ... │ 11h18m ago
+```
+
+External (non-team) testing of the central server is now fully ready
+to proceed: the policy is set (ADR-0029), the scrubber is
+operationally verified, and the descriptive docs match what the
+database actually carries.
+
+---
+
+### Prior workstream — Housekeeping pass (closed 2026-05-17 earlier)
 
 **Housekeeping pass — archive + sidecar removal (2026-05-17, commits
 `8ef166d` + `3d76d1f`).** Two user-supplied tasks executed in
@@ -811,33 +906,33 @@ reframes them server-side**:
 
 ## Next single step
 
-**Operator deploy of `a4c08b3` to Fly** to pick up the new scrubber
-on production traffic. No code-side changes are owed; the next
-`fly deploy` picks up the new SDK that `analytics_sink` and
-`keyword_block` already import. Post-deploy, the operator can
-confirm on a fresh `plugin_analytics` row that any sensitive tokens
-echoed in a tool_result or user prompt come back as `[REDACTED:…]`
-tags through the `ctx.request_text()` / `ctx.response_content_json()`
-accessors (rows in the database itself remain canonical — that is
-the documented storage-vs-accessor asymmetry, see
-`docs/plugins.md` §3.2).
+**No single blocking step.** ADR-0029 was the last gating decision
+and is now production-validated (Fly `v11`, live smoke 2026-05-17).
+The next session picks whichever queued follow-up matches its intent;
+none of them gate the others.
 
-Once the deploy lands, the next blocking item moves down to one of
-the queued follow-ups below.
+Queued follow-ups (pickable cold):
 
-Queued follow-ups (none gate the deploy step above; safe to interleave):
-
-- **Pre-SSE upstream-failure-path row write** (ADR-0027 axis 2 impl).
-  Today an upstream failure before the first SSE event yields no
-  `public.exchanges` row at all; the open-INSERT happens after the
-  bytes start flowing. ADR-0027 axis 2 names the desired behavior.
-- **`exchanges.tool_call_count` fate.** Still at the `0` placeholder
-  — derive via `jsonb_path_query` on `response_json.content`, or
-  deprecate / drop the column. Separate decision.
-- **`docs/deploy.md` paragraph on PG16+ `set_option` quirk.** Sits
-  naturally next to the existing pgbouncer/asyncpg note from
-  CP13-b. Any future PG16+ managed deploy (RDS, Cloud SQL, Neon)
-  will hit the same trap.
+1. **`plugin_analytics` RLS policy** (newly surfaced 2026-05-17 by
+   Supabase advisor). The table was added in migration 0007 *after*
+   CP13-b's "intentionally RLS-off" decision (which named only
+   `orgs`, `api_tokens`, `alembic_version`) and was never given a
+   policy. Wraps cleanly into a small alembic migration
+   `0008_plugin_analytics_rls`.
+2. **ADR-0027 axis 2 impl — pre-SSE upstream-failure-path row write.**
+   Today an upstream failure before the first SSE event yields no
+   `public.exchanges` row at all; the open-INSERT happens after the
+   bytes start flowing. ADR-0027 axis 2 names the desired behaviour.
+3. **`exchanges.tool_call_count` fate.** Still at the `0` placeholder
+   — derive via `jsonb_path_query` on `response_json.content`, or
+   deprecate / drop the column. Separate decision.
+4. **`docs/deploy.md` PG16+ `set_option` quirk paragraph**, alongside
+   the pgbouncer/asyncpg note from CP13-b. Any future PG16+ managed
+   deploy (RDS, Cloud SQL, Neon) will hit the same trap.
+5. **Empty package-directory shells cleanup.** `packages/llm_tracker/`
+   and `packages/llm_tracker_plugin_supabase_sink/` are empty
+   directories left over from `git rm` (`find -type f` returns
+   nothing). `rmdir` if the user wants the tree clean.
 
 ### Side-quests (do at any time, none blocking)
 
@@ -845,13 +940,23 @@ Queued follow-ups (none gate the deploy step above; safe to interleave):
   checkpoint's `fly deploy` (release-command-run `alembic upgrade
   head` advanced `alembic_version` to `0006_grant_app_role_set`).
 - ~~**ADR-#2 consent + data-handling.**~~ **Closed 2026-05-17** by
-  ADR-0029 (six-axis policy + SDK accessor scrubber). External
-  testing is no longer policy-blocked; operator-deploy of `a4c08b3`
-  is the operational next step.
+  ADR-0029 (six-axis policy + SDK accessor scrubber);
+  **production-validated** the same day by Fly `v11` smoke. External
+  testing is now fully unblocked.
+- **`plugin_analytics` RLS policy** (newly surfaced 2026-05-17).
+  Supabase advisor flagged the table as RLS-off. It was added in
+  migration 0007 after the CP13-b "intentionally RLS-off" decision
+  (which named only `orgs`, `api_tokens`, `alembic_version`); no
+  policy was ever added. Small alembic migration
+  `0008_plugin_analytics_rls`.
 - **`docs/deploy.md` paragraph on PG16+ `set_option` quirk.** Sits
   naturally next to the existing pgbouncer/asyncpg note from
   CP13-b. Any future PG16+ managed deploy (RDS, Cloud SQL, Neon)
   will hit the same trap.
+- **Empty package-directory shells cleanup.** `packages/llm_tracker/`
+  and `packages/llm_tracker_plugin_supabase_sink/` are empty
+  directories left over from `git rm` — `rmdir` if the user wants
+  the tree clean. Cosmetic only; no behaviour impact.
 
 ### Local dev loop revival (still current)
 
@@ -930,6 +1035,7 @@ ready to start.
 - [x] **ADR-0028 follow-up — extractor faithful reassembly (2026-05-16, commit `8138d91`); `response_json` now captures tool_use, thinking, signature, and unknown future block types instead of text-only; surfaced by a live `plugin_analytics` row whose `content: []` had silently dropped a 112-token tool_use payload. Full repo test suite 334 passed under the DB fixture (+5 new tests). **Production-validated 2026-05-16 in the same operator-smoke window** — verbatim row carried both a thinking block (signature preserved) and a tool_use block with `input` as a parsed dict (no `_input_json_raw` fallback). `keyword_block` also exercised live via `LLMTRACK_KEYWORD_BLOCK_LIST = "no_response"` in `fly.toml`.**
 - [x] **ADR-0029 — consent + data-handling policy + HookContext accessor-level scrubber (2026-05-17, commit `a4c08b3`); six-axis decision packet (full L3 storage / docs-only disclosure / 6-month retention / operator-handled deletion / `sk-`+`lts_`+`Bearer`+email scrubbing / SDK-accessor location) lands as Accepted ADR plus `llm_tracker_sdk.scrubbers` + HookContext wiring + `docs/deploy.md` "Data collection & privacy" section + `docs/plugins.md` §3.2. Test suite 354 passed under DB fixture (+20 new). External (non-team) testing no longer blocked on policy — operator-deploy of the new image is the operational step that brings the scrubber to production.**
 - [x] **Housekeeping — archive superseded ADRs + remove local sidecar (2026-05-17, commits `8ef166d` + `3d76d1f`); 7 superseded ADRs moved into `docs/decisions/archive/`, `packages/llm_tracker/` (local sidecar) and `packages/llm_tracker_plugin_supabase_sink/` (closed workstream) deleted, 5 SDK-only test files rescued into new `packages/llm_tracker_sdk/tests/`; local branch `archive/local-sidecar` preserves full pre-deletion history (not pushed); no-DB test count 143 passed / 16 skipped.**
+- [x] **ADR-0029 production smoke + doc reconciliation (2026-05-17, commit `d7f17c0` + finalize commit); Fly release `v11` (ADR-0029 image, deploy of `a4c08b3`) verified live by injecting `sk-deadbeef12345678` through `claude-manage` — two `plugin_analytics` rows carry `[REDACTED:secret]` in `messages_json` with no raw value. Smoke surfaced that `analytics_sink` reads through `ctx.request_text()` / `ctx.response_content_json()` (not raw body parsing as docs claimed), so plugin-mediated rows inherit the scrubber's privacy floor. User picked "align docs to production"; commit `d7f17c0` reconciles ADR-0029 §Axis 6 + §Open questions, ADR-0028 §Open questions, `docs/plugins.md` §3.2, `hook_context.py` module docstring, and adds a Correction blockquote to the prior ADR-0029 worklog. Side-finding: `claude-manage` console_script was missing from `.venv/bin/` after yesterday's `uv sync`; restored via `uv sync --reinstall-package llm-tracker-agent`. Secondary discovery queued: `public.plugin_analytics` is RLS-off (not on the CP13-b intentional list).**
 - [ ] **Phase 3a — remaining 2 decision ADRs** (#1 fallback / #4 agent language)
 - [ ] Phase 3b — thin local agent (gated on #1 + #4)
 - [x] **Phase 3c — server build-out (14 of 14 plan-checkpoints done; closed 2026-05-13 with operator smoke validated. Plan at `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0017/0018/0019/0020/0022/0023)**

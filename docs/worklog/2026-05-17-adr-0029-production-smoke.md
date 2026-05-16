@@ -190,10 +190,11 @@ Code-path inspection results captured in §"What was done".
 
 ## Handoff
 
-CP commit, in order:
+CP commits, in order:
 
 ```
-<hash>   docs: reconcile ADR-0029 storage-canonical claims with production
+d7f17c0   docs: reconcile ADR-0029 storage-canonical with prod
+<finalize>   docs: STATUS + worklog — ADR-0029 production smoke
 ```
 
 External (non-team) testing of the central server is now fully ready to

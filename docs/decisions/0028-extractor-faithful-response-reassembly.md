@@ -156,6 +156,20 @@ access or treat fields as plain dicts.
   with a downstream scrubber pass; the order becomes
   `extractor → scrubber → storage` once the scrubber lands.
 
+  **Update 2026-05-17 (ADR-0029 production smoke).** ADR-0029 landed the
+  scrubber at the SDK accessor (`HookContext.request_text()` /
+  `HookContext.response_content_json()`), not as a post-extractor pass.
+  The in-memory `_parsed_response.response_json` produced by this
+  extractor remains the faithful reassembly described above; whether
+  that faithful shape reaches `public.plugin_analytics.response_json`
+  depends on the plugin: `analytics_sink` reads through the accessor, so
+  `plugin_analytics` carries the **scrubbed** shape today, not the
+  canonical one. ADR-0028's faithful-reassembly contract therefore
+  governs the extractor output and the in-memory `_parsed_response`,
+  not the on-disk row written by the current plugin. See ADR-0029
+  §"Open questions" → "Canonical-body retention for incident response"
+  for the corresponding trade-off.
+
 ## Settles
 
 The "tool-use blocks are not yet extracted" caveat in the extractor docstring

@@ -122,14 +122,24 @@ and email addresses. Matches become `[REDACTED:secret]` /
 operator can grep historical rows for what fired.
 
 The canonical bytes on `HookContext._raw_request_body` and the parsed
-response on `HookContext._parsed_response` are left untouched. The
-storage layer (`public.exchanges`, the `analytics_sink` plugin's
-`public.plugin_analytics`) reads the canonical body, so plugin authors
-who later query the database directly will see the unredacted content
-the operator sees — the privacy floor is the plugin API surface, not the
-SQL surface. Retention of the canonical rows is bounded by the
-operator-handled 6-month policy stated in `docs/deploy.md` §"Data
-collection & privacy".
+response on `HookContext._parsed_response` are left untouched **in
+memory** during the request lifetime. What actually reaches disk depends
+on which write path the row comes from:
+
+- `public.exchanges` (server core) stores metadata only — there is no
+  request- or response-text column, so the question of canonical vs.
+  scrubbed body does not apply.
+- `public.plugin_analytics` (written by the `analytics_sink` plugin)
+  populates `messages_json` from `ctx.request_text()` and `response_json`
+  from `ctx.response_content_json()`. Both accessors scrub before
+  returning, so **the rows on this table are also scrubbed** —
+  `sk-…` / `lts_…` / `Bearer …` / email matches land as `[REDACTED:…]`
+  tags. A plugin author querying this table directly sees the same
+  shape an in-process plugin sees through the accessor.
+
+The retention policy in `docs/deploy.md` §"Data collection & privacy"
+(6-month operator-handled deletion) bounds whatever the plugin chooses to
+retain on its tables.
 
 ## 4. Capability vocabulary
 

@@ -18,9 +18,14 @@ Per-level shape of the request-side accessors (design.md §7.1):
 Plugin-visible request text and response JSON pass through
 :func:`llm_tracker_sdk.scrubbers.scrub` before being returned (ADR-0029).
 The raw bytes on ``_raw_request_body`` and the parsed response on
-``_parsed_response`` stay untouched -- the storage layer keeps the
-canonical body, the scrubber only shapes what plugins read at the
-accessor surface.
+``_parsed_response`` stay untouched **in memory** during the request
+lifetime; whether the canonical body reaches disk depends on the write
+path. The server core writes ``public.exchanges`` with metadata only
+(no body columns). The ``analytics_sink`` plugin writes
+``public.plugin_analytics`` by reading through these accessors, so
+plugin-mediated rows inherit the scrubbed shape -- the privacy floor is
+the accessor *and* the storage ceiling for plugin-written tables. See
+ADR-0029 §"Axis 6" for the canonical-body / accessor trade-off.
 
 Plugins should not construct `HookContext` themselves; the host
 owns its lifecycle.

@@ -155,17 +155,42 @@ plugin that reads either accessor receives scrubbed content automatically;
 plugins cannot opt out, and new plugins inherit the protection on day one.
 
 The raw bytes on `HookContext._raw_request_body` and the parsed response on
-`HookContext._parsed_response` are left untouched -- the storage layer
-(forwarder → `public.exchanges` + `analytics_sink` → `public.plugin_analytics`)
-still keeps the canonical body so the operator can investigate incidents
-against the original payload.
+`HookContext._parsed_response` are left untouched in memory; whether that
+canonical body ends up on disk depends on **which write path** is used:
 
-Wait -- doesn't this contradict Axis 5 ("scrubbed regardless of where it
-sits")? No: Axis 5 names what plugins see; it does *not* say the database
-mirrors are scrubbed. Storage is canonical (matching the
-faithful-reassembly contract of ADR-0028), the accessor is privacy-floor.
-The retention policy in Axis 3 is what bounds the canonical-storage
-liability over time.
+- **Server-core writes** (`public.exchanges`, audit_log, events,
+  tool_calls). These rows are inserted by the server itself without going
+  through any SDK accessor, so where a body-like column exists it carries
+  the canonical bytes. As of today `public.exchanges` does not actually
+  store request or response *text* (only metadata + token counts +
+  timing); the canonical body therefore exists only in memory during the
+  request lifetime on this path.
+- **Plugin-mediated writes** (`public.plugin_analytics` via the
+  `analytics_sink` plugin). The plugin reads through
+  `ctx.request_text()` / `ctx.response_content_json()`, both of which
+  run `scrub()` before returning. Anything the plugin then persists is
+  the scrubbed shape. **Plugin-written rows therefore inherit the
+  privacy floor from the accessor and are not a canonical-body surface.**
+
+Net effect: under the current code (`analytics_sink/plugin.py:113`
+calls `ctx.request_text()`), production rows in `public.plugin_analytics`
+carry redacted content. Verified against `sk-deadbeef12345678` injected
+in a live request -- the value lands as `[REDACTED:secret]` in
+`messages_json`, not raw. The decision is consistent with Axis 5
+(plugins see scrubbed content) and intentionally tightens the privacy
+posture: there is no on-disk canonical body for the operator to query
+either. The retention policy in Axis 3 is what bounds whatever the
+plugin chooses to retain.
+
+This tightens, but does not contradict, ADR-0028's "faithful reassembly"
+contract on `response_json`. ADR-0028 defines what shape the **extractor**
+produces from the SSE stream; ADR-0029 defines what shape **plugins** are
+allowed to read. The extractor's faithful in-memory `response_json` stays
+intact on `_parsed_response.response_json`; the SDK accessor scrubs that
+value before returning it to a plugin. A future ADR can opt to bypass the
+accessor and write canonical bytes through a dedicated server-core path if
+the operator-incident-response use case re-emerges; today no such path
+exists.
 
 Rationale: the accessor is the one place every plugin already calls. A
 storage-layer scrub would block the operator's "show me the row that
@@ -238,16 +263,17 @@ For each axis, the rejected alternatives:
   per-session deletion equivalent to per-org. The fix is queued behind
   Phase 3b agent identity work; once it lands, the deletion endpoint
   question (Axis 4) can be re-opened with a real predicate.
-- **`messages_json` request-side fidelity vs. scrubbing.** The
-  `analytics_sink` plugin writes `messages_json` via parsing the request
-  body on its own path (not through `ctx.request_text()`). That code path
-  still receives the canonical body. The current decision is consistent --
-  storage is canonical, accessors are scrubbed -- but it does mean a
-  plugin author who reads `messages_json` *from the database* sees the
-  same unscrubbed content the operator sees. The privacy floor is at the
-  plugin-API boundary, not at the SQL boundary. Documented in
-  `docs/plugins.md` so a plugin author querying the table directly is not
-  surprised.
+- **Canonical-body retention for incident response.** Today no on-disk
+  surface carries the canonical body: `public.exchanges` stores metadata
+  only, and `public.plugin_analytics` -- written by `analytics_sink` via
+  `ctx.request_text()` / `ctx.response_content_json()` -- carries the
+  scrubbed shape. The retention horizon in Axis 3 is therefore moot for
+  raw payloads; nothing raw is kept. If a real incident-response use case
+  emerges (e.g. "the operator needs the exact prompt that crashed the
+  upstream model"), a future ADR can introduce a server-core write path
+  (independent of SDK accessors) that persists canonical bytes under a
+  shorter retention. Until then the trade-off is intentional: the
+  scrubber is the privacy floor *and* the storage ceiling.
 - **Cross-locale email patterns.** The RFC 5322 subset covers ASCII
   addresses; internationalised email addresses are not redacted. If real
   traffic surfaces them, a separate ADR amendment.

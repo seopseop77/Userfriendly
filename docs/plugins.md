@@ -110,6 +110,27 @@ server-side path always wins when a manifest declares a level.
   the context yet (e.g. a hook firing before the forwarder reads the
   body) and if the body is not valid UTF-8.
 
+### 3.2 What the scrubber does to plugin-visible content
+
+Both `request_text()` and `response_content_json()` pipe their return
+value through `llm_tracker_sdk.scrubbers.scrub` before handing it to the
+plugin (ADR-0029). Five pattern families are redacted in place:
+`sk-…`, `lts_…`, `Bearer <value>` (case-insensitive — also catches the
+value half of an `Authorization: Bearer …` header echoed in body text),
+and email addresses. Matches become `[REDACTED:secret]` /
+`[REDACTED:token]` / `[REDACTED:bearer]` / `[REDACTED:email]` so an
+operator can grep historical rows for what fired.
+
+The canonical bytes on `HookContext._raw_request_body` and the parsed
+response on `HookContext._parsed_response` are left untouched. The
+storage layer (`public.exchanges`, the `analytics_sink` plugin's
+`public.plugin_analytics`) reads the canonical body, so plugin authors
+who later query the database directly will see the unredacted content
+the operator sees — the privacy floor is the plugin API surface, not the
+SQL surface. Retention of the canonical rows is bounded by the
+operator-handled 6-month policy stated in `docs/deploy.md` §"Data
+collection & privacy".
+
 ## 4. Capability vocabulary
 
 Declare required capabilities in `plugin.toml`. The operator approves each

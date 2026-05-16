@@ -300,6 +300,48 @@ fly deploy
 
 ---
 
+## Data collection & privacy
+
+The central server stores one row per request in `public.exchanges`, and
+the bundled `analytics_sink` plugin writes one row per request to
+`public.plugin_analytics` carrying the parsed request body
+(`messages_json`) and the faithfully reassembled response
+(`response_json`, per ADR-0028). The operator should treat the database
+as containing the full prompts and responses that flow through the
+server.
+
+Privacy posture (ADR-0029):
+
+- **Storage is L3 by default.** The full request body and full response
+  reassembly are persisted so the analyses the project exists to enable
+  (drift, latency, scope-guard evaluation) have the data they need.
+- **Plugin-visible content is scrubbed at the SDK accessor.** Every
+  plugin that reads `HookContext.request_text()` /
+  `HookContext.response_content_json()` receives content with `sk-…` and
+  `lts_…` tokens, `Bearer <value>` mentions, and email addresses
+  replaced by `[REDACTED:…]` tags. The canonical bytes in the database
+  remain unscrubbed for operator incident response.
+- **Retention is 6 months.** Rows older than 6 months should be deleted
+  by the operator. An automated deletion job is not yet shipped; this
+  paragraph is the stated policy a future job will key off.
+- **Deletion requests are operator-handled today.** When an external
+  user requests removal of their data, run `DELETE FROM
+  public.exchanges WHERE org_id = $1` and `DELETE FROM
+  public.plugin_analytics WHERE org_id = $1` through the Supabase MCP
+  `execute_sql` path. A typed deletion endpoint is queued behind the
+  fix that populates `session_id` for real (currently hardcoded
+  `"server"`).
+- **The plugin off-switch is `LLMTRACK_PLUGINS_DISABLED`.** Setting
+  this to `analytics_sink` stops the per-exchange write to
+  `plugin_analytics`; the per-request audit row in `public.exchanges`
+  is unaffected.
+
+External (non-team) testing of the server requires that this disclosure
+reach the end user before their traffic is routed through it. Team /
+operator use stays unblocked.
+
+---
+
 ## What lands after CP13-b
 
 - The server is live at `https://llm-tracker-server.fly.dev` (or the

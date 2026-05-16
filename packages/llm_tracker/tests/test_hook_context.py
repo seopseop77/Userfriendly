@@ -141,3 +141,64 @@ def test_request_hash_handles_non_utf8_body() -> None:
     ctx = _ctx(mode="L", request_body=body)
     assert ctx.request_hash() == hashlib.sha256(body).hexdigest()
     assert ctx.request_length() == 3
+
+
+# -- ADR-0029: accessor-level scrubbing ----------------------------------
+
+
+def test_request_text_redacts_secrets_at_l3() -> None:
+    """`request_text()` runs the scrubber before returning (ADR-0029).
+
+    Raw bytes on `_raw_request_body` stay untouched so the storage layer
+    keeps the canonical body; only what the plugin reads is redacted.
+    """
+    body = b'{"prompt":"call ANTHROPIC_API_KEY=sk-ant-api03-AbCdEfGhIj now"}'
+    ctx = _ctx(mode="R", user_opted_in=True, request_body=body)
+    out = ctx.request_text(ContentLevel.L3)
+    assert out is not None
+    assert "sk-ant-api03" not in out
+    assert "[REDACTED:secret]" in out
+    # Hash + length still report against the canonical bytes.
+    assert ctx.request_hash() == hashlib.sha256(body).hexdigest()
+    assert ctx.request_length() == len(body)
+    # Canonical bytes preserved on the dataclass.
+    assert ctx._raw_request_body == body
+
+
+def test_request_text_redacts_email_at_l2() -> None:
+    """Scrubbing fires at every level that returns text (L2 + L3)."""
+    body = b"contact me at alice@example.com"
+    ctx = _ctx(mode="R", user_opted_in=True, request_body=body)
+    assert ctx.request_text(ContentLevel.L2) == ("contact me at [REDACTED:email]")
+
+
+def test_response_content_json_redacts_secrets() -> None:
+    """`response_content_json()` runs the scrubber before returning."""
+
+    class _Stub:
+        response_json = '{"content":[{"type":"text","text":"token Bearer xyz.abc-123"}]}'
+
+    ctx = HookContext(
+        session_id="local",
+        exchange_id="ex-1",
+        mode="R",
+        user_opted_in=True,
+        _parsed_response=_Stub(),
+    )
+    out = ctx.response_content_json()
+    assert out is not None
+    assert "xyz.abc-123" not in out
+    assert "[REDACTED:bearer]" in out
+    # Canonical JSON string preserved on the parsed response.
+    assert "xyz.abc-123" in _Stub.response_json
+
+
+def test_response_content_json_returns_none_when_not_parsed() -> None:
+    """Without `_parsed_response` the accessor still short-circuits to None."""
+    ctx = HookContext(
+        session_id="local",
+        exchange_id="ex-1",
+        mode="R",
+        user_opted_in=True,
+    )
+    assert ctx.response_content_json() is None

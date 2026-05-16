@@ -10,15 +10,17 @@ Per-level shape of the request-side accessors (design.md §7.1):
 
 | Effective level | `request_text()` | `request_hash()` | `request_length()` |
 |---|---|---|---|
-| L0 | None             | None             | None               |
-| L1 | None             | hex SHA-256      | byte length        |
-| L2 | raw decoded text | hex SHA-256      | byte length        |
-| L3 | raw decoded text | hex SHA-256      | byte length        |
+| L0 | None              | None             | None               |
+| L1 | None              | hex SHA-256      | byte length        |
+| L2 | scrubbed text     | hex SHA-256      | byte length        |
+| L3 | scrubbed text     | hex SHA-256      | byte length        |
 
-L2 returns the raw decoded text today. The "scrubbed" shape promised
-by §7.1 lands in Phase 1c alongside the scrubber primitives; the
-deferral is tracked under STATUS.md "Phase 1c prerequisites" and
-ADR-0006 §"Open questions".
+Plugin-visible request text and response JSON pass through
+:func:`llm_tracker_sdk.scrubbers.scrub` before being returned (ADR-0029).
+The raw bytes on ``_raw_request_body`` and the parsed response on
+``_parsed_response`` stay untouched -- the storage layer keeps the
+canonical body, the scrubber only shapes what plugins read at the
+accessor surface.
 
 Plugins should not construct `HookContext` themselves; the host
 owns its lifecycle.
@@ -32,6 +34,7 @@ from dataclasses import dataclass, field
 
 from .egress import EgressClient
 from .levels import ContentLevel, degrade, effective_ceiling
+from .scrubbers import scrub
 
 
 @dataclass
@@ -98,9 +101,11 @@ class HookContext:
         - the body is not valid UTF-8 (the SDK doesn't speculate
           about non-text payloads).
 
-        At L2 the host returns the raw decoded text; the scrubbed
-        shape promised by design.md §7.1 lands in Phase 1c alongside
-        the scrubber primitives. At L3 raw text is returned as-is.
+        At both L2 and L3 the host runs the decoded body through
+        :func:`llm_tracker_sdk.scrubbers.scrub` before returning so
+        plugins never read raw secrets or PII directly (ADR-0029). The
+        canonical bytes live on ``_raw_request_body`` and reach the
+        storage layer unchanged.
         """
         if self._raw_request_body is None:
             return None
@@ -109,9 +114,10 @@ class HookContext:
         if effective <= ContentLevel.L1:
             return None
         try:
-            return self._raw_request_body.decode("utf-8")
+            decoded = self._raw_request_body.decode("utf-8")
         except UnicodeDecodeError:
             return None
+        return scrub(decoded)
 
     def request_hash(self) -> str | None:
         """Hex SHA-256 of the raw request bytes.
@@ -166,7 +172,17 @@ class HookContext:
         "stop_reason": ..., "usage": {...}}``. Returns `None` when the
         extractor has not run on this exchange (e.g. blocked path,
         pre-SSE upstream failure).
+
+        Pipes through :func:`llm_tracker_sdk.scrubbers.scrub` before
+        returning so plugin-visible response content is redacted in line
+        with ADR-0029. The original JSON string on
+        ``_parsed_response.response_json`` is left untouched -- the
+        storage layer reads the canonical body, the scrubber only shapes
+        what plugins observe.
         """
         if self._parsed_response is None:
             return None
-        return getattr(self._parsed_response, "response_json", None)
+        value = getattr(self._parsed_response, "response_json", None)
+        if value is None:
+            return None
+        return scrub(value)

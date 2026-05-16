@@ -6,8 +6,8 @@
 
 ---
 
-**Last updated**: 2026-05-14 (Claude Code; **Option B + plugin-ecosystem workstream complete — all six checkpoints shipped, awaiting operator-run smoke on Fly**. (α `f02f516` ADR-0026 + ADR-0027 / β `61c8aeb` SSE extractor + HookContext accessors + record_exchange_timing extended / γ `49804f5` migration 0007 plugin_analytics / δ `b3f9ed2` analytics_sink plugin / ε `7741c13` keyword_block polish — env var canonicalised, default empty, TEST-ONLY framing dropped / ζ `854d4ee` Docker + fly.toml bundle both plugins; image build verified locally — entry_points discovery returns both plugins, /healthz returns ok in a docker run). Full repo test suite 329 passed under the DB fixture. ADR-#2 (consent + data-handling) is now urgent — `analytics_sink` stores full request + response payloads.)
-**Updated by**: Claude Code (Session-end — six checkpoints complete)
+**Last updated**: 2026-05-16 (Claude Code; **ADR-0028 follow-up — extractor `response_json` now faithfully reassembles every block the model emits**. Triggered by a live `plugin_analytics` row where `stop_reason: "tool_use"` + `output_tokens: 112` landed with `content: []` because the extractor's text-only narrow path dropped the tool_use block. ADR-0028 sets "faithful reassembly" as the extractor contract; `content_block_start` / `content_block_delta` (dispatched by `delta.type` with an unknown-delta fallback) / `content_block_stop` (parses `input_json_delta` buffer into `block["input"]`, raw-string fallback on parse failure) all handled. 5 new tests pin tool_use / mixed / thinking / unknown-delta / malformed-input paths. Full repo 334 passed under the DB fixture (was 329; +5 new tests). Single commit `8138d91`. Still awaiting operator-run smoke on Fly — same `fly deploy` covers both the 2026-05-14 workstream and this CP.)
+**Updated by**: Claude Code (ADR-0028 follow-up)
 
 ## Current phase
 
@@ -50,10 +50,13 @@
 
 ## Active worklog
 
+`docs/worklog/2026-05-16-extractor-faithful-response.md` (ADR-0028
+follow-up — extractor faithful reassembly; single code commit
+`8138d91` atop the 2026-05-14 workstream). Prior session worklogs
+preserved:
 `docs/worklog/2026-05-14-plugin-ecosystem.md` (Option B SSE
 extractor + analytics_sink + keyword_block multi-checkpoint
-session; ADR-0026 + ADR-0027 land in checkpoint α). Prior session
-worklogs preserved:
+session; ADR-0026 + ADR-0027 land in checkpoint α),
 `docs/worklog/2026-05-13-phase3b-agent.md` (Phase 3b — ADRs
 0024 / 0025 + `packages/llm_tracker_agent/` shipped),
 `docs/worklog/2026-05-13-cp14-response-side-followup.md` (CP14
@@ -64,17 +67,60 @@ CP14 proper).
 ## Recent commits
 
 ```
+8138d91   server: faithful Anthropic response reassembly (ADR-0028)
+a3c8df4   docs: STATUS + worklog — Option B + plugin-ecosystem session-end
 854d4ee   infra: bundle analytics_sink + keyword_block in Docker image
 7741c13   agent: keyword_block plugin package (promoted from test harness)
 b3f9ed2   agent: analytics_sink plugin (on_request_received + on_persisted)
-4d4ea9f   docs: STATUS + worklog for Checkpoint γ (migration 0007)
-49804f5   storage: migration 0007 plugin_analytics table
 ```
 
 ## Where we paused
 
+**ADR-0028 follow-up landed (2026-05-16, commit `8138d91`).** The
+2026-05-14 Option B + plugin-ecosystem workstream shipped the SSE
+extractor with text-only delta handling — a tool-use stop_reason
+response surfaced this as `content: []` on `plugin_analytics`. User
+direction: `response_json` is the canonical store; analysis is
+downstream. ADR-0028 codifies "faithful reassembly" as the extractor
+contract.
+
+Code change scope: `extractors/anthropic.py` gained
+`content_block_start` (seed block from the event payload as-is),
+`content_block_delta` type-dispatched on `delta.type`
+(`text_delta` / `input_json_delta` / `thinking_delta` /
+`signature_delta` + unknown-delta capture under `_extra_deltas`),
+and `content_block_stop` (parse `input_json_delta` buffer into
+`block["input"]`, raw-string fallback under `_input_json_raw` on
+parse failure). 5 new tests in `test_sse_extractor.py` pin the
+tool_use / mixed / thinking / unknown-delta / malformed-input
+paths.
+
+Full repo test suite **334 passed** under the DB fixture (was 329;
++5 new SSE-extractor tests). Ruff format + check clean.
+
+Auxiliary decisions during this CP:
+
+- **`exchanges.tool_call_count` stays at 0 placeholder.** User
+  pushed back on caching a derived count alongside the canonical
+  body; deriving it from `response_json.content` is one
+  `jsonb_path_query` per analysis query. Column's fate (deprecate /
+  drop / leave) queued as a separate decision.
+- **One new ADR, not an ADR-0026 amendment.** ADR-0026's public
+  surface (`response_content_json()`) is unchanged; ADR-0028
+  strengthens the contract behind that surface. Sibling Accepted
+  ADRs keep the supersede chain clean.
+
+**Backfill posture**: historical `plugin_analytics` rows with
+`content: []` under a tool_use `stop_reason` are unrecoverable —
+upstream bytes were not retained. Operator queries on past rows
+must filter `WHERE created_at >= <deploy_time_of_8138d91>`.
+
+---
+
+### Prior workstream — Phase 3b (closed 2026-05-13)
+
 **Phase 3b — CLOSED (live smoke verified by user).** Three commits
-in this session built the agent:
+in that session built the agent:
 
 1. `c124458` — pre-step tightening of `CLAUDE.md` (central-server
    stack/structure correction; token trim). Not Phase 3b proper.
@@ -749,6 +795,7 @@ ready to start.
 - [x] **Phase 3c CP14 — operator-only end-to-end smoke (2026-05-13, commit 458a4ba; first 200-OK roundtrip with operator-minted demo token; demo-scoped row in `public.exchanges`; PG16+ deploy gap surfaced + fixed in migration 0006; response-side metadata NULL on the success row flagged as separate follow-up track)**
 - [x] **CP14 follow-up Option A — close-out columns populated (`ended_at`/`status_code`/`model_requested`/`latency_ms`) (2026-05-13, commit 237d842; production-verified on row `01KRG14W5VNV78HN3P9PEF2Z9P` after `fly deploy` — same deploy stamped `alembic_version` to `0006_grant_app_role_set`; investigation falsified the prior "INSERT-at-open + UPDATE-at-close" hypothesis — there is no UPDATE path; 4 of 8 response-side NULLs closed; remaining 5 (`model_served`, `input_tokens`, `output_tokens`, `cache_*`, `stop_reason`) need Option B's SSE Extractor)**
 - [x] **Option B + plugin-ecosystem workstream (2026-05-14, commits `f02f516` α / `61c8aeb` β / `49804f5` γ / `b3f9ed2` δ / `7741c13` ε / `854d4ee` ζ); ADR-0026 (HookContext response accessors) + ADR-0027 (exchange row close-out policy) Accepted; `extractors/anthropic.py` populates the five SSE-derived columns end-to-end on the happy path; migration 0007 adds `plugin_analytics`; `analytics_sink` writes one row per exchange; `keyword_block` polished from TEST-ONLY to operator-configurable; Docker image bundles both plugins. Awaiting operator-run fly-deploy smoke for production sign-off; full repo test suite 329 passed under DB fixture.**
+- [x] **ADR-0028 follow-up — extractor faithful reassembly (2026-05-16, commit `8138d91`); `response_json` now captures tool_use, thinking, signature, and unknown future block types instead of text-only; surfaced by a live `plugin_analytics` row whose `content: []` had silently dropped a 112-token tool_use payload. Full repo test suite 334 passed under the DB fixture (+5 new tests). Same Fly-deploy smoke window as 2026-05-14.**
 - [ ] **Phase 3a — remaining 3 decision ADRs** (#1 fallback / #2 consent / #4 agent language)
 - [ ] Phase 3b — thin local agent (gated on #1 + #4)
 - [x] **Phase 3c — server build-out (14 of 14 plan-checkpoints done; closed 2026-05-13 with operator smoke validated. Plan at `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0017/0018/0019/0020/0022/0023)**

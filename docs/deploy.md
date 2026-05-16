@@ -287,6 +287,38 @@ build is robust against this without either change above — the
 workarounds matter when an operator is running a stock build (no rebuild
 permitted) or has overridden the engine factory.
 
+### PG16+ membership `WITH SET` qualifier
+
+Postgres 16 split role membership into three orthogonal options
+(`admin_option`, `inherit_option`, `set_option`). The CP14 roundtrip
+surfaced this on Supabase: the platform auto-grants the connecting
+role (e.g. `postgres`) membership of every freshly created role, but
+only with `inherit_option=true`. The very first statement
+`AuthMiddleware` issues on each request is `SET LOCAL ROLE
+llm_tracker_app`, which needs `set_option=true` and fails on a
+PG16-only-`inherit` grant with:
+
+```
+asyncpg.exceptions.InsufficientPrivilegeError:
+    permission denied to set role "llm_tracker_app"
+```
+
+Migration `0006_grant_app_role_set` ships the fix and runs on every
+deploy. It branches on `server_version_num`:
+
+- **PG16+** (`>= 160000`): `GRANT llm_tracker_app TO CURRENT_USER
+  WITH SET TRUE`.
+- **PG15**: plain `GRANT llm_tracker_app TO CURRENT_USER` (the
+  `WITH SET TRUE` qualifier is PG16+ only and would syntax-error
+  against an older server).
+
+`CURRENT_USER` (not a hardcoded role name) keeps the migration
+portable across deploy environments where the connecting role may be
+named differently. The `DO $$ ... END $$` block is idempotent — a
+re-run after stamping is a no-op. Any future PG16+ managed deploy
+(RDS, Cloud SQL, Neon) that hits the same trap is already covered on
+first `alembic upgrade head`; no operator action is needed.
+
 ### A subsequent deploy needs a fresh secret
 
 `fly secrets set ...` triggers a new deploy by default. To stage

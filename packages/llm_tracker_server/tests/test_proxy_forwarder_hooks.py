@@ -360,3 +360,79 @@ async def test_no_plugin_host_is_transparent_passthrough():
     assert captured[0].headers.get("x-api-key") == "sk-ant-test"
     # Upstream body streamed verbatim.
     assert b"event: ping" in body
+
+
+# -- ADR-0027 axis 2: pre-SSE upstream failure path ----------------------
+
+
+@pytest.mark.asyncio
+async def test_axis2_non_200_short_circuits_with_status(captured_audit):
+    """Upstream non-2xx before SSE: forward verbatim + skip SSE-only hooks.
+
+    The CP9 row-write call site is gated on `has_request_scope`; this
+    test exercises the no-auth-middleware shape, so it verifies the
+    forwarder-level behaviour only — status forwarded, body forwarded,
+    SSE-only plugin hooks bypassed, and the ctx cleaned up explicitly
+    because the streaming generator's `finally` never runs on this
+    path.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            401,
+            headers={"content-type": "application/json"},
+            content=b'{"error":{"type":"authentication_error","message":"invalid x-api-key"}}',
+        )
+
+    transport = httpx.MockTransport(handler)
+    host = PluginHost(audit_writer=captured_audit)
+    host._plugins = []
+
+    async with httpx.AsyncClient(transport=transport) as client:
+        response = await forward_request(
+            _make_request(headers={"x-api-key": "sk-ant-bogus"}),
+            "v1/messages",
+            http_client=client,
+            upstream_base="http://upstream",
+            plugin_host=host,
+        )
+
+    assert response.status_code == 401
+    assert b"authentication_error" in response.body
+
+    hooks_seen = {r["hook"] for r in captured_audit.rows if r["kind"] == "hook_invoked"}
+    assert "on_upstream_response_start" not in hooks_seen
+    assert "on_response_complete" not in hooks_seen
+    assert host._exchange_contexts == {}
+
+
+@pytest.mark.asyncio
+async def test_axis2_upstream_connection_error_returns_503(captured_audit):
+    """Upstream `ConnectError`: forwarder returns 503 + cleans up ctx.
+
+    On this path `record_exchange_failure` writes the row with the
+    documented `status_code=599` sentinel under the auth-middleware
+    shape; here we verify the forwarder-level behaviour (no auth
+    middleware: 503 returned, ctx cleaned, SSE-only hooks not fired).
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("name resolution failed")
+
+    transport = httpx.MockTransport(handler)
+    host = PluginHost(audit_writer=captured_audit)
+    host._plugins = []
+
+    async with httpx.AsyncClient(transport=transport) as client:
+        response = await forward_request(
+            _make_request(headers={"x-api-key": "sk-ant-test"}),
+            "v1/messages",
+            http_client=client,
+            upstream_base="http://upstream",
+            plugin_host=host,
+        )
+
+    assert response.status_code == 503
+    assert host._exchange_contexts == {}
+    hooks_seen = {r["hook"] for r in captured_audit.rows if r["kind"] == "hook_invoked"}
+    assert "on_upstream_response_start" not in hooks_seen

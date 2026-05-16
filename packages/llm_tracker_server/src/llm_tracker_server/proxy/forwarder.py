@@ -52,7 +52,7 @@ from contextlib import AsyncExitStack, nullcontext
 import httpx
 import sqlalchemy as sa
 import structlog
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 from llm_tracker_sdk import Abort, Block, Transform
 from starlette.requests import Request
 from ulid import ULID
@@ -63,6 +63,7 @@ from llm_tracker_server.plugin_host.host import PluginHost
 from llm_tracker_server.proxy.sse import block_response
 from llm_tracker_server.storage.exchanges import (
     record_exchange_blocked,
+    record_exchange_failure,
     record_exchange_timing,
 )
 
@@ -260,7 +261,74 @@ async def forward_request(
             url = f"{url}?{query}"
 
         upstream_req = http_client.build_request(request.method, url, headers=headers, content=body)
-        upstream = await http_client.send(upstream_req, stream=True)
+        try:
+            upstream = await http_client.send(upstream_req, stream=True)
+        except httpx.RequestError as exc:
+            # ADR-0027 axis 2: pre-SSE upstream connection failure.
+            # Status 599 is the documented "upstream gave us nothing"
+            # sentinel; operator queries can filter on it to find
+            # network-error cases vs. upstream 4xx/5xx.
+            log.warning(
+                "proxy.upstream_unreachable",
+                method=request.method,
+                path=path,
+                error=str(exc),
+            )
+            if has_request_scope:
+                ended_ms, latency = _close_out_now()
+                await record_exchange_failure(
+                    session,
+                    exchange_id=exchange_id,
+                    org_id=org_id,
+                    endpoint=path,
+                    started_at_ms=t0_epoch_ms,
+                    ended_at_ms=ended_ms,
+                    latency_ms=latency,
+                    model_requested=_model_requested,
+                    status_code=599,
+                )
+            if plugin_host is not None:
+                plugin_host.end_exchange(exchange_id)
+            return PlainTextResponse(
+                "llm-tracker upstream unreachable",
+                status_code=503,
+            )
+
+        # ADR-0027 axis 2: upstream returned a non-2xx status before
+        # SSE could start. Persist the row with the upstream status,
+        # forward the body verbatim, and short-circuit. The plugin
+        # host's `on_upstream_response_start` is intentionally not
+        # invoked — the request never reached the SSE path.
+        if upstream.status_code != 200:
+            body_bytes = b""
+            async for chunk in upstream.aiter_bytes():
+                body_bytes += chunk
+            await upstream.aclose()
+            if has_request_scope:
+                ended_ms, latency = _close_out_now()
+                await record_exchange_failure(
+                    session,
+                    exchange_id=exchange_id,
+                    org_id=org_id,
+                    endpoint=path,
+                    started_at_ms=t0_epoch_ms,
+                    ended_at_ms=ended_ms,
+                    latency_ms=latency,
+                    model_requested=_model_requested,
+                    status_code=upstream.status_code,
+                )
+            if plugin_host is not None:
+                plugin_host.end_exchange(exchange_id)
+            return Response(
+                body_bytes,
+                status_code=upstream.status_code,
+                headers={
+                    k: v
+                    for k, v in upstream.headers.items()
+                    if k.lower() not in _RESPONSE_HOP_BY_HOP
+                },
+                media_type=upstream.headers.get("content-type"),
+            )
 
         if plugin_host is not None:
             result = await plugin_host.on_upstream_response_start(exchange_id)

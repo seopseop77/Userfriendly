@@ -1,6 +1,6 @@
 """Helpers for writing ``exchanges`` rows (ADR-0018 + ADR-0020 + ADR-0027).
 
-Two call sites in the forwarder:
+Three call sites in the forwarder:
 
 * :func:`record_exchange_timing` — happy path. Lands after the upstream
   stream ended naturally; carries the three ``t_*_ms`` epoch
@@ -22,6 +22,14 @@ Two call sites in the forwarder:
   (``ended_at_ms``, ``latency_ms``, ``model_requested``) ride
   through this helper too so blocked rows are queryable on the same
   axes as happy rows.
+* :func:`record_exchange_failure` — pre-SSE upstream failure path
+  (ADR-0027 axis 2). Lands when ``http_client.send`` raises a
+  network-level error or when upstream returns a non-2xx status
+  before the SSE stream starts. ``status_code`` is the upstream's
+  status when available; ``599`` is the documented sentinel for
+  "upstream gave us nothing" (connection error / timeout).
+  ``blocked_by`` stays NULL — this is not a plugin decision, this
+  is upstream not delivering.
 
 Both helpers take ``session`` + ``org_id`` keyword-only. The session is
 the per-request :class:`AsyncSession` opened by
@@ -137,6 +145,53 @@ async def record_exchange_blocked(
             content_level="L3",
             t_request_received_ms=started_at_ms,
             blocked_by=blocked_by,
+        )
+    )
+    await session.flush()
+
+
+async def record_exchange_failure(
+    session: AsyncSession,
+    *,
+    exchange_id: str,
+    org_id: uuid.UUID,
+    endpoint: str,
+    started_at_ms: int,
+    ended_at_ms: int,
+    latency_ms: int,
+    model_requested: str | None,
+    status_code: int,
+) -> None:
+    """Persist a row for a request that failed before SSE could start.
+
+    Per ADR-0027 axis 2, this covers two upstream-failure shapes:
+
+    1. ``http_client.send`` raised (network error, timeout, etc.). The
+       forwarder passes ``status_code=599`` as the documented sentinel
+       for "upstream gave us nothing."
+    2. Upstream returned a non-2xx status before SSE could start. The
+       forwarder passes ``status_code=upstream.status_code`` (4xx/5xx
+       verbatim).
+
+    Response-side columns (``model_served``, the four token counts,
+    ``stop_reason``, and the two SSE timing marks) stay NULL because
+    no SSE stream ran. ``blocked_by`` also stays NULL — this is not a
+    plugin decision; it is upstream not delivering.
+    """
+    session.add(
+        Exchange(
+            id=exchange_id,
+            org_id=org_id,
+            session_id="server",
+            started_at=started_at_ms,
+            ended_at=ended_at_ms,
+            provider="anthropic",
+            endpoint=endpoint,
+            model_requested=model_requested,
+            status_code=status_code,
+            latency_ms=latency_ms,
+            content_level="L3",
+            t_request_received_ms=started_at_ms,
         )
     )
     await session.flush()

@@ -6,8 +6,8 @@
 
 ---
 
-**Last updated**: 2026-05-17 (Claude Code; **Queued follow-up batch — 4 of 5 done, 1 returned to queue (commits `1a886e6` + `7b20125` + `0db0bac` + finalize).** User asked to clear the five queued follow-ups in one batch surfacing only the items needing user decision. Two decisions surfaced: (a) `exchanges.tool_call_count` fate — user chose **drop** (migration 0008); (b) `plugin_analytics` RLS — exploration found 0007's docstring made a deliberate "no RLS on this table" choice with reasoning, so the advisor's "newly surfaced gap" framing was factually wrong; user chose to defer (Option A) and correct STATUS. Three executable items shipped: `docs/deploy.md` PG16+ `WITH SET TRUE` paragraph (commit `1a886e6`), `exchanges.tool_call_count` drop via migration 0008 + storage/test cleanup (commit `7b20125`), and ADR-0027 axis 2 impl — pre-SSE upstream-failure-path row write via new `record_exchange_failure` helper + `httpx.RequestError` short-circuit + `status_code != 200` short-circuit + two forwarder-level tests (commit `0db0bac`). Empty package shells `rm -rf`'d (no commit; no git-tracked file changed). Tests 58 passed / 16 skipped (was 56 / 16, +2 axis 2 forwarder tests). Operational consequences after next `fly deploy`: `alembic upgrade head` advances stamp to `0008_drop_tool_call_count` (ALTER on a 30-row table); pre-SSE upstream failures now write a row to `public.exchanges` with `status_code=599` sentinel (network error) or upstream 4xx/5xx (Anthropic non-2xx).)
-**Updated by**: Claude Code (queued follow-up batch)
+**Last updated**: 2026-05-17 (Claude Code; **Queued follow-up batch round 2 — three items shipped (commits `4fef915` + `3fe0caa` + `cd21da3` + finalize).** User asked to clear three executable follow-ups from the prior batch's queue: (1) call `plugin_host.end_exchange(exchange_id)` on the Block/Abort short-circuit returns in `forwarder.py` (was relying on `block_response.gen()`'s `finally`, which is skipped if the client disconnects before iterating the synthetic stream); (2) DB-fixture integration test for `record_exchange_failure` (ADR-0027 axis 2 was forwarder-unit-tested only — row-write side ran only under the auth-middleware shape); (3) 6-month automated retention deletion job (ADR-0029 Axis 3) as migration `0009_retention_deletion_job` — two `pg_cron` daily jobs at 03:00 UTC against `public.exchanges` and `public.plugin_analytics`, gated on `pg_available_extensions WHERE name='pg_cron'` so the alembic cycle stays green on stock Postgres dev environments. `docs/deploy.md` "Retention is 6 months" bullet updated to name the scheduled jobs and the gating posture. Tests 59 passed / 18 skipped (was 58 / 16; +1 forwarder test for Block-without-iteration, +1 DB-fixture file with 2 skipped tests under no-DB shape). Operational consequence after next `fly deploy`: `alembic upgrade head` advances stamp to `0009_retention_deletion_job` and `cron.job` gains two `llm-tracker-retention-*` rows; first scheduled deletion fires at the next 03:00 UTC tick.)
+**Updated by**: Claude Code (queued follow-up batch round 2)
 
 ## Current phase
 
@@ -29,41 +29,46 @@
     smoke: 503 propagates to Anthropic SDK → 10 retries with
     backoff → user-facing failure, no Anthropic bypass.
 - **Active task**: **No active task — between cycles.** ADR-0029
-  production-validated; queued follow-up batch cleared 4 of 5
-  (deploy.md paragraph + tool_call_count drop + ADR-0027 axis 2 impl
-  + empty-shells cleanup). One item returned to queue:
-  `plugin_analytics` RLS, which on inspection turned out to be a
-  deliberate 0007-docstring decision and is therefore ADR-level
-  work, not a missed gap.
+  production-validated; queued follow-up batch round 2 cleared three
+  items (Block/Abort ctx cleanup + `record_exchange_failure`
+  DB-fixture test + 6-month retention cron migration). Next pick is
+  the `scope_guard` plugin — Phase 1c.
 - **Queued follow-ups** (none gating; pick one to continue):
   - **`plugin_analytics` RLS axis — ADR-level revisit.** 0007's
     docstring chose "no RLS on this table" deliberately ("Analytics
     is internal — the plugin queries this directly from operator
     tooling"). Either elevate that choice to an ADR or reconsider
     with an explicit policy on operator-tooling access shape.
-  - **Block/Abort ctx-cleanup latent gap** — the existing
-    Block/Abort short-circuit returns in the forwarder do not call
-    `plugin_host.end_exchange(exchange_id)` either; surfaced while
-    implementing ADR-0027 axis 2, out of scope there. Small
-    follow-up.
-  - **DB-fixture integration tests for `record_exchange_failure`.**
-    The axis-2 forwarder behaviour is unit-tested; the row-write
-    side runs only under the auth-middleware shape and wants a
-    DB-fixture test alongside `test_storage_smoke.py`.
-  - **6-month automated retention deletion job** (ADR-0029 Axis 3).
+  - **Task hierarchy (session/task/exchange).** Deferred track to
+    introduce a `task_id` layer between `session_id` and
+    `exchange_id` so multi-exchange Claude-Code sessions map to
+    operator-visible task units rather than only the per-turn
+    exchange row. Not gated on anything; design-first.
   - **Real `session_id` populator + deletion endpoint** (ADR-0029
     Axis 4 + Phase 3b agent identity).
   - **i18n email scrubbing** (ADR-0029 §"Open questions").
+  - ~~**Block/Abort ctx-cleanup latent gap**~~ **Closed 2026-05-17**
+    by commit `4fef915`.
+  - ~~**DB-fixture integration tests for `record_exchange_failure`**~~
+    **Closed 2026-05-17** by commit `3fe0caa`.
+  - ~~**6-month automated retention deletion job**~~ **Closed
+    2026-05-17** by migration `0009_retention_deletion_job`.
   - ~~**ADR-#2 consent + data-handling**~~ **Closed 2026-05-17** by
     ADR-0029, production-validated same day.
 
 ## Active worklog
 
-`docs/worklog/2026-05-17-followup-batch.md` — queued follow-up batch
-(four of five executed: deploy.md PG16+ paragraph, tool_call_count
-drop migration 0008, ADR-0027 axis 2 impl, empty-shells cleanup; one
-returned to queue: `plugin_analytics` RLS as ADR-level). Prior
-worklogs from earlier today preserved:
+`docs/worklog/2026-05-17-followup-batch-2.md` — queued follow-up
+batch round 2 (three items: Block/Abort `end_exchange` cleanup at
+the short-circuit return sites; DB-fixture integration test for
+`record_exchange_failure` pinning the row-write half of ADR-0027
+axis 2; migration `0009_retention_deletion_job` with two
+`pg_cron`-gated daily jobs at 03:00 UTC plus the deploy.md retention
+bullet update). Prior worklogs from earlier today preserved:
+`docs/worklog/2026-05-17-followup-batch.md` — round 1 of the queued
+follow-ups (deploy.md PG16+ paragraph, tool_call_count drop
+migration 0008, ADR-0027 axis 2 impl, empty-shells cleanup; one
+returned to queue: `plugin_analytics` RLS as ADR-level).
 `docs/worklog/2026-05-17-adr-0029-production-smoke.md` — production
 smoke verification of ADR-0029 scrubber after Fly `v11` deploy, plus
 doc reconciliation against falsified `messages_json` canonical
@@ -90,21 +95,109 @@ CP14 proper).
 ## Recent commits
 
 ```
+<finalize>   docs: STATUS + worklog — followup batch round 2
+cd21da3   server: 6-month retention cron jobs (migration 0009)
+3fe0caa   tests: DB integration test for record_exchange_failure
+4fef915   server: call end_exchange on Block/Abort paths
 0db0bac   server: ADR-0027 axis 2 — pre-SSE upstream failure path
-7b20125   server: drop exchanges.tool_call_count (migration 0008)
-1a886e6   docs: deploy.md — PG16+ membership WITH SET paragraph
-d4a7891   docs: STATUS + worklog — ADR-0029 production smoke
-d7f17c0   docs: reconcile ADR-0029 storage-canonical with prod
 ```
 
 ## Where we paused
 
-**Queued follow-up batch (2026-05-17, commits `1a886e6` + `7b20125`
-+ `0db0bac` + finalize).** User asked to clear the five queued
-items in one batch, surfacing only the decisions that actually
-needed input. Two decisions surfaced (`tool_call_count` fate — drop;
-`plugin_analytics` RLS — defer + correct STATUS framing). Three
-items shipped:
+**Queued follow-up batch round 2 (2026-05-17, commits `4fef915` +
+`3fe0caa` + `cd21da3` + finalize).** User asked to clear three executable
+follow-ups from the prior batch's queue. All three shipped:
+
+- **`4fef915` (Block/Abort end_exchange cleanup).** Added an
+  explicit `plugin_host.end_exchange(exchange_id)` immediately
+  before each `return block_response(...)` short-circuit in
+  `forwarder.py` (the three Block/Abort sites — `on_request_received`
+  Block, `before_forward` Block, `on_upstream_response_start`
+  Abort). Before this, cleanup of the per-exchange ctx ran only via
+  `block_response.gen()`'s `finally`, which fires only when the
+  ASGI server iterates the synthetic stream — leaving a leak window
+  if the client disconnects before iterating. Matches the axis-2
+  cleanup pattern. New test
+  `test_block_short_circuit_cleans_ctx_without_iterating_response`
+  pins the behaviour without relying on response-stream iteration.
+- **`3fe0caa` (DB-fixture test for record_exchange_failure).** New
+  `test_record_exchange_failure_db.py` alongside
+  `test_storage_smoke.py`. Pins the row-write half of ADR-0027
+  axis 2 against the DB fixture (the forwarder-level unit tests in
+  `test_proxy_forwarder_hooks.py::test_axis2_*` exercise the
+  forwarder branching and ctx cleanup but stop short of the actual
+  INSERT). Two shapes covered: `status_code=599` (network-error
+  sentinel) and `status_code=401` (upstream non-2xx). Each asserts
+  the row exists with the correct `exchange_id` + `org_id`,
+  close-out fields (`ended_at`, `latency_ms`) populated, and
+  `blocked_by` NULL (failure is not a plugin decision). Skips
+  under the same `LLMTRACK_TEST_DATABASE_URL` gate as the rest of
+  the DB-fixture suite.
+- **`cd21da3` (6-month retention cron migration 0009).** Migration
+  `0009_retention_deletion_job` schedules two daily `pg_cron` jobs
+  at 03:00 UTC:
+  `llm-tracker-retention-exchanges` runs
+  `DELETE FROM public.exchanges WHERE started_at <
+  (EXTRACT(EPOCH FROM now() - INTERVAL '6 months') * 1000)::bigint`
+  (the unix-ms representation is unavoidable — `started_at` is
+  `BigInteger`); `llm-tracker-retention-plugin-analytics` runs
+  `DELETE FROM public.plugin_analytics WHERE created_at <
+  now() - INTERVAL '6 months'` (timestamptz, direct).
+  The `DO $$ … $$` block is gated on
+  `pg_available_extensions WHERE name='pg_cron'` so the alembic
+  cycle stays green on stock Postgres dev environments (where the
+  operator falls back to the manual DELETE in `docs/deploy.md`).
+  Downgrade unschedules both jobs by name but does **not** drop
+  the `pg_cron` extension (project-wide blast-radius rule).
+  `docs/deploy.md` "Retention is 6 months" bullet updated to name
+  the jobs, the gating posture, and the inspection query.
+
+**Verification recap:**
+
+```
+$ .venv/bin/python3.12 -m ruff check <all modified files>
+All checks passed!
+$ .venv/bin/python3.12 -m ruff format --check \
+    packages/llm_tracker_server/alembic/versions/0009_retention_deletion_job.py
+1 file already formatted
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker_server/tests -q
+59 passed, 18 skipped in 5.71s
+# Was 58 / 16 — +1 forwarder test (Block-without-iteration),
+# +1 DB-fixture file (2 skipped tests under no-DB shape).
+$ LLMTRACK_DATABASE_URL=postgresql://localhost/dummy \
+    .venv/bin/python3.12 -m alembic upgrade \
+    0008_drop_tool_call_count:0009_retention_deletion_job --sql
+... emits BEGIN; <DO $$ … $$>; UPDATE alembic_version …; COMMIT;
+$ LLMTRACK_DATABASE_URL=postgresql://localhost/dummy \
+    .venv/bin/python3.12 -m alembic downgrade \
+    0009_retention_deletion_job:0008_drop_tool_call_count --sql
+... emits BEGIN; <unschedule loop>; UPDATE alembic_version …; COMMIT;
+```
+
+Operational consequences after the next `fly deploy`:
+
+1. `alembic upgrade head` advances stamp from
+   `0008_drop_tool_call_count` to `0009_retention_deletion_job`.
+   `cron.job` gains two `llm-tracker-retention-*` rows; no data
+   deletion at migration time.
+2. First scheduled deletion fires at the next 03:00 UTC tick; the
+   recurring job deletes rows older than 6 months on each tick.
+3. The forwarder's Block/Abort short-circuits now clean up the
+   per-exchange ctx immediately (no more reliance on synthetic
+   stream iteration); behaviourally identical for clients that
+   iterate the response, leak-tight for clients that disconnect
+   before iterating.
+
+---
+
+### Prior workstream — Queued follow-up batch round 1 (closed 2026-05-17 earlier)
+
+**Queued follow-up batch round 1 (2026-05-17, commits `1a886e6` +
+`7b20125` + `0db0bac` + finalize).** User asked to clear the five
+queued items in one batch, surfacing only the decisions that
+actually needed input. Two decisions surfaced (`tool_call_count`
+fate — drop; `plugin_analytics` RLS — defer + correct STATUS
+framing). Three items shipped:
 
 - **`1a886e6` (deploy.md PG16+ paragraph).** New § between the
   pgbouncer/asyncpg note and the "subsequent deploy" §. Names the
@@ -149,39 +242,15 @@ to write the RLS migration, the docstring revealed: 0007 explicitly
 chose "no RLS on this table" with reasoning ("Analytics is internal
 — the plugin queries this directly from operator tooling without
 going through the request-scoped session"). The advisor's "newly
-surfaced gap" framing I had used in STATUS was factually wrong:
+surfaced gap" framing previously in STATUS was factually wrong:
 0007 made the deliberate choice, just not as an ADR. Reversing it
 is ADR-level work, not a routine follow-up. Deferred + STATUS
 side-quests entry corrected (see below).
 
 **Latent gap surfaced for separate follow-up.** The Block/Abort
-short-circuit returns in the forwarder also lack explicit
+short-circuit returns in the forwarder also lacked explicit
 `plugin_host.end_exchange()` — same shape as the axis 2 short-
-circuit before this CP. Today the symptom is benign in practice
-(the per-exchange ctx is a dict entry that gets garbage-collected
-with the request); strictly correct is to clean up explicitly.
-Queued under "Block/Abort ctx-cleanup latent gap."
-
-**Verification recap:**
-
-```
-$ .venv/bin/python3.12 -m ruff check <all modified files>
-All checks passed!
-$ .venv/bin/python3.12 -m pytest packages/llm_tracker_server/tests -q
-58 passed, 16 skipped in 5.50s
-# Was 56 / 16 — +2 axis 2 forwarder tests.
-```
-
-Operational consequences after the next `fly deploy`:
-
-1. `alembic upgrade head` advances stamp to
-   `0008_drop_tool_call_count`; ALTER on a 30-row table is
-   effectively instant (ACCESS EXCLUSIVE momentarily).
-2. Pre-SSE upstream failures (Anthropic 4xx/5xx or network error)
-   now write a `public.exchanges` row with `status_code` populated.
-   Operator SQL `WHERE status_code = 599` finds network-error
-   cases; `WHERE status_code BETWEEN 400 AND 499` finds upstream
-   4xx. Previously both were invisible to the fact table.
+circuit before that CP. Closed by round 2's `4fef915`.
 
 ---
 
@@ -1002,11 +1071,13 @@ reframes them server-side**:
 
 ## Next single step
 
-**No single blocking step.** ADR-0029 was the last gating decision
-and is production-validated; the 4-of-5 follow-up batch cleared the
-remaining executable items. Operator's next operational step is
-`fly deploy` to pick up migration 0008 + ADR-0027 axis 2 impl on
-production.
+**`scope_guard` plugin — Phase 1c.** Round 2 of the follow-up batch
+closed the three pickable items from round 1's queue; the next
+phase of work is `scope_guard`, the first non-reference plugin on
+the new plugin host. Operator's parallel operational step is
+`fly deploy` to pick up migration `0009_retention_deletion_job` on
+production (no data deletion at apply time; first scheduled run is
+at the next 03:00 UTC tick).
 
 Queued follow-ups (pickable cold; none gate any next CP):
 
@@ -1016,20 +1087,14 @@ Queued follow-ups (pickable cold; none gate any next CP):
    policy on how operator tooling queries internal analytics tables
    under a session-bound RLS shape. Distinct axis from ADR-0018's
    user-data RLS guarantee.
-2. **Block/Abort ctx-cleanup latent gap.** The existing
-   Block/Abort short-circuit returns in the forwarder do not call
-   `plugin_host.end_exchange(exchange_id)` either; benign today
-   (ctx GC'd with request) but inconsistent with the axis-2
-   shape. Small follow-up.
-3. **DB-fixture integration tests for `record_exchange_failure`.**
-   The axis-2 row-write side runs only under the auth-middleware
-   shape; alongside `test_storage_smoke.py` is the natural location.
-4. **6-month automated retention deletion job** (ADR-0029 Axis 3).
-   Policy stated; periodic `DELETE … WHERE started_at < now() -
-   interval '6 months'` is a future CP.
-5. **Real `session_id` populator + deletion endpoint** (ADR-0029
+2. **Task hierarchy (session/task/exchange).** Deferred track to
+   introduce a `task_id` layer between `session_id` and
+   `exchange_id` so multi-exchange Claude-Code sessions map to
+   operator-visible task units rather than only the per-turn
+   exchange row. Design-first; not gated on anything.
+3. **Real `session_id` populator + deletion endpoint** (ADR-0029
    Axis 4 + Phase 3b agent identity).
-6. **i18n email scrubbing** (ADR-0029 §"Open questions").
+4. **i18n email scrubbing** (ADR-0029 §"Open questions").
 
 ### Side-quests (do at any time, none blocking)
 

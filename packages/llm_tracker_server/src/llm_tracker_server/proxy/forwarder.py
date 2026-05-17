@@ -216,6 +216,7 @@ async def forward_request(
                         latency_ms=blocked_latency,
                         model_requested=_model_requested,
                     )
+                plugin_host.end_exchange(exchange_id)
                 return block_response(result.reason, exchange_id, plugin_host)
 
         # The `forwarded_credential` boolean is the audit signal: it
@@ -246,6 +247,7 @@ async def forward_request(
                         latency_ms=blocked_latency,
                         model_requested=_model_requested,
                     )
+                plugin_host.end_exchange(exchange_id)
                 return block_response(result.reason, exchange_id, plugin_host)
             if isinstance(result, Transform):
                 # ADR-0011: merge plugin headers into the request,
@@ -347,6 +349,7 @@ async def forward_request(
                         latency_ms=blocked_latency,
                         model_requested=_model_requested,
                     )
+                plugin_host.end_exchange(exchange_id)
                 return block_response(result.reason, exchange_id, plugin_host)
 
         internal: asyncio.Queue[bytes | None] = asyncio.Queue()

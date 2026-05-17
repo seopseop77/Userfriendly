@@ -129,6 +129,32 @@ async def test_block_on_request_received_short_circuits_upstream(captured_audit)
     assert host._exchange_contexts == {}
 
 
+@pytest.mark.asyncio
+async def test_block_short_circuit_cleans_ctx_without_iterating_response(captured_audit):
+    """Block return clears `_exchange_contexts` before the response is iterated.
+
+    Pins the explicit `end_exchange` at the short-circuit site (not via
+    `block_response.gen()`'s `finally`): if the ASGI server never
+    iterates the synthetic stream, the ctx still does not leak.
+    """
+    captured: list[httpx.Request] = []
+    transport = httpx.MockTransport(_capture_handler(captured))
+    host = PluginHost(audit_writer=captured_audit)
+    host._plugins = [_BlockOnReceive()]
+
+    async with httpx.AsyncClient(transport=transport) as client:
+        await forward_request(
+            _make_request(headers={"x-api-key": "sk-ant-test"}),
+            "v1/messages",
+            http_client=client,
+            upstream_base="http://upstream",
+            plugin_host=host,
+        )
+
+    assert captured == []
+    assert host._exchange_contexts == {}
+
+
 # -- Block from before_forward -------------------------------------------
 
 

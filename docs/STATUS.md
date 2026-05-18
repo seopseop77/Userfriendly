@@ -6,8 +6,8 @@
 
 ---
 
-**Last updated**: 2026-05-18 (Cowork; **ADR-0030 (scope_guard plugin design) drafted as Proposed — commit `27b6d92` (ADR) + finalize (STATUS + worklog).** Nine pre-decided axes from the user interview + four Cowork-surfaced ambiguities resolved to Cowork defaults ("전부 default OK"): Stage-2 judge uses OpenAI `gpt-4o-mini` via the same EgressGuard path as Stage-1 (rejecting brief's "Anthropic SDK bypass"); embedding input is user-initiated turns only (no assistant text, no top-level `system`, no `tool_result`); `scope_alerts` gets four extra columns for threshold tuning; OpenAI external-API disclosure binds to a `docs/deploy.md` edit at implementation time. ADR settles ADR-0002 in reframed async-monitor form (not synchronous block). No code shipped this round — ADR is Proposed pending operator acceptance.)
-**Updated by**: Claude Cowork (ADR-0030 design workstream)
+**Last updated**: 2026-05-18 (Claude Code; **ADR-0030 Accepted by operator → scope_guard implementation CP1 of 8 done — commit `2511c3a` (server: migration `0010_scope_guard_tables`) + this docs-finalize commit.** ADR §D8 schema ships verbatim: three tables (`scope_documents`, `scope_chunks`, `scope_alerts`), `vector` extension installed, RLS on the two corpus tables per migration 0005 pattern, no-RLS on `scope_alerts` per migration 0007 `plugin_analytics` pattern, GRANT to `llm_tracker_app`. Round-trip verified (`alembic upgrade head` → `downgrade -1` → `upgrade head`) on the new local `pgvector/pgvector:pg15` image — the same commit replaces the old `postgres:15` docker line in §"Local dev loop revival" because vanilla `postgres:15` cannot satisfy `CREATE EXTENSION vector`. Operator pre-decision on the only infra axis surfaced before CP1: Option A (image bump) over Option B (extension guard). Test baseline this session: 164 passed under the DB fixture, 0 regression. ADR-0030's four open questions (Q1 chunker algo / Q2 ANN index / Q3 retention placement / Q4 judge prompt) carried into the implementation worklog and pinned to their respective CPs.)
+**Updated by**: Claude Code (scope_guard implementation; CP1 of 8)
 
 ## Current phase
 
@@ -28,12 +28,16 @@
   - Fail-closed per ADR-0024 confirmed end-to-end in negative
     smoke: 503 propagates to Anthropic SDK → 10 retries with
     backoff → user-facing failure, no Anthropic bypass.
-- **Active task**: **ADR-0030 operator review → Accepted → scope_guard
-  implementation.** Phase 1c design captured in ADR-0030 (Proposed)
-  with the user's nine pre-decisions + Cowork's four ambiguity
-  resolutions (all defaults accepted). Next step is operator review
-  + acceptance; then the implementation session has a fixed target
-  per §"Implementation surface" of the ADR.
+- **Active task**: **scope_guard implementation against
+  ADR-0030 (Accepted 2026-05-18). CP1 of 8 done.** Migration
+  `0010_scope_guard_tables` (commit `2511c3a`) lands the three
+  tables + RLS + GRANTs per ADR §D8; pgvector validated locally
+  on `pgvector/pgvector:pg15`. **Next is CP2 — new package
+  `packages/llm_tracker_plugin_scope_guard/` skeleton + manifest
+  per ADR §D9.** Per-CP work board lives in
+  `docs/worklog/2026-05-18-scope-guard-impl.md` §"Checkpoint
+  plan"; CP3 / CP4 / CP8 each pin one of the ADR's four open
+  questions at that checkpoint.
 - **Queued follow-ups** (none gating; pick one to continue):
   - **`plugin_analytics` RLS axis — ADR-level revisit.** 0007's
     docstring chose "no RLS on this table" deliberately ("Analytics
@@ -59,14 +63,23 @@
 
 ## Active worklog
 
-`docs/worklog/2026-05-18-adr-0030-scope-guard.md` — ADR-0030
-(scope_guard plugin design) drafted as Proposed. Nine
-pre-decided axes from the user interview + four Cowork-surfaced
-ambiguities (Stage-2 egress path, embedding input scope, alerts
-schema, OpenAI disclosure) resolved to Cowork defaults. ADR is
-Proposed pending operator acceptance; no code shipped this round.
+`docs/worklog/2026-05-18-scope-guard-impl.md` — scope_guard
+implementation against ADR-0030 (Accepted). CP1 of 8 done:
+migration `0010_scope_guard_tables` (commit `2511c3a`) + STATUS
+docker bump to `pgvector/pgvector:pg15` + ADR-0030 Status
+Proposed → Accepted with pgvector Option A pre-decision noted.
+Round-trip verified, 164 tests pass. CP2 (package skeleton) is
+next; CP3/CP4/CP8 each pin one of the four ADR open questions
+at that checkpoint.
 
-Prior worklogs preserved:
+Prior worklog (same day, earlier session):
+`docs/worklog/2026-05-18-adr-0030-scope-guard.md` — ADR-0030
+(scope_guard plugin design) drafted as Proposed; nine pre-decided
+axes from the user interview + four Cowork-surfaced ambiguities
+resolved to Cowork defaults. Superseded by the acceptance + CP1
+landed in this session's worklog above.
+
+Earlier worklogs preserved:
 `docs/worklog/2026-05-17-followup-batch-2.md` — queued follow-up
 batch round 2 (three items: Block/Abort `end_exchange` cleanup at
 the short-circuit return sites; DB-fixture integration test for
@@ -104,14 +117,71 @@ CP14 proper).
 ## Recent commits
 
 ```
-<finalize>   docs: STATUS + worklog — ADR-0030 scope_guard (Proposed)
+<finalize>   docs: STATUS + worklog + ADR-0030 Accepted — scope_guard CP1
+2511c3a   server: migration 0010 scope_guard tables (ADR-0030 §D8)
+a858036   docs: STATUS + worklog — ADR-0030 scope_guard (Proposed)
 27b6d92   docs: ADR-0030 scope_guard plugin design (Proposed)
 703106c   docs: STATUS + worklog — followup batch round 2
-cd21da3   server: 6-month retention cron jobs (migration 0009)
-3fe0caa   tests: DB integration test for record_exchange_failure
 ```
 
 ## Where we paused
+
+**scope_guard implementation CP1 of 8 done (2026-05-18, commits
+`2511c3a` server-migration + docs-finalize).** ADR-0030 Accepted
+by operator at the start of this session; CP1 ships migration
+`0010_scope_guard_tables` — three tables (`scope_documents`,
+`scope_chunks`, `scope_alerts`), the `vector` extension, RLS on
+the two corpus tables (migration 0005 `_org_isolation` +
+`_admin_access` pattern), no-RLS on `scope_alerts` (migration
+0007 `plugin_analytics` pattern), and `GRANT SELECT / INSERT /
+UPDATE / DELETE` to `llm_tracker_app`.
+
+Local test environment switched `postgres:15` →
+`pgvector/pgvector:pg15` so `CREATE EXTENSION vector` works
+unconditionally — Operator picked Option A (image bump) over
+Option B (extension guard) at the start of the session;
+reasoning is that `vector` is the plugin's core data type, not
+an operational-only scheduler like 0009's `pg_cron`. STATUS.md
+§"Local dev loop revival" updated in the same docs-finalize
+commit.
+
+Round-trip verified end-to-end:
+`alembic upgrade head` → `downgrade -1` → `upgrade head`;
+**164 tests pass under the DB fixture, 0 regression.** The 164
+figure is this session's accurate baseline; the older
+"354 passed" line in STATUS history is pre-archive (commit
+`8ef166d` removed the local sidecar in 2026-05-17, rescuing
+only SDK tests).
+
+Implementation-axis surprises picked up during CP1, recorded
+for the next CPs:
+
+- **asyncpg multi-statement quirk.** First migration draft
+  sent the schema block as one `op.execute(big_string)`;
+  asyncpg rejects multi-statement prepared inputs ("cannot
+  insert multiple commands into a prepared statement"). Fix:
+  per-statement dispatch via `_UPGRADE_STATEMENTS` tuple
+  iterated with one `op.execute` per item. Migration 0009
+  sidesteps the same trap by wrapping its body in a single
+  `DO $$ ... END$$;` block; 0010 picks the per-statement style
+  because the bulk of its work is ordinary DDL, not procedural.
+- **Q3 resolved early — new `0011_scope_alerts_retention`
+  migration over amending 0009.** Decided at CP1 time so CP8
+  has a single direction. Each retention concern owns its own
+  reversible migration; mixing a third cron row with a
+  different table / column / unit shape into 0009 muddies the
+  downgrade.
+
+The remaining three ADR-0030 open questions are pinned at:
+Q1 chunker algo → CP3 (small benchmark + frozen choice);
+Q2 ANN index → MVP linear scan, revisit when any org's chunk
+count exceeds ~10k; Q4 judge prompt → CP4 (frozen module-top
+string).
+
+CP2 through CP8 work board lives in
+`docs/worklog/2026-05-18-scope-guard-impl.md` §"Checkpoint plan".
+
+### Prior workstream — ADR-0030 design + acceptance (2026-05-18, earlier today)
 
 **ADR-0030 design workstream (2026-05-18, commit `27b6d92` +
 finalize).** Documentation only — no code shipped. The Phase 1c
@@ -1108,25 +1178,41 @@ reframes them server-side**:
 
 ## Next single step
 
-**ADR-0030 operator review → Accepted → `scope_guard` implementation.**
-Design captured in `docs/decisions/0030-scope-guard-plugin.md`
-(Proposed); the operator's read-and-accept gate is what stands
-between this ADR and the implementation session. Once Accepted, the
-ADR's §"Implementation surface" lists the file touchpoints:
+**CP2 of 8 — `scope_guard` package skeleton + manifest.** Per
+ADR-0030 §D9: new package
+`packages/llm_tracker_plugin_scope_guard/` with `pyproject.toml`,
+`plugin.toml` (frozen manifest shape: `hooks = ["on_persisted"]`,
+`capabilities = ["egress_http"]`, `egress_destinations` for
+both OpenAI endpoints, `db_namespace = "scope_guard"`,
+`min_content_level = "L3"`), and six empty module stubs
+(`plugin.py`, `embeddings.py`, `judge.py`, `chunker.py`,
+`pipeline.py`, `storage.py`).
 
-1. Migration `0010_scope_guard_tables` per §D8 (4 tables; pgvector;
-   RLS on the two corpus tables; alerts retention via the existing
-   pg_cron job pattern from migration 0009).
-2. New package `packages/llm_tracker_plugin_scope_guard/` per §D9
-   (six `LLMTRACK_PLUGIN_SCOPE_GUARD_*` env vars; signed manifest
-   with `egress_destinations` for both OpenAI endpoints).
-3. `tools/process_scope_document.py` CLI per §D5 (plain text +
-   markdown for MVP; idempotent on `(org_id, title)`).
-4. `.env.example` extension per §D9.
-5. **`docs/deploy.md §"Data collection & privacy"` extension**
-   per §Consequences — Disclosure (binds ADR-0029 to the new
-   OpenAI external-API axis).
-6. `docs/plugins.md §11` reference entry.
+Workspace registration is glob-based
+(`[tool.uv.workspace] members = ["packages/*"]`) so only the
+root `pyproject.toml`'s
+`[tool.pytest.ini_options].testpaths` needs a one-line edit
+once `tests/` exists. Verify by running `uv sync` clean + a
+host-load smoke confirming the plugin appears in the audit log
+on startup.
+
+CP3 through CP8 work board (concise; full board in the impl
+worklog):
+
+- **CP3** — `chunker.py` + unit tests; pin ADR-0030 Q1 algorithm
+  (sentence-similarity drop threshold + window size) via small
+  benchmark.
+- **CP4** — `embeddings.py` + `judge.py` via `HostEgressClient`;
+  pin Q4 judge prompt as a frozen module-top string.
+- **CP5** — `pipeline.py` + `storage.py` + `plugin.py`; DB-fixture
+  integration test with a fake OpenAI client.
+- **CP6** — `tools/process_scope_document.py` CLI (`.txt` + `.md`,
+  idempotent delete-then-insert on `(org_id, title)`).
+- **CP7** — `.env.example` six `LLMTRACK_PLUGIN_SCOPE_GUARD_*`
+  vars + `docs/deploy.md §"Data collection & privacy"` OpenAI
+  disclosure paragraph + `docs/plugins.md §11` reference entry.
+- **CP8** — `0011_scope_alerts_retention` migration mirroring
+  0009's `pg_cron` guard pattern (Q3 already decided at CP1).
 
 Operator's parallel operational step remains `fly deploy` to pick up
 migration `0009_retention_deletion_job` on production (no data
@@ -1185,10 +1271,13 @@ host for the test-fixture suite; the Dockerised server +
 Fly.io deployment are independent):
 
 ```
+# Migration 0010 (scope_guard) requires pgvector; the
+# pgvector/pgvector:pg15 image bundles it. Vanilla postgres:15 fails
+# the `alembic upgrade head` round-trip in conftest.py.
 docker run -d --name llm-tracker-pg \
   -e POSTGRES_USER=cp2 -e POSTGRES_PASSWORD=cp2 \
   -e POSTGRES_DB=llm_tracker_test \
-  -p 55432:5432 postgres:15
+  -p 55432:5432 pgvector/pgvector:pg15
 export LLMTRACK_TEST_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker_test
 ```
 
@@ -1260,7 +1349,7 @@ ready to start.
 - [ ] **Phase 3a — remaining 2 decision ADRs** (#1 fallback / #4 agent language)
 - [ ] Phase 3b — thin local agent (gated on #1 + #4)
 - [x] **Phase 3c — server build-out (14 of 14 plan-checkpoints done; closed 2026-05-13 with operator smoke validated. Plan at `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0017/0018/0019/0020/0022/0023)**
-- [ ] Phase 1c — `scope_guard` (paused; reframed server-side per ADR-0019; gated on Phase 3c readiness)
+- [ ] **Phase 1c — `scope_guard`** (**in progress 2026-05-18**; ADR-0030 Accepted; CP1 of 8 done via commit `2511c3a` — migration 0010 + pgvector local image; CP2–CP8 pending per `docs/worklog/2026-05-18-scope-guard-impl.md`)
 - [ ] Phase 3d — carry-overs: OpenAI/Gemini adapters, analytics interface, response-side policy plugins
 
 ---

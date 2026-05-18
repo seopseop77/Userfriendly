@@ -1,6 +1,11 @@
 # ADR-0030 · scope_guard plugin design
 
-- **Status**: Proposed (awaiting operator review before implementation)
+- **Status**: Accepted (2026-05-18 by operator; implementation begins in
+  `docs/worklog/2026-05-18-scope-guard-impl.md`. Pre-decision on the only
+  unresolved infra axis surfaced during sanity-checking: local test DB
+  uses `pgvector/pgvector:pg15` so the §D8 `CREATE EXTENSION vector`
+  applies unconditionally — Option A from the worklog's "Pre-flight
+  sanity check" section.)
 - **Date**: 2026-05-18
 - **Author**: Claude Cowork (decisions captured in 2026-05-18 user
   interview) / Claude Code (drafting)

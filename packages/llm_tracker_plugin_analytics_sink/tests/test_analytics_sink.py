@@ -44,9 +44,15 @@ def _make_ctx(
 
 
 def _fake_engine() -> tuple[MagicMock, AsyncMock]:
-    """A MagicMock engine whose `begin()` yields a captured AsyncMock connection."""
+    """A MagicMock engine whose `begin()` yields a captured AsyncMock connection.
+
+    `conn.execute` returns a result whose `.first()` is None — sufficient
+    for the fresh-conversation path (no prior same-hash row exists).
+    """
     conn = AsyncMock()
-    conn.execute = AsyncMock()
+    result = MagicMock()
+    result.first = MagicMock(return_value=None)
+    conn.execute = AsyncMock(return_value=result)
 
     @asynccontextmanager
     async def _begin():
@@ -55,6 +61,17 @@ def _fake_engine() -> tuple[MagicMock, AsyncMock]:
     engine = MagicMock()
     engine.begin = _begin
     return engine, conn
+
+
+def _insert_params(conn: AsyncMock) -> dict:
+    """Return the parameter dict from the INSERT call (last execute)."""
+    # The plugin runs a SELECT first (chain lookup), then the INSERT.
+    # Distinguish by params dict size — INSERT has many keys.
+    for call in reversed(conn.execute.await_args_list):
+        params = call.args[1]
+        if isinstance(params, dict) and "messages_json" in params:
+            return params
+    raise AssertionError("INSERT call not found")
 
 
 @pytest.mark.asyncio
@@ -90,15 +107,16 @@ async def test_row_written_on_persisted_with_parsed_response() -> None:
     parsed.response_json = '{"model":"claude-haiku-4-5-20251001","content":[]}'
 
     org_uuid = uuid.uuid4()
-    body = b'{"model":"claude-haiku-4-5-20251001","messages":[]}'
+    body = (
+        b'{"model":"claude-haiku-4-5-20251001",'
+        b'"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}'
+    )
     ctx = _make_ctx(request_body=body, org_id=org_uuid, parsed_response=parsed)
 
     await plugin.on_request_received("ex_test_01", ctx)
     await plugin.on_persisted("ex_test_01", ctx)
 
-    # Exactly one INSERT against the fake conn.
-    assert conn.execute.await_count == 1
-    _stmt, params = conn.execute.await_args.args
+    params = _insert_params(conn)
     assert params["exchange_id"] == "ex_test_01"
     assert params["org_id"] == org_uuid
     assert params["model_requested"] == "claude-haiku-4-5-20251001"
@@ -110,7 +128,15 @@ async def test_row_written_on_persisted_with_parsed_response() -> None:
     assert params["cache_read_tokens"] == 7
     assert params["cache_write_tokens"] == 3
     assert params["stop_reason"] == "end_turn"
-    # system_prompt and tool_call_count no longer exist (dropped in migration 0013).
+    # Classification fields (migration 0014):
+    assert params["turn_kind"] == "user_input_turn_start"
+    assert params["turn_seq"] == 1
+    assert params["slash_commands"] is None
+    assert isinstance(params["first_msg_hash"], str)
+    assert len(params["first_msg_hash"]) == 16
+    # Fresh conversation: conversation_id == this row's id.
+    assert params["conversation_id"] == params["id"]
+    # Dropped columns absent (migration 0013).
     assert "system_prompt" not in params
     assert "tool_call_count" not in params
     # Stash is cleared after the write.
@@ -124,14 +150,15 @@ async def test_missing_parsed_response_writes_nulls() -> None:
     plugin = AnalyticsSink(engine=engine)
 
     org_uuid = uuid.uuid4()
-    body = b'{"model":"claude-x","messages":[{"role":"user","content":"hi"}]}'
+    body = (
+        b'{"model":"claude-x","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}'
+    )
     ctx = _make_ctx(request_body=body, org_id=org_uuid, parsed_response=None)
 
     await plugin.on_request_received("ex_null", ctx)
     await plugin.on_persisted("ex_null", ctx)
 
-    assert conn.execute.await_count == 1
-    _stmt, params = conn.execute.await_args.args
+    params = _insert_params(conn)
     assert params["model_requested"] == "claude-x"
     assert params["model_served"] is None
     assert params["input_tokens"] is None
@@ -140,6 +167,8 @@ async def test_missing_parsed_response_writes_nulls() -> None:
     assert params["cache_write_tokens"] is None
     assert params["stop_reason"] is None
     assert params["response_json"] is None
+    assert params["turn_kind"] == "user_input_turn_start"
+    assert params["turn_seq"] == 1
 
 
 @pytest.mark.asyncio
@@ -155,6 +184,105 @@ async def test_skip_when_org_id_missing() -> None:
     await plugin.on_persisted("ex_no_org", ctx)
 
     assert conn.execute.await_count == 0
+
+
+def _fake_engine_with_prev(
+    *, prev_conversation_id: str, prev_messages: list
+) -> tuple[MagicMock, AsyncMock]:
+    """Engine whose chain-lookup SELECT returns a synthetic prior row.
+
+    The plugin's `_resolve_conversation` runs two SELECTs in some
+    paths (chain lookup + last-seq lookup). We model that by returning
+    the prev row from the first SELECT and a synthetic turn_seq=1 row
+    from the second.
+    """
+    conn = AsyncMock()
+
+    prev_row = MagicMock(conversation_id=prev_conversation_id, msgs=prev_messages)
+    prev_result = MagicMock()
+    prev_result.first = MagicMock(return_value=prev_row)
+
+    seq_row = MagicMock(turn_seq=1)
+    seq_result = MagicMock()
+    seq_result.first = MagicMock(return_value=seq_row)
+
+    results = [prev_result, seq_result]
+
+    async def _execute(_stmt, _params):
+        # First call: chain lookup. Subsequent: last-seq lookup or INSERT.
+        if results:
+            return results.pop(0)
+        return MagicMock()
+
+    conn.execute = AsyncMock(side_effect=_execute)
+
+    @asynccontextmanager
+    async def _begin():
+        yield conn
+
+    engine = MagicMock()
+    engine.begin = _begin
+    return engine, conn
+
+
+@pytest.mark.asyncio
+async def test_tool_continuation_inherits_conversation_id() -> None:
+    """tool_continuation request with same first_msg_hash and longer
+    history inherits the prior row's conversation_id; turn_seq increments.
+    """
+    engine, conn = _fake_engine_with_prev(
+        prev_conversation_id="conv_root_ulid",
+        prev_messages=[{"role": "user", "content": "first"}],
+    )
+    plugin = AnalyticsSink(engine=engine)
+
+    # Request: 3 messages, last is user-content with tool_result block.
+    body = (
+        b'{"model":"claude-x","messages":['
+        b'{"role":"user","content":[{"type":"text","text":"first"}]},'
+        b'{"role":"assistant","content":[{"type":"text","text":"ok"}]},'
+        b'{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"x"}]}'
+        b"]}"
+    )
+    ctx = _make_ctx(request_body=body, org_id=uuid.uuid4(), parsed_response=None)
+
+    await plugin.on_request_received("ex_cont", ctx)
+    await plugin.on_persisted("ex_cont", ctx)
+
+    params = _insert_params(conn)
+    assert params["turn_kind"] == "tool_continuation"
+    # Inherits prev conversation_id (n=3 > prev n=1).
+    assert params["conversation_id"] == "conv_root_ulid"
+    # turn_seq = prev seq (1) + 1.
+    assert params["turn_seq"] == 2
+
+
+@pytest.mark.asyncio
+async def test_identical_first_prompt_after_clear_starts_new_conversation() -> None:
+    """If a request with n=1 finds a prior same-hash row whose n>=1,
+    it starts a new conversation rather than inheriting.
+    """
+    engine, conn = _fake_engine_with_prev(
+        prev_conversation_id="conv_prev_ulid",
+        # Prior row was a long-running conversation that ended.
+        prev_messages=[{"role": "user", "content": "hi"}] * 10,
+    )
+    plugin = AnalyticsSink(engine=engine)
+
+    body = (
+        b'{"model":"claude-x","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}'
+    )
+    ctx = _make_ctx(request_body=body, org_id=uuid.uuid4(), parsed_response=None)
+
+    await plugin.on_request_received("ex_new", ctx)
+    await plugin.on_persisted("ex_new", ctx)
+
+    params = _insert_params(conn)
+    assert params["turn_kind"] == "user_input_turn_start"
+    # New conversation: conversation_id == this row's id (NOT prev's).
+    assert params["conversation_id"] == params["id"]
+    assert params["conversation_id"] != "conv_prev_ulid"
+    assert params["turn_seq"] == 1
 
 
 @pytest.mark.asyncio

@@ -68,6 +68,12 @@ verifies and ships the production-side half (live migration + docs).
     `_INSERT_SQL` placeholders exactly.
 - This worklog created + STATUS.md updated; docs-only commit closes the
   three-unit checkpoint (CLAUDE.md §5.3). The code half rode in `efc7fb4`.
+- **Follow-up 2026-05-19**: operator confirmed `fly deploy` from `main`
+  complete (smoke verification at operator discretion — not separately
+  reported to this Claude Code session). Running image now matches the
+  live schema; the schema-cleanup track is fully closed across code +
+  live DB + running image. This worklog + STATUS.md updated again to
+  reflect the closed posture (docs-only commit).
 
 ## Decisions
 
@@ -154,21 +160,13 @@ matches that code's shape.
 
 ## What's left / known limits
 
-- **No Fly deploy yet.** The live DB schema now matches `efc7fb4`, but
-  the Fly app is still running the prior image (still writes against the
-  pre-0013 ORM shape — which no longer matches the live columns). The
-  drop of `input_tokens` / `output_tokens` / `cache_read_tokens` /
-  `cache_write_tokens` on `exchanges` is the only risk: the prior image's
-  `record_exchange_timing` still attempted to set those four columns on
-  the SQLAlchemy `Exchange` instance. **Operator action**: deploy the
-  current `main` (commit `efc7fb4` or later) before the next live request
-  to avoid `UndefinedColumn` errors on the happy-path write. Until
-  redeploy, every successful streaming exchange will fail its post-stream
-  `record_exchange_timing` flush and log an error from the streaming
-  generator's `finally` — the response body still returns to the client
-  (the generator yields chunks before the flush), and `plugin_analytics`
-  still writes via its own engine. Blocked-path and failure-path rows are
-  unaffected (they never touched the dropped columns).
+- ~~**No Fly deploy yet.**~~ **Closed 2026-05-19** — operator confirmed
+  `fly deploy` from `main` complete. Running image now matches the live
+  schema; happy-path `record_exchange_timing` flushes no longer attempt
+  the four dropped `exchanges` token columns. Smoke verification of a
+  single non-blocked exchange (clean `exchanges` row + no
+  `record_exchange_timing` error in Fly logs) is at operator discretion
+  and was not separately reported to this Claude Code session.
 - **Alembic downgrade path** in `0013_schema_cleanup.py` restores the
   exact pre-0013 shape (nullable token columns on `exchanges`; restored
   `tool_calls`/`events` tables sans data; `system_prompt` + `tool_call_count`
@@ -180,15 +178,22 @@ matches that code's shape.
 
 ## Handoff
 
-**Next single step (operator)**: `fly deploy` from `main` so the running
-image matches the live schema. After deploy, smoke a single non-blocked
-exchange and confirm a row lands in `exchanges` with `status_code=200`
-and no error from `record_exchange_timing` in the Fly logs.
+**Track closed (2026-05-19).** Migration `0013_schema_cleanup` is now
+aligned across all three axes: code (`efc7fb4`), live Supabase schema
+(applied 2026-05-18), and running Fly image (`fly deploy` confirmed by
+operator 2026-05-19). Smoke verification (single non-blocked exchange →
+clean `exchanges` row with `status_code=200` and no
+`record_exchange_timing` error in Fly logs) is at operator discretion
+and not separately reported to this session.
 
-After deploy, the §Queued follow-ups in STATUS.md are the open work:
-the `plugin_analytics` RLS ADR-level revisit is the most-shovel-ready.
-scope_guard remains paused at `0c1ca9d` per its handoff worklog — this
-schema cleanup does not change that posture.
+**Next single step (undecided)**: per the user's direction this session,
+the next active track is intentionally left unpicked. The §"Queued
+follow-ups" list under STATUS.md §"Current phase" is the open menu —
+`plugin_analytics` RLS ADR-level revisit is the most-shovel-ready, but
+task hierarchy / `session_id` populator + deletion endpoint / i18n
+email scrubbing all remain available. scope_guard remains paused at
+`0c1ca9d` per its handoff worklog — this schema cleanup does not change
+that posture.
 
 ## Suggestions (untouched)
 

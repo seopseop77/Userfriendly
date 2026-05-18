@@ -6,8 +6,8 @@
 
 ---
 
-**Last updated**: 2026-05-17 (Claude Code; **Queued follow-up batch round 2 — three items shipped (commits `4fef915` + `3fe0caa` + `cd21da3` + finalize).** User asked to clear three executable follow-ups from the prior batch's queue: (1) call `plugin_host.end_exchange(exchange_id)` on the Block/Abort short-circuit returns in `forwarder.py` (was relying on `block_response.gen()`'s `finally`, which is skipped if the client disconnects before iterating the synthetic stream); (2) DB-fixture integration test for `record_exchange_failure` (ADR-0027 axis 2 was forwarder-unit-tested only — row-write side ran only under the auth-middleware shape); (3) 6-month automated retention deletion job (ADR-0029 Axis 3) as migration `0009_retention_deletion_job` — two `pg_cron` daily jobs at 03:00 UTC against `public.exchanges` and `public.plugin_analytics`, gated on `pg_available_extensions WHERE name='pg_cron'` so the alembic cycle stays green on stock Postgres dev environments. `docs/deploy.md` "Retention is 6 months" bullet updated to name the scheduled jobs and the gating posture. Tests 59 passed / 18 skipped (was 58 / 16; +1 forwarder test for Block-without-iteration, +1 DB-fixture file with 2 skipped tests under no-DB shape). Operational consequence after next `fly deploy`: `alembic upgrade head` advances stamp to `0009_retention_deletion_job` and `cron.job` gains two `llm-tracker-retention-*` rows; first scheduled deletion fires at the next 03:00 UTC tick.)
-**Updated by**: Claude Code (queued follow-up batch round 2)
+**Last updated**: 2026-05-18 (Cowork; **ADR-0030 (scope_guard plugin design) drafted as Proposed — commit `27b6d92` (ADR) + finalize (STATUS + worklog).** Nine pre-decided axes from the user interview + four Cowork-surfaced ambiguities resolved to Cowork defaults ("전부 default OK"): Stage-2 judge uses OpenAI `gpt-4o-mini` via the same EgressGuard path as Stage-1 (rejecting brief's "Anthropic SDK bypass"); embedding input is user-initiated turns only (no assistant text, no top-level `system`, no `tool_result`); `scope_alerts` gets four extra columns for threshold tuning; OpenAI external-API disclosure binds to a `docs/deploy.md` edit at implementation time. ADR settles ADR-0002 in reframed async-monitor form (not synchronous block). No code shipped this round — ADR is Proposed pending operator acceptance.)
+**Updated by**: Claude Cowork (ADR-0030 design workstream)
 
 ## Current phase
 
@@ -28,11 +28,12 @@
   - Fail-closed per ADR-0024 confirmed end-to-end in negative
     smoke: 503 propagates to Anthropic SDK → 10 retries with
     backoff → user-facing failure, no Anthropic bypass.
-- **Active task**: **No active task — between cycles.** ADR-0029
-  production-validated; queued follow-up batch round 2 cleared three
-  items (Block/Abort ctx cleanup + `record_exchange_failure`
-  DB-fixture test + 6-month retention cron migration). Next pick is
-  the `scope_guard` plugin — Phase 1c.
+- **Active task**: **ADR-0030 operator review → Accepted → scope_guard
+  implementation.** Phase 1c design captured in ADR-0030 (Proposed)
+  with the user's nine pre-decisions + Cowork's four ambiguity
+  resolutions (all defaults accepted). Next step is operator review
+  + acceptance; then the implementation session has a fixed target
+  per §"Implementation surface" of the ADR.
 - **Queued follow-ups** (none gating; pick one to continue):
   - **`plugin_analytics` RLS axis — ADR-level revisit.** 0007's
     docstring chose "no RLS on this table" deliberately ("Analytics
@@ -58,13 +59,21 @@
 
 ## Active worklog
 
+`docs/worklog/2026-05-18-adr-0030-scope-guard.md` — ADR-0030
+(scope_guard plugin design) drafted as Proposed. Nine
+pre-decided axes from the user interview + four Cowork-surfaced
+ambiguities (Stage-2 egress path, embedding input scope, alerts
+schema, OpenAI disclosure) resolved to Cowork defaults. ADR is
+Proposed pending operator acceptance; no code shipped this round.
+
+Prior worklogs preserved:
 `docs/worklog/2026-05-17-followup-batch-2.md` — queued follow-up
 batch round 2 (three items: Block/Abort `end_exchange` cleanup at
 the short-circuit return sites; DB-fixture integration test for
 `record_exchange_failure` pinning the row-write half of ADR-0027
 axis 2; migration `0009_retention_deletion_job` with two
 `pg_cron`-gated daily jobs at 03:00 UTC plus the deploy.md retention
-bullet update). Prior worklogs from earlier today preserved:
+bullet update). Prior worklogs from earlier:
 `docs/worklog/2026-05-17-followup-batch.md` — round 1 of the queued
 follow-ups (deploy.md PG16+ paragraph, tool_call_count drop
 migration 0008, ADR-0027 axis 2 impl, empty-shells cleanup; one
@@ -95,18 +104,46 @@ CP14 proper).
 ## Recent commits
 
 ```
-<finalize>   docs: STATUS + worklog — followup batch round 2
+<finalize>   docs: STATUS + worklog — ADR-0030 scope_guard (Proposed)
+27b6d92   docs: ADR-0030 scope_guard plugin design (Proposed)
+703106c   docs: STATUS + worklog — followup batch round 2
 cd21da3   server: 6-month retention cron jobs (migration 0009)
 3fe0caa   tests: DB integration test for record_exchange_failure
-4fef915   server: call end_exchange on Block/Abort paths
-0db0bac   server: ADR-0027 axis 2 — pre-SSE upstream failure path
 ```
 
 ## Where we paused
 
-**Queued follow-up batch round 2 (2026-05-17, commits `4fef915` +
-`3fe0caa` + `cd21da3` + finalize).** User asked to clear three executable
-follow-ups from the prior batch's queue. All three shipped:
+**ADR-0030 design workstream (2026-05-18, commit `27b6d92` +
+finalize).** Documentation only — no code shipped. The Phase 1c
+`scope_guard` plugin design captured into an ADR (Proposed) so the
+implementation session has a fixed target. User had run a private
+design pass on nine axes (execution model, pipeline shape,
+embedding/judge providers, chunking, message-input construction,
+similarity, schema, registration UX, packaging); Cowork surfaced four
+ambiguities, the user resolved them with `"전부 default OK"`:
+
+- **Q1** — Stage-2 judge through the same EgressGuard egress path as
+  Stage-1 (OpenAI `gpt-4o-mini` instead of brief's "Anthropic SDK
+  bypass"). One vendor, two destinations, one audit trail.
+- **Q2** — Embedding input is **user-initiated turns only**. No
+  assistant text. No top-level `system`. No `tool_result` blocks.
+- **Q3** — `scope_alerts` gains four extra columns
+  (`stage` / `stage2_verdict` / `stage2_reason` / `matched_chunk_id`)
+  so threshold tuning has direct evidence on the table.
+- **Q4** — OpenAI external-API disclosure binds to a follow-up
+  `docs/deploy.md` edit that lands with the implementation
+  checkpoint, not this ADR.
+
+ADR-0030 **settles ADR-0002** in reframed form — Phase-1's
+synchronous-block spec becomes async monitoring on `on_persisted`
+with alerts on `scope_alerts`. The synthetic-SSE block path is
+explicitly Deferred (real-time blocking returns once threshold
+stability data accumulates over ≥ 30 days of alerts).
+
+### Prior workstream — queued follow-up batch round 2 (2026-05-17)
+
+User asked to clear three executable follow-ups from the prior
+batch's queue. All three shipped:
 
 - **`4fef915` (Block/Abort end_exchange cleanup).** Added an
   explicit `plugin_host.end_exchange(exchange_id)` immediately
@@ -1071,13 +1108,30 @@ reframes them server-side**:
 
 ## Next single step
 
-**`scope_guard` plugin — Phase 1c.** Round 2 of the follow-up batch
-closed the three pickable items from round 1's queue; the next
-phase of work is `scope_guard`, the first non-reference plugin on
-the new plugin host. Operator's parallel operational step is
-`fly deploy` to pick up migration `0009_retention_deletion_job` on
-production (no data deletion at apply time; first scheduled run is
-at the next 03:00 UTC tick).
+**ADR-0030 operator review → Accepted → `scope_guard` implementation.**
+Design captured in `docs/decisions/0030-scope-guard-plugin.md`
+(Proposed); the operator's read-and-accept gate is what stands
+between this ADR and the implementation session. Once Accepted, the
+ADR's §"Implementation surface" lists the file touchpoints:
+
+1. Migration `0010_scope_guard_tables` per §D8 (4 tables; pgvector;
+   RLS on the two corpus tables; alerts retention via the existing
+   pg_cron job pattern from migration 0009).
+2. New package `packages/llm_tracker_plugin_scope_guard/` per §D9
+   (six `LLMTRACK_PLUGIN_SCOPE_GUARD_*` env vars; signed manifest
+   with `egress_destinations` for both OpenAI endpoints).
+3. `tools/process_scope_document.py` CLI per §D5 (plain text +
+   markdown for MVP; idempotent on `(org_id, title)`).
+4. `.env.example` extension per §D9.
+5. **`docs/deploy.md §"Data collection & privacy"` extension**
+   per §Consequences — Disclosure (binds ADR-0029 to the new
+   OpenAI external-API axis).
+6. `docs/plugins.md §11` reference entry.
+
+Operator's parallel operational step remains `fly deploy` to pick up
+migration `0009_retention_deletion_job` on production (no data
+deletion at apply time; first scheduled run is at the next 03:00 UTC
+tick).
 
 Queued follow-ups (pickable cold; none gate any next CP):
 

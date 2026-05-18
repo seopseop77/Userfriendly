@@ -6,8 +6,8 @@
 
 ---
 
-**Last updated**: 2026-05-18 (Claude Code; **ADR-0030 Accepted by operator → scope_guard implementation CP1 of 8 done — commit `2511c3a` (server: migration `0010_scope_guard_tables`) + this docs-finalize commit.** ADR §D8 schema ships verbatim: three tables (`scope_documents`, `scope_chunks`, `scope_alerts`), `vector` extension installed, RLS on the two corpus tables per migration 0005 pattern, no-RLS on `scope_alerts` per migration 0007 `plugin_analytics` pattern, GRANT to `llm_tracker_app`. Round-trip verified (`alembic upgrade head` → `downgrade -1` → `upgrade head`) on the new local `pgvector/pgvector:pg15` image — the same commit replaces the old `postgres:15` docker line in §"Local dev loop revival" because vanilla `postgres:15` cannot satisfy `CREATE EXTENSION vector`. Operator pre-decision on the only infra axis surfaced before CP1: Option A (image bump) over Option B (extension guard). Test baseline this session: 164 passed under the DB fixture, 0 regression. ADR-0030's four open questions (Q1 chunker algo / Q2 ANN index / Q3 retention placement / Q4 judge prompt) carried into the implementation worklog and pinned to their respective CPs.)
-**Updated by**: Claude Code (scope_guard implementation; CP1 of 8)
+**Last updated**: 2026-05-18 (Claude Code; **scope_guard CP2 of 8 done — commit `2fe84e6` (scope-guard: package skeleton + manifest) + this docs-finalize commit.** New workspace package `packages/llm_tracker_plugin_scope_guard/` per ADR-0030 §D9 frozen manifest shape: `pyproject.toml` (entry point → `ScopeGuard`), `plugin.toml` (`hooks=[on_persisted]`, `capabilities=[egress_http]`, two OpenAI egress destinations, `db_namespace="scope_guard"`, `min_content_level="L3"`), and six module stubs whose docstrings point to the CPs that fill them in (CP3..CP6). New direct dep `pgvector>=0.2` (sqlalchemy/asyncpg vector adapter) + transitive `numpy 2.4.5` — CP3 chunker reuses numpy for adjacent-sentence cosine math, no new direct dep there. Verified: `uv sync` clean install of `llm-tracker-plugin-scope-guard==0.1.0` + `pgvector==0.4.2`; `PluginManifest.from_path()` accepts §D9 verbatim; `importlib.metadata.entry_points(group='llm_tracker.plugins')` exposes `scope_guard` → `ScopeGuard`, loads + instantiates cleanly; 164 tests pass (CP2 added zero new tests by design). Q1 (chunker algo) is the next axis to pin, at CP3. CP1 of 8 was closed earlier this session by commits `2511c3a` (server migration `0010_scope_guard_tables`) + `b6cdf5f` (docs).)
+**Updated by**: Claude Code (scope_guard implementation; CP2 of 8)
 
 ## Current phase
 
@@ -29,14 +29,17 @@
     smoke: 503 propagates to Anthropic SDK → 10 retries with
     backoff → user-facing failure, no Anthropic bypass.
 - **Active task**: **scope_guard implementation against
-  ADR-0030 (Accepted 2026-05-18). CP1 of 8 done.** Migration
-  `0010_scope_guard_tables` (commit `2511c3a`) lands the three
-  tables + RLS + GRANTs per ADR §D8; pgvector validated locally
-  on `pgvector/pgvector:pg15`. **Next is CP2 — new package
-  `packages/llm_tracker_plugin_scope_guard/` skeleton + manifest
-  per ADR §D9.** Per-CP work board lives in
+  ADR-0030 (Accepted 2026-05-18). CP1 + CP2 of 8 done.**
+  Migration `0010_scope_guard_tables` (commit `2511c3a`) lands
+  the three tables + RLS + GRANTs per ADR §D8; package skeleton
+  `packages/llm_tracker_plugin_scope_guard/` (commit `2fe84e6`)
+  lands the manifest + 6 module stubs per ADR §D9 + new
+  `pgvector` dep with transitive `numpy`. **Next is CP3 —
+  `chunker.py` semantic boundary detection + unit tests, pinning
+  ADR-0030 §Q1 (rolling-mean drop threshold + window size).**
+  Per-CP work board lives in
   `docs/worklog/2026-05-18-scope-guard-impl.md` §"Checkpoint
-  plan"; CP3 / CP4 / CP8 each pin one of the ADR's four open
+  plan"; CP4 / CP8 each pin one of the remaining ADR open
   questions at that checkpoint.
 - **Queued follow-ups** (none gating; pick one to continue):
   - **`plugin_analytics` RLS axis — ADR-level revisit.** 0007's
@@ -117,17 +120,42 @@ CP14 proper).
 ## Recent commits
 
 ```
-<finalize>   docs: STATUS + worklog + ADR-0030 Accepted — scope_guard CP1
+<finalize>   docs: STATUS + worklog — scope_guard CP2
+2fe84e6   scope-guard: package skeleton + manifest (ADR-0030 §D9)
+b6cdf5f   docs: STATUS + worklog + ADR-0030 Accepted — scope_guard CP1
 2511c3a   server: migration 0010 scope_guard tables (ADR-0030 §D8)
 a858036   docs: STATUS + worklog — ADR-0030 scope_guard (Proposed)
-27b6d92   docs: ADR-0030 scope_guard plugin design (Proposed)
-703106c   docs: STATUS + worklog — followup batch round 2
 ```
 
 ## Where we paused
 
+**scope_guard implementation CP1 + CP2 of 8 done (2026-05-18,
+commits `2511c3a` + `b6cdf5f` + `2fe84e6` + docs-finalize).**
+
+CP2 ships the workspace package at
+`packages/llm_tracker_plugin_scope_guard/` per ADR-0030 §D9:
+`pyproject.toml` with entry point
+`scope_guard → llm_tracker_plugin_scope_guard.plugin:ScopeGuard`,
+`plugin.toml` declaring `hooks=[on_persisted]` /
+`capabilities=[egress_http]` / two OpenAI egress destinations /
+`db_namespace="scope_guard"` / `min_content_level="L3"`, and six
+module stubs (`plugin.py`, `embeddings.py`, `judge.py`,
+`chunker.py`, `pipeline.py`, `storage.py`) whose docstrings
+point to the CPs that fill them in. New direct dep
+`pgvector>=0.2` for the `vector(1536)` SQLAlchemy / asyncpg
+adapter; `numpy 2.4.5` arrives transitively and CP3 chunker
+reuses it for adjacent-sentence cosine math. Verified end to
+end: ruff clean, `uv sync` installs the workspace package +
+`pgvector==0.4.2` + `numpy==2.4.5`,
+`PluginManifest.from_path()` accepts §D9 verbatim,
+`importlib.metadata` entry point loads + instantiates
+`ScopeGuard` cleanly, 164 tests pass (zero new tests by design;
+CP2 is skeleton-only).
+
+CP1 ran earlier in the same session, recap below:
+
 **scope_guard implementation CP1 of 8 done (2026-05-18, commits
-`2511c3a` server-migration + docs-finalize).** ADR-0030 Accepted
+`2511c3a` server-migration + `b6cdf5f` docs-finalize).** ADR-0030 Accepted
 by operator at the start of this session; CP1 ships migration
 `0010_scope_guard_tables` — three tables (`scope_documents`,
 `scope_chunks`, `scope_alerts`), the `vector` extension, RLS on
@@ -1178,34 +1206,39 @@ reframes them server-side**:
 
 ## Next single step
 
-**CP2 of 8 — `scope_guard` package skeleton + manifest.** Per
-ADR-0030 §D9: new package
-`packages/llm_tracker_plugin_scope_guard/` with `pyproject.toml`,
-`plugin.toml` (frozen manifest shape: `hooks = ["on_persisted"]`,
-`capabilities = ["egress_http"]`, `egress_destinations` for
-both OpenAI endpoints, `db_namespace = "scope_guard"`,
-`min_content_level = "L3"`), and six empty module stubs
-(`plugin.py`, `embeddings.py`, `judge.py`, `chunker.py`,
-`pipeline.py`, `storage.py`).
+**CP3 of 8 — `chunker.py` + unit tests.** Per ADR-0030 §D5:
 
-Workspace registration is glob-based
-(`[tool.uv.workspace] members = ["packages/*"]`) so only the
-root `pyproject.toml`'s
-`[tool.pytest.ini_options].testpaths` needs a one-line edit
-once `tests/` exists. Verify by running `uv sync` clean + a
-host-load smoke confirming the plugin appears in the audit log
-on startup.
+1. Sentence-segment via the ADR's MVP regex
+   (`[.?!。？！]` + whitespace + capital / line-break heuristic).
+2. Embed each sentence — CP3's chunker takes an injected
+   `embed(text) -> list[float]` callable so tests stub it; the
+   real OpenAI client lands in CP4.
+3. Walk adjacent cosine similarities (numpy via the pgvector
+   transitive). Insert a chunk boundary where similarity drops
+   below the rolling-mean baseline. **Pin Q1 here** — benchmark
+   two or three candidate parameterisations
+   (threshold + window size) against a small fixture corpus and
+   freeze the chosen pair in the module.
+4. Enforce min 50 / max 500 token bounds: below-min merges with
+   next neighbour, above-max splits on longest gap.
 
-CP3 through CP8 work board (concise; full board in the impl
-worklog):
+Output type: `list[ChunkRecord]` where
+`ChunkRecord = (chunk_index, content, embedding)`. CP6's CLI
+calls the chunker and hands the result to
+`storage.insert_chunks(...)` once that lands at CP5.
 
-- **CP3** — `chunker.py` + unit tests; pin ADR-0030 Q1 algorithm
-  (sentence-similarity drop threshold + window size) via small
-  benchmark.
+Add `packages/llm_tracker_plugin_scope_guard/tests/` and a
+matching entry in the root `pyproject.toml`'s
+`[tool.pytest.ini_options].testpaths` at the same time as the
+first chunker test.
+
+Remaining CP4 through CP8 work board (concise; full board in
+the impl worklog):
+
 - **CP4** — `embeddings.py` + `judge.py` via `HostEgressClient`;
   pin Q4 judge prompt as a frozen module-top string.
-- **CP5** — `pipeline.py` + `storage.py` + `plugin.py`; DB-fixture
-  integration test with a fake OpenAI client.
+- **CP5** — `pipeline.py` + `storage.py` + `plugin.py`;
+  DB-fixture integration test with a fake OpenAI client.
 - **CP6** — `tools/process_scope_document.py` CLI (`.txt` + `.md`,
   idempotent delete-then-insert on `(org_id, title)`).
 - **CP7** — `.env.example` six `LLMTRACK_PLUGIN_SCOPE_GUARD_*`
@@ -1349,7 +1382,7 @@ ready to start.
 - [ ] **Phase 3a — remaining 2 decision ADRs** (#1 fallback / #4 agent language)
 - [ ] Phase 3b — thin local agent (gated on #1 + #4)
 - [x] **Phase 3c — server build-out (14 of 14 plan-checkpoints done; closed 2026-05-13 with operator smoke validated. Plan at `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0017/0018/0019/0020/0022/0023)**
-- [ ] **Phase 1c — `scope_guard`** (**in progress 2026-05-18**; ADR-0030 Accepted; CP1 of 8 done via commit `2511c3a` — migration 0010 + pgvector local image; CP2–CP8 pending per `docs/worklog/2026-05-18-scope-guard-impl.md`)
+- [ ] **Phase 1c — `scope_guard`** (**in progress 2026-05-18**; ADR-0030 Accepted; CP1 + CP2 of 8 done — commits `2511c3a` (migration 0010) + `2fe84e6` (package skeleton); CP3–CP8 pending per `docs/worklog/2026-05-18-scope-guard-impl.md`)
 - [ ] Phase 3d — carry-overs: OpenAI/Gemini adapters, analytics interface, response-side policy plugins
 
 ---

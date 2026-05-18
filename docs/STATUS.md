@@ -6,8 +6,8 @@
 
 ---
 
-**Last updated**: 2026-05-18 (Claude Code; **scope_guard CP3 of 8 done — commit `44cd664` (scope-guard: chunker + Q1 params) + this docs-finalize commit.** `chunker.py` implements ADR-0030 §D5 end to end: paragraph + sentence segmenter (Latin + CJK terminator chars, paragraph break on `\n{2,}`), rolling-mean cosine-drop boundary detector, min-50 / max-500 token bound enforcement (whitespace-word proxy — `tiktoken` intentionally not a dep), per-chunk re-embedding so the stored vector exactly represents the chunk content. **Q1 pinned: `window=3, drop=0.15`** with a benchmark in `tests/test_chunker.py` that pins the choice against `window=5` (under-splits) and `drop=0.10` (over-splits). 22 new unit tests cover segmenter / cosine / boundary detector / size-bound enforcement / ChunkRecord contract. Verified: ruff clean, 22/22 chunker tests pass in 0.17s, full suite 168 passed + 18 skipped (no regression). `Q4 (judge prompt)` is the remaining open question — pins at CP4. CP2 closed earlier same session by commit `2fe84e6` (scope-guard: package skeleton + manifest); CP1 by `2511c3a` (migration 0010) + `b6cdf5f` (docs).)
-**Updated by**: Claude Code (scope_guard implementation; CP3 of 8)
+**Last updated**: 2026-05-18 (Claude Code; **scope_guard CP4 of 8 done — commit `80ca424` (scope-guard: embeddings + judge clients) + this docs-finalize commit.** `embeddings.py` implements ADR-0030 §D3: `EmbeddingClient` wraps the SDK's `EgressClient` Protocol (host-injected per ADR-0015), posts to `https://api.openai.com/v1/embeddings` with `text-embedding-3-small`, returns the 1536-dim vector, raises `EmbeddingError` on non-2xx / malformed payload / dim mismatch, propagates `EgressDenied`. `judge.py` implements ADR-0030 §D4 + pins **§Q4** as a module-top frozen `_SYSTEM_PROMPT` (+ `_USER_PROMPT_TEMPLATE`): instructs `gpt-4o-mini` to emit strict JSON `{"verdict": "in_scope" | "out_of_scope", "reason": "..."}`, reinforced by `response_format = {"type": "json_object"}` + `temperature = 0.0` on the wire. Observe-only fallback on 2xx + malformed body → `("in_scope", "stage2_malformed_response")` (ADR-0030 §D1 — never crash `on_persisted`); non-2xx raises `JudgeError`. 18 new unit tests (7 embeddings + 11 judge) stub `EgressClient.fetch` offline; the Q4 freeze test asserts six sentinel substrings so prompt edits are diff-visible. Verified: ruff clean, 40/40 scope_guard tests pass in 0.26s, full suite 186 passed + 18 skipped (no regression). ADR-0030 open questions now down to one: Q2 (ANN index) stays MVP-deferred. **Next is CP5 — `pipeline.py` + `storage.py` + `plugin.py` wired end-to-end + DB-fixture integration test.** CP3 closed earlier same session by commit `44cd664` (scope-guard: chunker + Q1 params); CP2 by `2fe84e6` (package skeleton); CP1 by `2511c3a` (migration 0010) + `b6cdf5f` (docs).)
+**Updated by**: Claude Code (scope_guard implementation; CP4 of 8)
 
 ## Current phase
 
@@ -29,16 +29,19 @@
     smoke: 503 propagates to Anthropic SDK → 10 retries with
     backoff → user-facing failure, no Anthropic bypass.
 - **Active task**: **scope_guard implementation against
-  ADR-0030 (Accepted 2026-05-18). CP1 + CP2 + CP3 of 8 done.**
-  Migration `0010_scope_guard_tables` (commit `2511c3a`) lands
-  the three tables + RLS + GRANTs per ADR §D8; package skeleton
-  `packages/llm_tracker_plugin_scope_guard/` (commit `2fe84e6`)
-  lands the manifest + 6 module stubs per ADR §D9 + new
-  `pgvector` dep with transitive `numpy`; `chunker.py`
-  implementation (commit `44cd664`) lands the full ADR §D5
-  pipeline + 22 unit tests + Q1 parameters pinned. **Next is
-  CP4 — `embeddings.py` + `judge.py` via `HostEgressClient`,
-  pinning ADR-0030 §Q4 (frozen Stage-2 prompt template).**
+  ADR-0030 (Accepted 2026-05-18). CP1 + CP2 + CP3 + CP4 of 8
+  done.** Migration `0010_scope_guard_tables` (commit `2511c3a`)
+  lands the three tables + RLS + GRANTs per ADR §D8; package
+  skeleton `packages/llm_tracker_plugin_scope_guard/` (commit
+  `2fe84e6`) lands the manifest + 6 module stubs per ADR §D9 +
+  new `pgvector` dep with transitive `numpy`; `chunker.py`
+  (commit `44cd664`) lands the full ADR §D5 pipeline + 22 unit
+  tests + Q1 parameters pinned; `embeddings.py` + `judge.py`
+  (commit `80ca424`) land the OpenAI clients over
+  `EgressClient`, pin **§Q4** as a module-top frozen prompt
+  template, and add 18 offline unit tests (`EgressClient.fetch`
+  stubbed). **Next is CP5 — `pipeline.py` + `storage.py` +
+  `plugin.py` wired end-to-end + DB-fixture integration test.**
   Per-CP work board lives in
   `docs/worklog/2026-05-18-scope-guard-impl.md` §"Checkpoint
   plan"; CP8 still pins one of the remaining ADR open
@@ -69,17 +72,22 @@
 ## Active worklog
 
 `docs/worklog/2026-05-18-scope-guard-impl.md` — scope_guard
-implementation against ADR-0030 (Accepted). CP1 + CP2 + CP3 of
-8 done: migration `0010_scope_guard_tables` (commit `2511c3a`),
-package skeleton + manifest (commit `2fe84e6`), and the full
-ADR §D5 chunker (commit `44cd664`) — paragraph + sentence
-segmenter, rolling-mean cosine-drop boundary detector, min /
-max token bound enforcement, per-chunk re-embedding, and Q1
-parameters pinned to `window=3, drop=0.15` with a benchmark
-test. 22 new chunker tests; full suite 168 passed + 18 skipped
-without regression. CP4 (`embeddings.py` + `judge.py`) is next
-and pins ADR-0030 §Q4 (Stage-2 prompt template); CP8 pins the
-remaining retention-job question at that checkpoint.
+implementation against ADR-0030 (Accepted). CP1 + CP2 + CP3 +
+CP4 of 8 done: migration `0010_scope_guard_tables` (commit
+`2511c3a`), package skeleton + manifest (commit `2fe84e6`),
+the full ADR §D5 chunker (commit `44cd664`) with Q1 pinned to
+`window=3, drop=0.15`, and the OpenAI clients (commit
+`80ca424`) — `EmbeddingClient` over `EgressClient` for
+`text-embedding-3-small` (1536-dim, fail-on-mismatch) +
+`JudgeClient` for `gpt-4o-mini` with **ADR-0030 §Q4 pinned**
+as a module-top frozen prompt template, `response_format`
+`json_object`, `temperature=0.0`, observe-only fallback on
+malformed body. 40 scope_guard tests (22 chunker + 7
+embeddings + 11 judge); full suite 186 passed + 18 skipped
+without regression. CP5 (`pipeline.py` + `storage.py` +
+`plugin.py` wired end-to-end + DB-fixture integration test)
+is next; CP8 pins the remaining retention-job question at
+that checkpoint.
 
 Prior worklog (same day, earlier session):
 `docs/worklog/2026-05-18-adr-0030-scope-guard.md` — ADR-0030

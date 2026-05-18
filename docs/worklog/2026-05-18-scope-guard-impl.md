@@ -70,8 +70,8 @@ ships migration 0010 bumps STATUS.md §"Local dev loop revival" to
 |---|---|---|
 | **CP1** | Migration `0010_scope_guard_tables` + STATUS.md docker image bump | **done** (commits `2511c3a` + `b6cdf5f`) |
 | **CP2** | `packages/llm_tracker_plugin_scope_guard/` skeleton + manifest + workspace registration | **done** (commit `2fe84e6` + docs finalize) |
-| **CP3** | `chunker.py` + unit tests; resolve Q1 | **done** (commit `44cd664` + this docs finalize) |
-| CP4 | `embeddings.py` + `judge.py` via `HostEgressClient`; pin Q4 prompt | queued |
+| **CP3** | `chunker.py` + unit tests; resolve Q1 | **done** (commit `44cd664` + docs finalize) |
+| **CP4** | `embeddings.py` + `judge.py` via `HostEgressClient`; pin Q4 prompt | **done** (commit `80ca424` + this docs finalize) |
 | CP5 | `pipeline.py` + `storage.py` + `plugin.py`; DB-fixture integration test | queued |
 | CP6 | `tools/process_scope_document.py` CLI (.txt + .md, idempotent) | queued |
 | CP7 | `.env.example` + `docs/deploy.md` §"Data collection & privacy" + `docs/plugins.md` §11 | queued |
@@ -195,6 +195,65 @@ refresh (CLAUDE.md §5.3).
   the other plugin packages don't ship a `tests/__init__.py`,
   so this package matches.
 
+### CP4 — embeddings.py + judge.py + Q4 prompt pinned (done; commit `80ca424` + this docs finalize)
+
+- Replaced `embeddings.py` with the `EmbeddingClient` per ADR-0030 §D3
+  (commit `80ca424`):
+  - Constructor takes `api_key`, `egress: EgressClient`, optional
+    `timeout`. The `egress` is injected (host populates
+    `self.egress` at plugin load time per ADR-0015) so unit tests
+    substitute a stub without touching the network.
+  - `async embed(text) -> list[float]` posts to
+    `https://api.openai.com/v1/embeddings` with model
+    `text-embedding-3-small`; bearer-token auth.
+  - Raises `EmbeddingError` on non-2xx, malformed body, or vector
+    dim ≠ 1536 (catches model swap / API drift before the bad row
+    reaches storage). `EgressDenied` from the guard is allowed to
+    propagate so the plugin can log + skip in-band.
+- Replaced `judge.py` with the `JudgeClient` per ADR-0030 §D4 + §Q4
+  (commit `80ca424`):
+  - **ADR-0030 §Q4 pinned** — `_SYSTEM_PROMPT` and
+    `_USER_PROMPT_TEMPLATE` are module-top frozen strings. The
+    system prompt instructs `gpt-4o-mini` to emit strict JSON
+    `{"verdict": "in_scope" | "out_of_scope", "reason": "<one sentence>"}`.
+    `response_format = {"type": "json_object"}` + `temperature = 0.0`
+    on the request side reinforce the contract. The user prompt
+    numbers the supplied chunks and wraps the message text with
+    `<<<` / `>>>` sentinels.
+  - `async judge(message_text, chunks) -> tuple[Verdict, str]`
+    posts to `https://api.openai.com/v1/chat/completions`. 2xx +
+    malformed JSON (missing field, unknown verdict literal, non-JSON
+    content) falls back to
+    `("in_scope", "stage2_malformed_response")` rather than crashing
+    — ADR-0030 §D1 is observe-only, so recording a degraded alert
+    beats taking the host down.
+  - Non-2xx responses raise `JudgeError`; `EgressDenied` propagates.
+- Created `tests/test_embeddings.py` (7 tests). Pins URL / model /
+  bearer / body shape; covers dim mismatch, malformed payload,
+  non-2xx, `EgressDenied`, and timeout pass-through via a stub
+  `EgressClient` that records every call.
+- Created `tests/test_judge.py` (11 tests). Coverage:
+  - **Q4 freeze test** — asserts six sentinel substrings in
+    `_SYSTEM_PROMPT` (scope-monitoring judge / strict JSON only /
+    verdict literals / `"reason":` / in_scope-when / out_of_scope-when).
+    Future tweaks to the wording must bump this test, making them
+    diff-visible.
+  - Request shape — model `gpt-4o-mini`, `response_format`
+    `json_object`, temperature 0.0, system content equals the
+    frozen string, user content embeds the message and the
+    numbered chunks.
+  - Happy-path verdict + reason round-trip.
+  - Empty-chunks branch ("(no scope chunks supplied)" sentinel).
+  - Whitespace-tolerant content parse (leading / trailing
+    whitespace around the JSON object).
+  - Malformed-JSON content fallback.
+  - Out-of-vocab verdict fallback (rejects `"maybe"` so
+    `scope_alerts.verdict` only stores known literals).
+  - Missing-`choices` field fallback (transport returned 2xx, body
+    not OpenAI-shaped — log a degraded alert, don't raise).
+  - Non-2xx → `JudgeError`.
+  - `EgressDenied` propagation.
+
 ## Decisions
 
 - **Q3 default — new `0011_scope_alerts_retention` migration,
@@ -261,6 +320,46 @@ refresh (CLAUDE.md §5.3).
   one gets collected. Mirrors the analytics_sink / keyword_block
   / token_counter pattern — none of them ship a `tests/__init__.py`
   either.
+- **Q4 pinned — frozen module-top prompt string + `json_object`
+  response format.** Two layers reinforce the contract: (a) the
+  system prompt's first sentence instructs strict-JSON output with
+  the exact shape; (b) the request carries
+  `response_format = {"type": "json_object"}` + `temperature = 0.0`
+  so the OpenAI API itself rejects free-form text. The prompt's
+  exact wording is asserted in `test_q4_prompt_template_is_frozen`
+  (six sentinel substrings) so future edits are diff-visible in
+  review — ADR-0030 §Q4 commits the implementation to "pinned as a
+  module-top frozen string" and the test pins what "frozen" means.
+- **Malformed-JSON fallback over raising in `JudgeClient`.**
+  ADR-0030 §D1 is observe-only — the plugin's job is to record an
+  alert. A 2xx response with the body shape OpenAI documents but
+  with a malformed `content` field (e.g. wrong verdict literal,
+  non-JSON content) is recoverable: store
+  `verdict="in_scope"` + `reason="stage2_malformed_response"` so
+  operators see the degradation in the alerts table. The opposite
+  choice — raise — would skip the alert row entirely, which is
+  worse for the observability story. Non-2xx still raises
+  `JudgeError` because transport failures are real bugs the host
+  log should surface.
+- **Strict verdict-vocabulary check before pass-through.** The
+  parser rejects any verdict that isn't exactly `"in_scope"` or
+  `"out_of_scope"` and routes to the fallback. Reason:
+  `scope_alerts.verdict` is a free-text column today (no DB CHECK
+  constraint per ADR-0030 §D8), but operator dashboards filter on
+  the two known values. Letting a stray `"maybe"` slip through
+  would break those filters silently.
+- **Embedding dim sanity check at the client boundary.** Returning
+  a non-1536 vector means the model swapped under us or OpenAI
+  changed the API. The vector column is `vector(1536)` (migration
+  0010) so the bad row would fail at the DB anyway, but failing
+  early at the client gives a more useful exception message + an
+  unambiguous audit-log entry tied to the egress call.
+- **`Authorization` header constructed per-call from
+  constructor-injected key.** ADR-0030 §D4 keeps the OPENAI_API_KEY
+  read at `on_init` time (CP5); both clients accept the key by
+  constructor injection, not env-read, so they remain pure +
+  testable in isolation. Matches the analytics_sink pattern
+  (engine injected, not constructed inside the plugin).
 
 ## Verification
 
@@ -410,21 +509,58 @@ Found and fixed during CP3:
   at the bound) so the test pins one-pass split behaviour
   precisely.
 
+CP4 verified after the egress clients landed:
+
+```
+$ .venv/bin/python3.12 -m ruff check packages/llm_tracker_plugin_scope_guard/
+All checks passed!
+$ .venv/bin/python3.12 -m ruff format --check packages/llm_tracker_plugin_scope_guard/
+10 files already formatted
+
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker_plugin_scope_guard/tests -q
+40 passed in 0.26s
+
+$ .venv/bin/python3.12 -m pytest -q
+186 passed, 18 skipped in 5.89s
+```
+
+Three checks green: ruff clean across the package; scope_guard's
+own tests rose 22 → 40 (7 embeddings + 11 judge new); the full
+suite picks up +18 tests (168 → 186 passed without the DB fixture;
+the 18 skipped are DB-gated server tests, unchanged from CP3) with
+zero regression.
+
+Found and fixed during CP4:
+
+- **`E501` 101-char line in `embeddings.py`'s dim-mismatch error
+  message.** Initial draft wedged the conditional length expression
+  inside the f-string, pushing past the 100-col limit. Split into a
+  named `actual_dim` local + a shorter error message. Mechanical
+  cleanup, no behaviour change.
+- **ruff format collapsed the multi-line `_USER_PROMPT_TEMPLATE`
+  string concat onto a single 92-col line.** Confirmed the template
+  still emits the expected `\n` separators (the Q4 freeze test +
+  the request-shape test both pass against the collapsed form), so
+  the collapsed shape is the canonical one going forward. No
+  hand-edit fight against the formatter.
+
 ## What's left / known limits
 
-- CP4–CP8 not started. CP4 is the next active step.
-- ADR-0030's three remaining open questions (Q1 chunker algo
-  → **resolved at CP3**, Q2 ANN index, Q4 judge prompt) now
-  reduce to two: Q2 stays MVP-deferred (linear scan acceptable
-  until any org's chunk count approaches ~10k), Q4 pins at CP4
-  (frozen module-top string in `judge.py`). Q3 resolved at
-  CP1 time (new 0011 migration over amending 0009).
-- Test baseline after CP3: **168 passed, 18 skipped** without
+- CP5–CP8 not started. CP5 is the next active step.
+- ADR-0030's open questions reduce to one: Q1 **resolved at
+  CP3**, Q4 **resolved at CP4**, Q3 resolved at CP1 time (new
+  0011 migration over amending 0009). Q2 stays MVP-deferred
+  (linear scan acceptable until any org's chunk count
+  approaches ~10k).
+- Test baseline after CP4: **186 passed, 18 skipped** without
   the DB fixture (the 18 skipped are DB-gated server tests
-  unchanged from CP1/CP2). With the DB fixture active against
-  `pgvector/pgvector:pg15` the baseline is 186 passed. CP5 +
-  CP6 add the larger DB-fixture integration tests; CP4 adds
-  unit tests for `embeddings.py` + `judge.py`.
+  unchanged from CP1–CP3). CP5 + CP6 add the larger DB-fixture
+  integration tests against `pgvector/pgvector:pg15`.
+- Neither client makes a real OpenAI call yet — both unit-test
+  stubs feed the `EgressClient.fetch` Protocol. The first live
+  call lands at CP5 once `plugin.py` reads `OPENAI_API_KEY` at
+  `on_init` and constructs the real clients. No `.env.example`
+  entry yet — that lands at CP7.
 - pgvector ANN index not present (ADR-0030 §Q2 defers it). When
   any org's `scope_chunks` count starts approaching ~10k,
   revisit and add an `HNSW` or `IVFFlat` index on `embedding`.
@@ -438,86 +574,56 @@ Found and fixed during CP3:
 
 ## Handoff
 
-CP1–CP3 closed by commits `2511c3a` + `b6cdf5f` + `2fe84e6` +
-`44cd664` + this docs finalize. The active work board is the
-"Checkpoint plan" table above: CP1 + CP2 + CP3 done, CP4–CP8
-pending.
+CP1–CP4 closed by commits `2511c3a` + `b6cdf5f` + `2fe84e6` +
+`44cd664` + `80ca424` + this docs finalize. The active work
+board is the "Checkpoint plan" table above: CP1 + CP2 + CP3 +
+CP4 done, CP5–CP8 pending.
 
-**Next active step — CP4: `embeddings.py` + `judge.py` via
-`HostEgressClient`; pin Q4 prompt template.** ADR-0030 §D3 +
-§D4 spec:
+**Next active step — CP5: `pipeline.py` + `storage.py` +
+`plugin.py` wired end-to-end + DB-fixture integration test.**
+ADR-0030 §D1 + §D2 + §D6 + §D7 + §D8 spec:
 
-1. `EmbeddingClient` wraps a `HostEgressClient` for
-   `https://api.openai.com/v1/embeddings`. One method:
-   `async def embed(text: str) -> list[float]`. Returns the
-   1536-dim vector from `text-embedding-3-small`.
-2. `JudgeClient` wraps a `HostEgressClient` for
-   `https://api.openai.com/v1/chat/completions`. One method:
-   `async def judge(message_text: str, chunks: list[str]) ->
-   tuple[Verdict, str]` where `Verdict` is the literal
-   `"in_scope" | "out_of_scope"` and the string is a
-   one-sentence reason. Top-K (default 3) chunks accompany the
-   prompt per ADR §D2.
-3. **Q4 — pin the Stage-2 prompt template** as a frozen
-   module-top string in `judge.py`. The prompt instructs
-   `gpt-4o-mini` to return a strict JSON shape
-   `{"verdict": "...", "reason": "..."}`; the parser tolerates
-   leading whitespace + trailing newlines and falls back to a
-   default verdict on malformed JSON (better to record an alert
-   with a degraded verdict than to crash the `on_persisted` path).
-4. Unit tests stub `HostEgressClient.fetch` so the tests don't
-   touch the network. Pin: prompt shape (sentinels in the system
-   prompt + user prompt), JSON parse path, malformed-JSON
-   fallback path.
-5. `OPENAI_API_KEY` env var is read once at `on_init` time in
-   CP5; both clients accept the key by constructor injection so
-   they remain testable in isolation here.
+1. `plugin.py` — `on_init` reads `OPENAI_API_KEY` from env
+   (fail-closed: if absent, log `structlog.warning` and disable
+   the plugin for this process; ADR-0030 §D1 is observe-only so
+   "do nothing" is the right degraded state). Constructs the
+   real `EmbeddingClient` + `JudgeClient` from `self.egress` +
+   the API key, plus an `AsyncEngine` from
+   `LLMTRACK_DATABASE_URL` (analytics_sink pattern). `on_persisted`
+   builds the `HookContext`-derived message-input string per
+   ADR-0030 §D6, calls into `pipeline.evaluate(...)`, and
+   `storage.insert_alert(...)` writes the alert row.
+2. `pipeline.py` — pure-function `evaluate(message_text, *,
+   embed, judge, max_cosine_lookup, thresholds)` returns a
+   `ScopeEvaluation` (Stage-1 max-cosine + optional Stage-2
+   verdict). Thresholds default from env vars
+   (`LLMTRACK_PLUGIN_SCOPE_GUARD_STAGE1_LOW` /
+   `_STAGE1_HIGH`). Top-K (default 3) chunks accompany the
+   judge call per ADR §D2.
+3. `storage.py` — `select_top_chunks_by_cosine(org_id, vector,
+   k)` + `insert_alert(exchange_id, org_id, ...)`. Uses
+   `pgvector.sqlalchemy.Vector` for the `embedding` column.
+   `scope_alerts` writes follow the migration-0007 RLS-off
+   pattern (no `app.org_id` GUC needed; `org_id` is on the row).
+4. Integration test — DB fixture (`LLMTRACK_TEST_DATABASE_URL`)
+   against `pgvector/pgvector:pg15`; seed three
+   `scope_documents` + their `scope_chunks` for two orgs; assert
+   `on_persisted` writes the correct `scope_alerts` row and that
+   RLS isolates org-A's scope from org-B's lookup. Stub the
+   `EgressClient` for the OpenAI calls — no live network.
 
-The CP4 commit lands `embeddings.py` + `judge.py` + their unit
-tests; no DB touches yet. CP5 then wires both into
-`pipeline.py` + `storage.py` + `plugin.py` and ships the
-end-to-end DB-fixture integration test.
+The CP5 commit lands the pipeline + storage + plugin wiring +
+the integration test. CP6 then ships the
+`tools/process_scope_document.py` CLI for operator-side document
+registration (.txt + .md, idempotent delete-then-insert per
+ADR-0030 §D5).
 
-If the user is picking this up cold: STATUS.md → this worklog
-→ last 4 commits (`2511c3a` + `b6cdf5f` + `2fe84e6` +
-`44cd664` + finalize). The Decisions section above carries the
-ADR-0030 §Q1 pinning + tokenizer / re-embedding / `tests`
-namespace decisions so CP4 / CP5 don't re-derive them.
-
-**Next active step — CP3: `chunker.py` + unit tests.**
-ADR-0030 §D5 spec:
-
-1. Sentence-segment via MVP regex (ADR §D5 §1 pins the pattern:
-   `[.?!。？！]` + whitespace + capital / line-break heuristic).
-2. Embed each sentence with the OpenAI
-   `text-embedding-3-small` client — for CP3 the chunker takes an
-   injected `embed(text) -> list[float]` callable so the test
-   can stub it without making real API calls (the real client
-   lands in CP4).
-3. Walk adjacent cosine similarities. Insert a chunk boundary
-   where the similarity drops below a rolling-mean baseline
-   (**Q1: pin the exact threshold + window size at this CP** —
-   benchmark a small set of fixture documents against two or
-   three candidate parameterisations and freeze one in the
-   module).
-4. Enforce min 50 / max 500 token bounds (below-min merges with
-   next; above-max splits on longest gap).
-
-Numpy is now installed transitively via pgvector — the chunker
-can use `numpy.dot` / `numpy.linalg.norm` for the cosine math
-without a new direct dependency.
-
-Output type for CP3:
-`list[ChunkRecord]` where
-`ChunkRecord = (chunk_index, content, embedding)`. The
-`tools/process_scope_document.py` CLI in CP6 calls this and
-hands the result to `storage.insert_chunks(...)` once that
-function lands in CP5.
-
-If the user is picking this up cold: STATUS.md → this worklog
-→ last 4 commits (`2511c3a` + `b6cdf5f` + `2fe84e6` + finalize).
-The Decisions section above carries the four ADR open-question
-commitments so CP3/CP4/CP8 don't re-derive them.
+The Decisions section above carries every ADR-0030 open-question
+commitment + the implementation-tier choices (`tests/__init__.py`
+omission, whitespace tokenizer, re-embedding, observe-only
+fallback) so CP5 doesn't re-derive them. Read STATUS.md → this
+worklog → last 5 commits (`2511c3a` + `b6cdf5f` + `2fe84e6` +
+`44cd664` + `80ca424` + finalize).
 
 ## Suggestions (untouched)
 

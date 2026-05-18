@@ -2,15 +2,15 @@
 
 Three contract surfaces:
 
-1. ``on_request_received`` stashes the request body + extracted
-   system prompt keyed by ``exchange_id``.
+1. ``on_request_received`` stashes the request body keyed by
+   ``exchange_id``.
 2. ``on_persisted`` builds + writes a row whose columns line up with
    the SQL placeholders. The engine is mocked; assertions inspect the
    parameters dict the plugin hands to ``execute``.
 3. A ``ctx`` without a parsed response (``response_usage()`` and
    ``response_content_json()`` both ``None``) still produces a valid
-   row — the five extractor-derived columns are NULL but the INSERT
-   still fires (ADR-0027 axis 1: NULL is data).
+   row — the extractor-derived columns are NULL but the INSERT still
+   fires (ADR-0027 axis 1: NULL is data).
 """
 
 from __future__ import annotations
@@ -68,10 +68,8 @@ async def test_request_stashed_on_received() -> None:
 
     result = await plugin.on_request_received("ex_test_01", ctx)
 
-    # Stash carries the raw request body + the extracted system string.
-    stashed = plugin._stash["ex_test_01"]
-    assert stashed["messages_json"] == body.decode("utf-8")
-    assert stashed["system_prompt"] == "be brief"
+    # Stash carries the raw request body as a string.
+    assert plugin._stash["ex_test_01"] == body.decode("utf-8")
     assert result.__class__.__name__ == "Pass"
 
 
@@ -80,9 +78,6 @@ async def test_row_written_on_persisted_with_parsed_response() -> None:
     engine, conn = _fake_engine()
     plugin = AnalyticsSink(engine=engine)
 
-    # Build a parsed-response stand-in. The plugin reads attributes via
-    # `getattr`, so a SimpleNamespace-like object with the expected
-    # field names + an outer `usage` is enough.
     usage = MagicMock()
     usage.model_served = "claude-haiku-4-5-20251001"
     usage.input_tokens = 42
@@ -95,7 +90,7 @@ async def test_row_written_on_persisted_with_parsed_response() -> None:
     parsed.response_json = '{"model":"claude-haiku-4-5-20251001","content":[]}'
 
     org_uuid = uuid.uuid4()
-    body = b'{"model":"claude-haiku-4-5-20251001","system":"sys","messages":[]}'
+    body = b'{"model":"claude-haiku-4-5-20251001","messages":[]}'
     ctx = _make_ctx(request_body=body, org_id=org_uuid, parsed_response=parsed)
 
     await plugin.on_request_received("ex_test_01", ctx)
@@ -108,7 +103,6 @@ async def test_row_written_on_persisted_with_parsed_response() -> None:
     assert params["org_id"] == org_uuid
     assert params["model_requested"] == "claude-haiku-4-5-20251001"
     assert params["model_served"] == "claude-haiku-4-5-20251001"
-    assert params["system_prompt"] == "sys"
     assert params["messages_json"] == body.decode("utf-8")
     assert params["response_json"] == '{"model":"claude-haiku-4-5-20251001","content":[]}'
     assert params["input_tokens"] == 42
@@ -116,6 +110,9 @@ async def test_row_written_on_persisted_with_parsed_response() -> None:
     assert params["cache_read_tokens"] == 7
     assert params["cache_write_tokens"] == 3
     assert params["stop_reason"] == "end_turn"
+    # system_prompt and tool_call_count no longer exist (dropped in migration 0013).
+    assert "system_prompt" not in params
+    assert "tool_call_count" not in params
     # Stash is cleared after the write.
     assert "ex_test_01" not in plugin._stash
 
@@ -136,7 +133,6 @@ async def test_missing_parsed_response_writes_nulls() -> None:
     assert conn.execute.await_count == 1
     _stmt, params = conn.execute.await_args.args
     assert params["model_requested"] == "claude-x"
-    # All five extractor-derived columns are NULL.
     assert params["model_served"] is None
     assert params["input_tokens"] is None
     assert params["output_tokens"] is None
@@ -166,7 +162,6 @@ async def test_no_request_body_no_stash() -> None:
     """If `request_text()` is None (degraded ceiling, no body), nothing is stashed."""
     plugin = AnalyticsSink(engine=None)
     ctx = HookContext(session_id="server", exchange_id="ex_x", mode="R")
-    # No `_raw_request_body`, so `request_text()` returns None.
 
     result = await plugin.on_request_received("ex_x", ctx)
     assert "ex_x" not in plugin._stash

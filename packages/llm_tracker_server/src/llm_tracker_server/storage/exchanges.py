@@ -3,46 +3,35 @@
 Three call sites in the forwarder:
 
 * :func:`record_exchange_timing` — happy path. Lands after the upstream
-  stream ended naturally; carries the three ``t_*_ms`` epoch
-  millisecond marks the local sidecar already captures, the four
-  forwarder-known close-out fields (CP14 follow-up Option A:
-  ``ended_at_ms``, ``status_code``, ``model_requested``,
-  ``latency_ms``), plus the six SSE-extractor response-side fields
-  added by Option B / ADR-0026 (``model_served``, ``input_tokens``,
-  ``output_tokens``, ``cache_read_tokens``, ``cache_write_tokens``,
-  ``stop_reason``). All six default to ``None`` per ADR-0027 axis 1
-  (best-effort NULL): the extractor never raises, so a request whose
-  stream produced a malformed or truncated `message_start` simply
-  carries fewer populated columns.
+  stream ended naturally; carries the three ``t_*_ms`` epoch millisecond
+  marks, the four forwarder-known close-out fields (``ended_at_ms``,
+  ``status_code``, ``model_requested``, ``latency_ms``), plus
+  ``model_served`` and ``stop_reason`` from the SSE extractor. Token
+  counts were removed from ``exchanges`` in migration 0013 — they live
+  in ``plugin_analytics``.
 * :func:`record_exchange_blocked` — short-circuit path. Lands when a
   plugin returns ``Block`` from ``on_request_received`` /
   ``before_forward`` or ``Abort`` from ``on_upstream_response_start``;
-  carries ``blocked_by = result.plugin`` so audits can attribute the
-  decision. Per ADR-0027 axis 3, the three cheap close-out fields
-  (``ended_at_ms``, ``latency_ms``, ``model_requested``) ride
-  through this helper too so blocked rows are queryable on the same
-  axes as happy rows.
+  carries ``blocked_by = result.plugin``. Per ADR-0027 axis 3, the three
+  cheap close-out fields (``ended_at_ms``, ``latency_ms``,
+  ``model_requested``) ride through here so blocked rows are queryable on
+  the same axes as happy rows.
 * :func:`record_exchange_failure` — pre-SSE upstream failure path
   (ADR-0027 axis 2). Lands when ``http_client.send`` raises a
-  network-level error or when upstream returns a non-2xx status
-  before the SSE stream starts. ``status_code`` is the upstream's
-  status when available; ``599`` is the documented sentinel for
-  "upstream gave us nothing" (connection error / timeout).
-  ``blocked_by`` stays NULL — this is not a plugin decision, this
-  is upstream not delivering.
+  network-level error or when upstream returns a non-2xx status before
+  the SSE stream starts. ``status_code`` is the upstream's status when
+  available; ``599`` is the documented sentinel for "upstream gave us
+  nothing" (connection error / timeout). ``blocked_by`` stays NULL —
+  this is not a plugin decision, this is upstream not delivering.
 
-Both helpers take ``session`` + ``org_id`` keyword-only. The session is
+All helpers take ``session`` + ``org_id`` keyword-only. The session is
 the per-request :class:`AsyncSession` opened by
 :class:`~llm_tracker_server.auth.AuthMiddleware`; the GUC binding
-(``set_config('app.org_id', ...)``) on that session is what makes the
-CP5 RLS policy ``exchanges_org_isolation`` match this row. ``org_id``
-is set on the column explicitly even though RLS ``WITH CHECK`` would
-reject a wrong-org write — defense in depth (ADR-0018 §"Enforcement").
+(``set_config('app.org_id', ...)``) is what makes CP5 RLS match this
+row. ``org_id`` is also set on the column explicitly — defense in depth.
 
-The helpers ``flush`` rather than ``commit``: the request-scoped
-session retains commit control so the middleware's terminal
-``session.commit()`` (after the downstream handler returns) remains
-the single transaction boundary.
+The helpers ``flush`` rather than ``commit``: the middleware's terminal
+``session.commit()`` remains the single transaction boundary.
 """
 
 from __future__ import annotations
@@ -68,10 +57,6 @@ async def record_exchange_timing(
     model_requested: str | None,
     latency_ms: int,
     model_served: str | None = None,
-    input_tokens: int | None = None,
-    output_tokens: int | None = None,
-    cache_read_tokens: int | None = None,
-    cache_write_tokens: int | None = None,
     stop_reason: str | None = None,
 ) -> None:
     """Persist a completed-exchange row scoped to ``org_id``.
@@ -79,10 +64,9 @@ async def record_exchange_timing(
     ``model_requested`` is ``None`` when the request body was not
     parseable JSON or did not carry a string ``model`` field.
 
-    The six SSE-extractor fields (``model_served`` through
-    ``stop_reason``) default to ``None``; ADR-0027 axis 1 codifies that
-    `NULL` on any of them means "the extractor did not produce a value
-    for this request" — not "we forgot to populate this on this path."
+    ``model_served`` and ``stop_reason`` default to ``None``; ADR-0027
+    axis 1: NULL means "the extractor did not produce a value", not
+    "we forgot to populate this".
     """
     session.add(
         Exchange(
@@ -96,10 +80,6 @@ async def record_exchange_timing(
             model_requested=model_requested,
             model_served=model_served,
             status_code=status_code,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_read_tokens=cache_read_tokens,
-            cache_write_tokens=cache_write_tokens,
             latency_ms=latency_ms,
             stop_reason=stop_reason,
             content_level="L3",
@@ -164,19 +144,18 @@ async def record_exchange_failure(
 ) -> None:
     """Persist a row for a request that failed before SSE could start.
 
-    Per ADR-0027 axis 2, this covers two upstream-failure shapes:
+    Per ADR-0027 axis 2, covers two upstream-failure shapes:
 
-    1. ``http_client.send`` raised (network error, timeout, etc.). The
-       forwarder passes ``status_code=599`` as the documented sentinel
-       for "upstream gave us nothing."
-    2. Upstream returned a non-2xx status before SSE could start. The
-       forwarder passes ``status_code=upstream.status_code`` (4xx/5xx
-       verbatim).
+    1. ``http_client.send`` raised (network error, timeout, etc.).
+       The forwarder passes ``status_code=599`` as the sentinel for
+       "upstream gave us nothing."
+    2. Upstream returned a non-2xx status before SSE could start.
+       The forwarder passes ``status_code=upstream.status_code``.
 
-    Response-side columns (``model_served``, the four token counts,
-    ``stop_reason``, and the two SSE timing marks) stay NULL because
-    no SSE stream ran. ``blocked_by`` also stays NULL — this is not a
-    plugin decision; it is upstream not delivering.
+    Response-side columns (``model_served``, ``stop_reason``, and the
+    two SSE timing marks) stay NULL because no SSE stream ran.
+    ``blocked_by`` also stays NULL — upstream failure, not a plugin
+    decision.
     """
     session.add(
         Exchange(

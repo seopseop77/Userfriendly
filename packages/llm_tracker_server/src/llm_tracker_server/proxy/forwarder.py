@@ -446,15 +446,10 @@ async def forward_request(
                             status_code=upstream.status_code,
                             model_requested=_model_requested,
                             latency_ms=ended_at_ms - t0_epoch_ms,
-                            # ADR-0026 / ADR-0027 axis 1: extractor
-                            # output rides through here. Each field is
-                            # `None` when the stream did not surface a
-                            # parseable value (best-effort NULL).
+                            # ADR-0026 / ADR-0027 axis 1: extractor fields.
+                            # None when the stream did not surface a value.
+                            # Token counts live in plugin_analytics (0013).
                             model_served=parsed.usage.model_served,
-                            input_tokens=parsed.usage.input_tokens,
-                            output_tokens=parsed.usage.output_tokens,
-                            cache_read_tokens=parsed.usage.cache_read_tokens,
-                            cache_write_tokens=parsed.usage.cache_write_tokens,
                             stop_reason=parsed.usage.stop_reason,
                         )
                     # design.md §6.3.2: on_persisted fires *after* the

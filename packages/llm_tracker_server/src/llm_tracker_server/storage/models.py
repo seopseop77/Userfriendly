@@ -1,33 +1,24 @@
 """SQLAlchemy ORM models for the central server (PostgreSQL).
 
-Four user-data tables (`exchanges`, `events`, `tool_calls`, `audit_log`) are
-ported one-to-one from `packages/llm_tracker/src/llm_tracker/storage/models.py`
-with three deliberate dialect adjustments:
+User-data tables: `exchanges`, `audit_log`.
+Tenancy substrate: `orgs`, `api_tokens`.
 
-- Timestamp / counter columns that hold epoch-millisecond or large counts
-  are `BigInteger` (PG `BIGINT`) instead of `Integer` (PG `INT4`). The
-  SQLite source used `Integer` because SQLite's INTEGER is variable-width;
-  PG's `INT4` would overflow epoch-ms in 2038.
+Migration 0013 dropped `events` and `tool_calls` (never had INSERT call
+sites) and removed token count columns from `exchanges`
+(input_tokens, output_tokens, cache_read_tokens, cache_write_tokens).
+Token counts are stored in `plugin_analytics` by the analytics_sink plugin,
+which is the authoritative source for per-exchange cost data.
+
+Dialect notes vs. SQLite-era schema:
+- Epoch-millisecond / counter columns use `BigInteger` (PG BIGINT) to avoid
+  INT4 overflow in 2038.
 - Primary keys remain `String` (ULIDs generated at the application layer).
-  Switching to `BIGINT IDENTITY` or `UUID DEFAULT gen_random_uuid()` would
-  break the existing ULID-producing call sites in Phase 1/2 code without
-  buying anything the port needs.
-- `audit_log` append-only enforcement uses a PL/pgSQL trigger function
-  shipped by migration `0002_audit_log_triggers`. SQLite's per-table
-  `RAISE(ABORT)` triggers don't port; the SQL is in the migration file,
-  not duplicated here.
+- `audit_log` append-only enforcement uses a PL/pgSQL trigger shipped by
+  migration `0002_audit_log_triggers`.
 
-The two tenancy substrate tables (`orgs`, `api_tokens`) land in CP3 and use
-PG-native `UUID` with `gen_random_uuid()` server defaults — these are the
-first tables that genuinely want identity generation at the DB layer (no
-existing call-site contract to break).
-
-CP4 adds `org_id UUID NOT NULL REFERENCES orgs(id)` on the four user-data
-tables (ADR-0018 tenancy). No SA relationship object is declared — RLS
-policies (CP5) are the authority for cross-org visibility, not SA's
-session-level cascade. RLS policies land in CP5; per-request session
-binding (`SET LOCAL ROLE` + `set_config('app.org_id', ...)`) lands in
-CP6's `auth.middleware.AuthMiddleware`.
+CP4 adds `org_id UUID NOT NULL REFERENCES orgs(id)` on user-data tables
+(ADR-0018). No SA relationship declared — RLS (CP5) is the authority for
+cross-org visibility. Per-request session binding lands in CP6.
 """
 
 import uuid as uuid_module
@@ -59,10 +50,6 @@ class Exchange(Base):
     model_requested: Mapped[str | None] = mapped_column(String, nullable=True)
     model_served: Mapped[str | None] = mapped_column(String, nullable=True)
     status_code: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    input_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    output_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    cache_read_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    cache_write_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     stop_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     t_request_received_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -72,41 +59,6 @@ class Exchange(Base):
     blocked_by: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (Index("idx_exchanges_started", "started_at"),)
-
-
-class Event(Base):
-    __tablename__ = "events"
-
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    org_id: Mapped[uuid_module.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("orgs.id"),
-        nullable=False,
-    )
-    exchange_id: Mapped[str] = mapped_column(String, ForeignKey("exchanges.id"), nullable=False)
-    seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    ts: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    kind: Mapped[str] = mapped_column(String, nullable=False)
-    payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    __table_args__ = (Index("idx_events_exchange", "exchange_id", "seq"),)
-
-
-class ToolCall(Base):
-    __tablename__ = "tool_calls"
-
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    org_id: Mapped[uuid_module.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("orgs.id"),
-        nullable=False,
-    )
-    exchange_id: Mapped[str] = mapped_column(String, ForeignKey("exchanges.id"), nullable=False)
-    name: Mapped[str] = mapped_column(String, nullable=False)
-    input_hash: Mapped[str | None] = mapped_column(String, nullable=True)
-    input_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    result_hash: Mapped[str | None] = mapped_column(String, nullable=True)
-    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class AuditLog(Base):

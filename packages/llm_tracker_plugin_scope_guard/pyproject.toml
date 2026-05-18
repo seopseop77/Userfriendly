@@ -17,10 +17,21 @@ dependencies = [
     "pgvector>=0.2",
     "python-ulid>=2",
     "structlog",
+    # CP6 operator CLI (process_scope_document.py) uses httpx directly
+    # via the standalone _ToolEgressClient — the plugin runtime path
+    # already gets httpx through the host's HostEgressClient.
+    "httpx>=0.27",
 ]
 
 [project.entry-points."llm_tracker.plugins"]
 scope_guard = "llm_tracker_plugin_scope_guard.plugin:ScopeGuard"
+
+[project.scripts]
+# ADR-0030 §D5 + CP6 operator CLI. Registered as a console script so
+# `process-scope-document <org_id> <file>` works after `uv sync`;
+# `python -m llm_tracker_plugin_scope_guard.process_scope_document ...`
+# also works for environments without `.venv/bin/` on PATH.
+process-scope-document = "llm_tracker_plugin_scope_guard.process_scope_document:main"
 
 [tool.uv.sources]
 llm-tracker-sdk = { workspace = true }

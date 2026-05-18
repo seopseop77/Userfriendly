@@ -507,6 +507,7 @@ version = "0.1.0"
 source = { editable = "packages/llm_tracker_plugin_scope_guard" }
 dependencies = [
     { name = "asyncpg" },
+    { name = "httpx" },
     { name = "llm-tracker-sdk" },
     { name = "pgvector" },
     { name = "python-ulid" },
@@ -517,6 +518,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "asyncpg", specifier = ">=0.29" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "llm-tracker-sdk", editable = "packages/llm_tracker_sdk" },
     { name = "pgvector", specifier = ">=0.2" },
     { name = "python-ulid", specifier = ">=2" },

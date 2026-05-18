@@ -6,7 +6,10 @@
 
 ---
 
-**Last updated**: 2026-05-18 (Claude Code; **scope_guard provider swap — ADR-0031 accepted; embedding/judge moved from OpenAI to Gemini in one commit.** Operator was Gemini-only on API procurement so the OpenAI-pinned ADR-0030 §D3/§D4 needed superseding; ADR-0031 records the swap, migration 0012 collapses `scope_chunks.embedding vector(1536) → vector(768)` (drop-and-add; safe on the empty table — STATUS-confirmed pre-swap), `embeddings.py` retargets `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent` with `x-goog-api-key`, `judge.py` retargets `…/gemini-2.5-flash:generateContent` with `systemInstruction` + `generationConfig.responseMimeType=application/json` + temp 0, env var `OPENAI_API_KEY` → `GEMINI_API_KEY`, log key `scope_guard.openai_failure` → `scope_guard.gemini_failure`, `plugin.toml` egress allowlist swapped exact-URL, `.env.example`/`docs/deploy.md` §"Data collection & privacy"/`docs/plugins.md` §11 retargeted at Google + Gemini API additional-terms link. ADR-0030 §Q4 frozen prompt template **carried over unchanged** — the swap is transport / shape, not contract. Tests rewritten: 38 offline scope_guard tests pass (was 38; structure unchanged), full repo suite still 213 passed + 26 DB-skipped, ruff clean. Earlier same session: scope_guard CP8 of 8 done — commit `39595da` (server: migration 0011 scope_alerts retention). **Fly.io deploy of `2d71cc4` failed `alembic upgrade head` (`StringDataRightTruncationError`: migration revision id `0012_scope_chunks_embedding_dim_768` was 35 chars, over alembic's default `alembic_version.version_num VARCHAR(32)`); follow-up commit renames the migration file + in-file `revision` to `0012_scope_chunks_embed_dim_768` (31 chars). Precedent: `0006_grant_app_role_set_membership.py` already keeps its in-file id short for the same reason.** Migration `0011_scope_alerts_retention` ships one daily `pg_cron` job `llm-tracker-retention-scope-alerts` at 03:00 UTC running `DELETE FROM public.scope_alerts WHERE created_at < now() - INTERVAL '6 months'` — `timestamptz` cutoff is direct (same shape as 0009's plugin_analytics job, unlike `exchanges.started_at` which is unix-ms). `scope_documents` + `scope_chunks` are operator-curated baseline content (ADR-0030 §D8) and intentionally NOT retention-managed; the module docstring spells this out so a future "why isn't this cleaned" doesn't have to re-derive. Same pg_cron-gated `DO $$ … $$` pattern as 0009 keeps alembic upgrade green on environments without the extension. Downgrade unschedules by name (idempotent EXISTS-checked) without dropping pg_cron — same blast-radius stance as 0009/0010. `docs/deploy.md` §"Data collection & privacy" retention bullet bumped from "two pg_cron jobs" to "three" with the new job name + an explicit sentence on the `scope_documents`/`scope_chunks` exemption + the `process-scope-document` CLI re-registration path. Verified: ruff clean, alembic upgrade/downgrade --sql round-trip emits clean BEGIN/SQL/COMMIT blocks, 239 tests pass under DB fixture (unchanged from CP7 — cron job appears in `cron.job` table; no test surface change). ADR-0030 open-question ledger now ZERO outstanding (Q1 resolved at CP3, Q3 resolved at CP8 per the CP1 pre-pin, Q4 resolved at CP4; Q2 ANN index stays MVP-deferred per the ADR — revisit when any org's scope_chunks count approaches ~10k). **Next active step is operational, not implementation: operator-side live smoke against a real OPENAI_API_KEY to exercise the actual `text-embedding-3-small` + `gpt-4o-mini` round-trips on production traffic.** Phase 1c scope_guard shipped end-to-end: migration + package + chunker + OpenAI clients + pipeline + storage + plugin wiring + operator CLI + disclosure docs + retention cron. CP7 closed earlier same session by commit `8e18892`; CP6 by `c0c000f`; CP5 by `f0042f6`; CP4 by `80ca424`; CP3 by `44cd664`; CP2 by `2fe84e6`; CP1 by `2511c3a` + `b6cdf5f`.)
+**Last updated**: 2026-05-18 (Claude Code; **storage schema cleanup — migration 0013 applied live.** Cowork session staged the code half in commit `efc7fb4` over 7 files (+196 / -223) — dropped two never-INSERTed tables (`events`, `tool_calls`), four token-count columns on `exchanges` (`input_tokens` / `output_tokens` / `cache_read_tokens` / `cache_write_tokens` — authoritative copy lives on `plugin_analytics` since migration 0007), and two never-or-redundantly filled columns on `plugin_analytics` (`tool_call_count` always 0; `system_prompt` redundant with `messages_json`). ORM `Event`/`ToolCall` classes removed from `storage/models.py`, `record_exchange_timing` signature trimmed of token kwargs, `forwarder.py` happy-path call site matched, `analytics_sink._INSERT_SQL` simplified to 12 placeholders. This Claude Code session verified the code half (tests 64 passed + 18 skipped on `llm_tracker_server` + `analytics_sink` suites; `ruff check .` clean; one unrelated `ruff format` drift on `packages/llm_tracker_sdk/tests/test_harness.py` from commit `3d76d1f` logged under §Suggestions, not mixed in) and then applied migration 0013 to the live Supabase project `qdcixbwwlsnkekabavmj` via the Supabase MCP `execute_sql` tool — a single `BEGIN; … COMMIT;` block ran the 6 DDL statements + the `UPDATE alembic_version SET version_num='0013_schema_cleanup'` atomically. Live DB post-state confirmed: alembic ledger advanced from `0012_scope_chunks_embed_dim_768` → `0013_schema_cleanup`; `events`/`tool_calls` absent from `information_schema.tables`; `exchanges` carries 17 columns matching `models.Exchange` exactly; `plugin_analytics` carries 13 columns matching `_INSERT_SQL` placeholders exactly. **Operator action required next**: `fly deploy` from `main` so the running image matches the live schema — the prior image's `record_exchange_timing` still tries to set the four dropped columns and will `UndefinedColumn`-fail the happy-path flush until redeploy (blocked-path and failure-path rows are unaffected; `plugin_analytics` keeps writing via its own engine). Decision rationale: chose `execute_sql` over `apply_migration` because schema is owned by alembic, not Supabase's parallel migrations table; chose one atomic `BEGIN…COMMIT` over per-statement to keep the schema + alembic ledger axes consistent on rollback. Earlier same session: scope_guard provider swap to Gemini (ADR-0031) — see prior `## Updated by` line below for that worklog's hand-off. Scope_guard track stays inactive at commit `0c1ca9d`; this cleanup does not advance it.)
+**Updated by**: Claude Code (schema cleanup — migration 0013 verified + applied live; awaiting operator `fly deploy`)
+
+**Prior session marker** (2026-05-18, **scope_guard provider swap — ADR-0031 accepted; embedding/judge moved from OpenAI to Gemini in one commit.** Operator was Gemini-only on API procurement so the OpenAI-pinned ADR-0030 §D3/§D4 needed superseding; ADR-0031 records the swap, migration 0012 collapses `scope_chunks.embedding vector(1536) → vector(768)` (drop-and-add; safe on the empty table — STATUS-confirmed pre-swap), `embeddings.py` retargets `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent` with `x-goog-api-key`, `judge.py` retargets `…/gemini-2.5-flash:generateContent` with `systemInstruction` + `generationConfig.responseMimeType=application/json` + temp 0, env var `OPENAI_API_KEY` → `GEMINI_API_KEY`, log key `scope_guard.openai_failure` → `scope_guard.gemini_failure`, `plugin.toml` egress allowlist swapped exact-URL, `.env.example`/`docs/deploy.md` §"Data collection & privacy"/`docs/plugins.md` §11 retargeted at Google + Gemini API additional-terms link. ADR-0030 §Q4 frozen prompt template **carried over unchanged** — the swap is transport / shape, not contract. Tests rewritten: 38 offline scope_guard tests pass (was 38; structure unchanged), full repo suite still 213 passed + 26 DB-skipped, ruff clean. Earlier same session: scope_guard CP8 of 8 done — commit `39595da` (server: migration 0011 scope_alerts retention). **Fly.io deploy of `2d71cc4` failed `alembic upgrade head` (`StringDataRightTruncationError`: migration revision id `0012_scope_chunks_embedding_dim_768` was 35 chars, over alembic's default `alembic_version.version_num VARCHAR(32)`); follow-up commit renames the migration file + in-file `revision` to `0012_scope_chunks_embed_dim_768` (31 chars). Precedent: `0006_grant_app_role_set_membership.py` already keeps its in-file id short for the same reason.** Migration `0011_scope_alerts_retention` ships one daily `pg_cron` job `llm-tracker-retention-scope-alerts` at 03:00 UTC running `DELETE FROM public.scope_alerts WHERE created_at < now() - INTERVAL '6 months'` — `timestamptz` cutoff is direct (same shape as 0009's plugin_analytics job, unlike `exchanges.started_at` which is unix-ms). `scope_documents` + `scope_chunks` are operator-curated baseline content (ADR-0030 §D8) and intentionally NOT retention-managed; the module docstring spells this out so a future "why isn't this cleaned" doesn't have to re-derive. Same pg_cron-gated `DO $$ … $$` pattern as 0009 keeps alembic upgrade green on environments without the extension. Downgrade unschedules by name (idempotent EXISTS-checked) without dropping pg_cron — same blast-radius stance as 0009/0010. `docs/deploy.md` §"Data collection & privacy" retention bullet bumped from "two pg_cron jobs" to "three" with the new job name + an explicit sentence on the `scope_documents`/`scope_chunks` exemption + the `process-scope-document` CLI re-registration path. Verified: ruff clean, alembic upgrade/downgrade --sql round-trip emits clean BEGIN/SQL/COMMIT blocks, 239 tests pass under DB fixture (unchanged from CP7 — cron job appears in `cron.job` table; no test surface change). ADR-0030 open-question ledger now ZERO outstanding (Q1 resolved at CP3, Q3 resolved at CP8 per the CP1 pre-pin, Q4 resolved at CP4; Q2 ANN index stays MVP-deferred per the ADR — revisit when any org's scope_chunks count approaches ~10k). **Next active step is operational, not implementation: operator-side live smoke against a real OPENAI_API_KEY to exercise the actual `text-embedding-3-small` + `gpt-4o-mini` round-trips on production traffic.** Phase 1c scope_guard shipped end-to-end: migration + package + chunker + OpenAI clients + pipeline + storage + plugin wiring + operator CLI + disclosure docs + retention cron. CP7 closed earlier same session by commit `8e18892`; CP6 by `c0c000f`; CP5 by `f0042f6`; CP4 by `80ca424`; CP3 by `44cd664`; CP2 by `2fe84e6`; CP1 by `2511c3a` + `b6cdf5f`.)
 **Updated by**: Claude Code (scope_guard track marked inactive — handed off to a separate owner)
 
 **Inactive track marker**: scope_guard is paused at commit `0c1ca9d`. The
@@ -122,15 +125,45 @@ to keep the plugin disabled at runtime while leaving the code in tree.
 
 ## Active worklog
 
-`docs/worklog/2026-05-18-scope-guard-handoff.md` — scope_guard track
-inactive marker. Handoff snapshot points: code complete on Gemini at
-commit `0c1ca9d`; the new owner picks up from ADR-0030, ADR-0031, and
-the prior worklogs listed in that handoff file. Dormancy posture
-recommended: `fly secrets set LLMTRACK_PLUGINS_DISABLED=scope_guard`.
-**This session and any near-term session should NOT advance
-scope_guard further.**
+`docs/worklog/2026-05-18-schema-cleanup.md` — storage schema cleanup
+(migration 0013). Code half landed in Cowork commit `efc7fb4` (7
+files, +196 / -223); this Claude Code session verified tests + lint
+and **applied migration 0013 to the live Supabase project**
+`qdcixbwwlsnkekabavmj` via the Supabase MCP `execute_sql` tool —
+single `BEGIN; … COMMIT;` block ran the 6 DDL statements + the
+`alembic_version` bump atomically. Live DB post-state confirmed
+end-to-end: alembic ledger advanced `0012_scope_chunks_embed_dim_768`
+→ `0013_schema_cleanup`; `events` + `tool_calls` absent from
+`information_schema.tables`; `exchanges` keeps 17 columns (matches
+`models.Exchange` exactly, no `input_tokens` / `output_tokens` /
+`cache_read_tokens` / `cache_write_tokens`); `plugin_analytics`
+keeps 13 columns (matches `_INSERT_SQL` placeholders exactly, no
+`tool_call_count` / `system_prompt`). **Next single step is
+operational, not implementation: `fly deploy` from `main` so the
+running image matches the live schema** — the prior image's
+`record_exchange_timing` still tries to set the four dropped
+`exchanges` columns and will `UndefinedColumn`-fail the happy-path
+flush from the streaming generator's `finally` until redeploy
+(response body still returns to the client; blocked-path /
+failure-path rows are unaffected; `plugin_analytics` keeps writing
+via its own engine). Migration's `downgrade()` restores the
+pre-0013 shape (nullable token columns; restored empty `events` /
+`tool_calls` tables; restored `system_prompt` / `tool_call_count`)
+— exercised via `--sql` round-trip in the Cowork session; not run
+against live DB. **scope_guard track remains paused at commit
+`0c1ca9d`** per its own handoff worklog — this schema cleanup is
+orthogonal and does not advance scope_guard.
 
-Prior worklog (immediately preceding):
+Prior worklog (scope_guard track marker, still authoritative for
+that track): `docs/worklog/2026-05-18-scope-guard-handoff.md` —
+scope_guard inactive marker. Handoff snapshot points: code complete
+on Gemini at commit `0c1ca9d`; the new owner picks up from
+ADR-0030, ADR-0031, and the prior worklogs listed in that handoff
+file. Dormancy posture recommended: `fly secrets set
+LLMTRACK_PLUGINS_DISABLED=scope_guard`. **This session and any
+near-term session should NOT advance scope_guard further.**
+
+Prior worklog (immediately preceding scope_guard handoff):
 `docs/worklog/2026-05-18-gemini-provider-swap.md` — scope_guard
 provider swap to Gemini per ADR-0031 (Accepted 2026-05-18 same
 session). Single-commit change spanning ADR-0031, migration 0012
@@ -245,15 +278,46 @@ CP14 proper).
 ## Recent commits
 
 ```
-<finalize>   docs: STATUS + worklog — scope_guard CP8 (COMPLETE)
-39595da   server: migration 0011 scope_alerts retention (ADR-0030 §Q3)
-b8a9f37   docs: STATUS + worklog — scope_guard CP7
-8e18892   docs: scope_guard disclosure + env knobs + plugins.md CLI entry (CP7)
-cd5c706   docs: STATUS + worklog — scope_guard CP6
-c0c000f   scope-guard: process_scope_document CLI (ADR-0030 §D5)
+<finalize>   docs: STATUS + worklog — schema cleanup migration 0013 applied live
+efc7fb4   storage: schema cleanup (migration 0013)
+2e51bfe   docs: mark scope_guard track inactive (handoff)
+0c1ca9d   scope-guard: shorten migration 0012 revision id (VARCHAR(32) limit)
+2d71cc4   scope-guard: switch to Gemini provider (ADR-0031)
+1500f0e   docs: STATUS + worklog — scope_guard CP8 (COMPLETE)
 ```
 
 ## Where we paused
+
+**Storage schema cleanup (migration 0013) applied to live Supabase
+(2026-05-18).** Code half landed in Cowork commit `efc7fb4`; this
+Claude Code session verified tests + lint, then executed the 6 DDL
+statements + the `alembic_version` bump as a single atomic
+`BEGIN; … COMMIT;` against the live Supabase project
+`qdcixbwwlsnkekabavmj` via Supabase MCP `execute_sql`. Schema is now
+ahead of the deployed Fly image: the **running image still attempts
+to write the four dropped `exchanges` token columns** through
+`record_exchange_timing`, so happy-path post-stream flushes will fail
+with `UndefinedColumn` until the next `fly deploy` from `main`. The
+streaming response itself still returns to the client (the generator
+yields chunks before the flush); blocked-path / failure-path rows
+and `plugin_analytics` (separate engine + already-aligned schema)
+are unaffected. **Operator action**: deploy `efc7fb4` (or later) at
+the next available opportunity, then smoke a single non-blocked
+exchange and confirm a clean `exchanges` row + no error trail from
+`record_exchange_timing` in the Fly logs.
+
+**Earlier same session — scope_guard track marked inactive** at
+commit `0c1ca9d` (handoff worklog
+`docs/worklog/2026-05-18-scope-guard-handoff.md`). New owner picks
+up from ADR-0030 + ADR-0031; dormancy posture: `fly secrets set
+LLMTRACK_PLUGINS_DISABLED=scope_guard`. This schema cleanup is
+orthogonal to scope_guard.
+
+---
+
+**Prior pause (historical, for context — scope_guard CP8 finalize
+narrative kept as historical reference; superseded by the inactive
+track marker at the top of this STATUS):**
 
 **scope_guard implementation ALL 8 CPs DONE — Phase 1c
 complete (2026-05-18, commits `2511c3a` + `b6cdf5f` +
@@ -1830,6 +1894,49 @@ reframes them server-side**:
 
 ## Next single step
 
+**Operator-side `fly deploy` from `main` so the running image
+matches the live schema.** Migration 0013 was applied to the live
+Supabase DB this session; until the next deploy the running image's
+`record_exchange_timing` will still attempt to write
+`input_tokens` / `output_tokens` / `cache_read_tokens` /
+`cache_write_tokens` on every successful streaming exchange and
+fail the post-stream flush with `UndefinedColumn`. Response body
+still streams to the client (yield-before-flush); blocked-path,
+failure-path, and `plugin_analytics` rows are unaffected.
+
+Sequence:
+
+1. `fly deploy` from `main` (current HEAD is commit `efc7fb4` plus
+   this docs commit). Fly's release-command-run `alembic upgrade
+   head` will see HEAD already applied and no-op on the
+   `alembic_version` row.
+2. Smoke one non-blocked exchange (any operator-minted demo token).
+3. Confirm a fresh `exchanges` row lands with `status_code=200`,
+   `model_served` non-NULL, no `record_exchange_timing` error in
+   the Fly logs.
+4. Confirm a matching `plugin_analytics` row lands with token
+   counts populated.
+
+If the smoke surfaces anything unexpected, the migration's
+`downgrade()` is a clean rollback path — it restores the empty
+`events` + `tool_calls` tables, the four token columns on
+`exchanges` (nullable), and the `system_prompt` + `tool_call_count`
+columns on `plugin_analytics`. No data backfill is required: the
+token columns were always populated through `plugin_analytics`
+(authoritative copy since migration 0007) and the two dropped
+tables were always empty.
+
+Once the deploy smoke is green, the §"Queued follow-ups" list under
+§"Current phase" is the open work — the `plugin_analytics` RLS
+ADR-level revisit is the most-shovel-ready. scope_guard stays
+paused at commit `0c1ca9d` per its handoff worklog.
+
+---
+
+**Prior next-step (historical, kept for context — scope_guard CP4
+of 8 narrative, long since completed; the scope_guard track is
+inactive at commit `0c1ca9d`):**
+
 **CP4 of 8 — `embeddings.py` + `judge.py` via `HostEgressClient`;
 pin ADR-0030 §Q4 (Stage-2 prompt template).** Per ADR-0030 §D3
 + §D4:
@@ -2009,6 +2116,7 @@ ready to start.
 - [x] **Housekeeping — archive superseded ADRs + remove local sidecar (2026-05-17, commits `8ef166d` + `3d76d1f`); 7 superseded ADRs moved into `docs/decisions/archive/`, `packages/llm_tracker/` (local sidecar) and `packages/llm_tracker_plugin_supabase_sink/` (closed workstream) deleted, 5 SDK-only test files rescued into new `packages/llm_tracker_sdk/tests/`; local branch `archive/local-sidecar` preserves full pre-deletion history (not pushed); no-DB test count 143 passed / 16 skipped.**
 - [x] **ADR-0029 production smoke + doc reconciliation (2026-05-17, commit `d7f17c0` + finalize commit); Fly release `v11` (ADR-0029 image, deploy of `a4c08b3`) verified live by injecting `sk-deadbeef12345678` through `claude-manage` — two `plugin_analytics` rows carry `[REDACTED:secret]` in `messages_json` with no raw value. Smoke surfaced that `analytics_sink` reads through `ctx.request_text()` / `ctx.response_content_json()` (not raw body parsing as docs claimed), so plugin-mediated rows inherit the scrubber's privacy floor. User picked "align docs to production"; commit `d7f17c0` reconciles ADR-0029 §Axis 6 + §Open questions, ADR-0028 §Open questions, `docs/plugins.md` §3.2, `hook_context.py` module docstring, and adds a Correction blockquote to the prior ADR-0029 worklog. Side-finding: `claude-manage` console_script was missing from `.venv/bin/` after yesterday's `uv sync`; restored via `uv sync --reinstall-package llm-tracker-agent`. Secondary discovery queued: `public.plugin_analytics` is RLS-off (not on the CP13-b intentional list).**
 - [x] **Queued follow-up batch (2026-05-17, commits `1a886e6` + `7b20125` + `0db0bac` + finalize). Four of five queued items shipped in one session: (a) `docs/deploy.md` PG16+ `WITH SET TRUE` paragraph alongside the pgbouncer/asyncpg note; (b) `exchanges.tool_call_count` drop via migration 0008 + storage/test cleanup (ADR-0028 §Non-goals had already documented the placeholder posture); (c) ADR-0027 axis 2 impl — new `record_exchange_failure` helper + `httpx.RequestError` short-circuit + `status_code != 200` short-circuit, with `599` sentinel for network errors and explicit `plugin_host.end_exchange()` cleanup on both paths; (d) empty package-directory shells `rm -rf` (no commit). Fifth item — `plugin_analytics` RLS — returned to queue as ADR-level after finding 0007's docstring made a deliberate "no RLS on this table" choice. Tests 58 / 16 (was 56 / 16; +2 axis 2 forwarder tests). Surfaced a latent Block/Abort ctx-cleanup gap for a separate small follow-up.**
+- [x] **Storage schema cleanup — migration 0013 (2026-05-18, commit `efc7fb4` code half + this docs-finalize commit). Cowork session staged the code over 7 files (+196 / -223): dropped two never-INSERTed tables (`events` / `tool_calls`) + four token-count columns on `exchanges` (authoritative copy lives on `plugin_analytics` since migration 0007) + two never-or-redundantly filled columns on `plugin_analytics` (`tool_call_count` always 0; `system_prompt` redundant with `messages_json`); ORM `Event`/`ToolCall` classes removed, `record_exchange_timing` signature trimmed of token kwargs, forwarder call site matched, `analytics_sink._INSERT_SQL` simplified to 12 placeholders. This Claude Code session verified (64 passed + 18 skipped on `llm_tracker_server` + `analytics_sink` suites; `ruff check .` clean) and applied migration 0013 to the live Supabase project `qdcixbwwlsnkekabavmj` via the Supabase MCP `execute_sql` — single `BEGIN; … COMMIT;` block ran all 6 DDL statements + the `alembic_version` bump atomically; alembic ledger advanced `0012_scope_chunks_embed_dim_768` → `0013_schema_cleanup`. Awaiting operator `fly deploy` from `main` so the running image matches the live schema.**
 - [ ] **Phase 3a — remaining 2 decision ADRs** (#1 fallback / #4 agent language)
 - [ ] Phase 3b — thin local agent (gated on #1 + #4)
 - [x] **Phase 3c — server build-out (14 of 14 plan-checkpoints done; closed 2026-05-13 with operator smoke validated. Plan at `docs/worklog/2026-05-11-phase3c-plan.md`, anchored on ADR-0017/0018/0019/0020/0022/0023)**

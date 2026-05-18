@@ -6,7 +6,10 @@
 
 ---
 
-**Last updated**: 2026-05-19 (Claude Code; **storage schema cleanup — `fly deploy` confirmed; track fully closed across code + live DB + running image.** Operator confirmed `fly deploy` from `main` complete this session; the prior image's `record_exchange_timing` `UndefinedColumn` window on the four dropped `exchanges` token columns is now shut. Smoke verification of a single non-blocked exchange (clean `exchanges` row with `status_code=200` + no `record_exchange_timing` error trail in Fly logs) is at operator discretion and was not separately reported to this Claude Code session. Per user direction the next active track is intentionally left unpicked — the §"Queued follow-ups" list under §"Current phase" stays the open menu (`plugin_analytics` RLS ADR-level revisit is the most-shovel-ready). This is a docs-only checkpoint: worklog `docs/worklog/2026-05-18-schema-cleanup.md` "What was done" gained the follow-up bullet, "What's left" struck the "No Fly deploy yet" item, "Handoff" was rewritten to "Track closed (2026-05-19)"; STATUS.md "Active worklog" / "Recent commits" / "Where we paused" / "Next single step" sections all rewritten to reflect the closed posture. No code changes. scope_guard track remains paused at `0c1ca9d` per its handoff worklog — this closure does not change that posture.)
+**Last updated**: 2026-05-19 (Claude Code; **plugin_analytics turn classification — migration 0014 + classifier + plugin wiring committed (`11a9e9b`).** New track started this session at the user's request: classify every plugin_analytics row by `turn_kind` (one of `user_input_turn_start` / `tool_continuation` / `internal_subprompt` / `claude_manage_probe`) and group exchanges into conversations via a `conversation_id` resolved at write-time. Five nullable columns added to `plugin_analytics`: `turn_kind`, `turn_seq` (1, 2, 3, ... within a turn), `slash_commands` (JSONB; extracts `<command-name>/foo</command-name>` markers), `first_msg_hash` (SHA-256[:16] of `messages[0]`'s canonical text), `conversation_id` (the row id of the first exchange of this conversation; resolved via chain-lookup that compares `n_messages` against the most recent same-hash row in the same org — handles the "identical first prompt typed twice" collision case the naive-hash design could not). Rules and prefix list derived from the 36 captured rows on 5/19 (00:06–00:21 KST) — see `docs/worklog/2026-05-19-turn-classification.md`. **Code half done; live half not yet applied.** Tests: 15 classifier unit tests + 2 new plugin-integration tests (inherit / mint paths) + the existing 5 analytics_sink tests → 22 passed; full suite 136 passed + 18 DB-skipped; `ruff check` clean. **Operator action required next**: present migration 0014 SQL for review, apply against the live Supabase project, run the offline backfill on the existing 56 rows, then `fly deploy` so production starts populating the new columns. Schema decision rationale: lives in `plugin_analytics` (plugin-owned table), NOT core `exchanges` (CLAUDE.md §9 public-interface untouched) — classification rules may evolve and the plugin can backfill from `messages_json` whenever the prefix list shifts. ADR not raised — the four columns are derived/analytical and reversible at the table level. Earlier same session: extensive analysis of the user-input identification problem (5/19 dataset) over multiple iterations before settling on the four-label vocabulary + chain-lookup approach.)
+**Updated by**: Claude Code (turn classification — code committed; live apply + backfill + fly deploy pending operator approval)
+
+**Prior session marker** (2026-05-19, Claude Code; **storage schema cleanup — `fly deploy` confirmed; track fully closed across code + live DB + running image.** Operator confirmed `fly deploy` from `main` complete this session; the prior image's `record_exchange_timing` `UndefinedColumn` window on the four dropped `exchanges` token columns is now shut. Smoke verification of a single non-blocked exchange (clean `exchanges` row with `status_code=200` + no `record_exchange_timing` error trail in Fly logs) is at operator discretion and was not separately reported to this Claude Code session. Per user direction the next active track is intentionally left unpicked — the §"Queued follow-ups" list under §"Current phase" stays the open menu (`plugin_analytics` RLS ADR-level revisit is the most-shovel-ready). This is a docs-only checkpoint: worklog `docs/worklog/2026-05-18-schema-cleanup.md` "What was done" gained the follow-up bullet, "What's left" struck the "No Fly deploy yet" item, "Handoff" was rewritten to "Track closed (2026-05-19)"; STATUS.md "Active worklog" / "Recent commits" / "Where we paused" / "Next single step" sections all rewritten to reflect the closed posture. No code changes. scope_guard track remains paused at `0c1ca9d` per its handoff worklog — this closure does not change that posture.)
 
 **Updated by**: Claude Code (schema cleanup — track fully closed after operator `fly deploy`; next track undecided per user)
 
@@ -129,14 +132,28 @@ to keep the plugin disabled at runtime while leaving the code in tree.
 
 ## Active worklog
 
-`docs/worklog/2026-05-18-schema-cleanup.md` — storage schema cleanup
-(migration 0013). **Track fully closed 2026-05-19** across all three
-axes: code (`efc7fb4`), live Supabase schema (applied 2026-05-18 via
-Supabase MCP `execute_sql` — single `BEGIN; … COMMIT;` block ran the
-6 DDL statements + the `alembic_version` bump atomically; alembic
-ledger advanced `0012_scope_chunks_embed_dim_768` →
-`0013_schema_cleanup`), and running Fly image (`fly deploy` from
-`main` confirmed by operator 2026-05-19). Happy-path
+`docs/worklog/2026-05-19-turn-classification.md` — plugin_analytics
+turn classification (migration 0014). **Code half done (`11a9e9b`);
+live half pending.** Migration 0014 adds five nullable columns
+(`turn_kind` / `turn_seq` / `slash_commands` / `first_msg_hash` /
+`conversation_id`) plus two indexes; `classifier.py` is a pure
+rule-based labeller derived from the 36-row 5/19 dataset; plugin
+`on_persisted` runs the classifier + chain-lookup to resolve
+`conversation_id` and seed `turn_seq` at write-time. Tests 22
+passed (15 classifier + 5 existing + 2 new inherit/mint paths);
+`ruff` clean. **Next**: operator review + apply migration 0014 to
+live Supabase, run offline backfill on the existing 56 rows
+(messages_json is preserved → fully derivable), then `fly deploy`.
+
+**Prior worklog**: `docs/worklog/2026-05-18-schema-cleanup.md` —
+storage schema cleanup (migration 0013). **Track fully closed
+2026-05-19** across all three axes: code (`efc7fb4`), live Supabase
+schema (applied 2026-05-18 via Supabase MCP `execute_sql` — single
+`BEGIN; … COMMIT;` block ran the 6 DDL statements + the
+`alembic_version` bump atomically; alembic ledger advanced
+`0012_scope_chunks_embed_dim_768` → `0013_schema_cleanup`), and
+running Fly image (`fly deploy` from `main` confirmed by operator
+2026-05-19). Happy-path
 `record_exchange_timing` no longer attempts the four dropped
 `exchanges` token columns (`input_tokens` / `output_tokens` /
 `cache_read_tokens` / `cache_write_tokens`); `events` + `tool_calls`
@@ -280,21 +297,38 @@ CP14 proper).
 ## Recent commits
 
 ```
-<finalize>   docs: STATUS + worklog — schema cleanup track closed (fly deploy)
+11a9e9b   analytics: turn classification (migration 0014)
+253a941   docs: STATUS + worklog — schema cleanup track closed (fly deploy)
 f888e00   docs: STATUS + worklog — schema cleanup migration 0013 applied live
 efc7fb4   storage: schema cleanup (migration 0013)
 2e51bfe   docs: mark scope_guard track inactive (handoff)
 0c1ca9d   scope-guard: shorten migration 0012 revision id (VARCHAR(32) limit)
-2d71cc4   scope-guard: switch to Gemini provider (ADR-0031)
 ```
 
 ## Where we paused
 
-**Storage schema cleanup track fully closed (2026-05-19).**
-Migration `0013_schema_cleanup` is now aligned across all three
-axes: code (`efc7fb4`, Cowork session), live Supabase schema
-(applied 2026-05-18 via Supabase MCP `execute_sql` — single atomic
-`BEGIN; … COMMIT;` block; alembic ledger advanced
+**Turn classification — code committed (`11a9e9b`), live half
+pending operator approval (2026-05-19).** Migration 0014 + the
+`classifier.py` module + the `on_persisted` chain-lookup wiring
+are all in tree on `main`; tests pass (22 in the plugin + 136 in
+the wider suite). The remaining three steps are operational and
+need operator approval (per CLAUDE.md §4 — schema apply is a
+shared-state action):
+
+1. Apply migration 0014 to the live Supabase project via Supabase
+   MCP `execute_sql` (same atomic-`BEGIN; … COMMIT;` pattern as
+   migration 0013): 5 `ALTER TABLE plugin_analytics ADD COLUMN`,
+   2 `CREATE INDEX`, and the `alembic_version` bump.
+2. Backfill the existing 56 rows by reading `messages_json` and
+   re-running `classify_request` + the chain-lookup offline.
+3. `fly deploy` from `main` so the production plugin starts
+   populating the new columns on every new exchange.
+
+**Earlier — storage schema cleanup track fully closed
+(2026-05-19).** Migration `0013_schema_cleanup` is aligned across
+all three axes: code (`efc7fb4`, Cowork session), live Supabase
+schema (applied 2026-05-18 via Supabase MCP `execute_sql` — single
+atomic `BEGIN; … COMMIT;` block; alembic ledger advanced
 `0012_scope_chunks_embed_dim_768` → `0013_schema_cleanup`), and
 running Fly image (`fly deploy` from `main` confirmed by operator
 2026-05-19). The prior image's `record_exchange_timing`
@@ -1901,12 +1935,25 @@ reframes them server-side**:
 
 ## Next single step
 
-**Undecided — pick a track from §"Queued follow-ups" under
-§"Current phase" before resuming.** Per user direction this session
-the next active track was intentionally left unpicked after the
-schema cleanup closure. A new session resuming from this STATUS
-should ask the user which follow-up to pick rather than
-auto-resuming any item.
+**Apply migration 0014 to the live Supabase project — pending
+operator approval.** Present the migration SQL (5 `ADD COLUMN` +
+2 `CREATE INDEX` + the alembic ledger bump from
+`0013_schema_cleanup` → `0014_analytics_turn_class`) inline so the
+operator can review before authorising the
+Supabase-MCP `execute_sql` call. Same atomic `BEGIN; … COMMIT;`
+pattern as 0013.
+
+After that ships: (2) walk the 56 existing rows in `created_at`
+order and apply `classify_request` + chain-lookup offline to
+backfill the new columns; (3) `fly deploy` from `main` so the
+production plugin populates the columns on every new INSERT.
+
+**Earlier — undecided after schema cleanup closure.** Per user
+direction the next active track was intentionally left unpicked
+after `253a941`; this session picked turn classification at user
+request. The §"Queued follow-ups" list under §"Current phase"
+keeps its other items (plugin_analytics RLS, task hierarchy,
+session_id populator + deletion endpoint, i18n email scrubbing).
 
 The §"Queued follow-ups" menu (none gating; pick one):
 

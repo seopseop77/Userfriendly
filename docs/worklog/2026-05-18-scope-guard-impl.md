@@ -75,7 +75,7 @@ ships migration 0010 bumps STATUS.md §"Local dev loop revival" to
 | **CP5** | `pipeline.py` + `storage.py` + `plugin.py`; DB-fixture integration test | **done** (commit `f0042f6` + this docs finalize) |
 | **CP6** | operator CLI (`.txt` + `.md`, idempotent) — `process_scope_document.py` + console script | **done** (commit `c0c000f` + this docs finalize) |
 | **CP7** | `.env.example` + `docs/deploy.md` §"Data collection & privacy" + `docs/plugins.md` §11 | **done** (commit `8e18892` + this docs finalize) |
-| CP8 | `0011_scope_alerts_retention` migration (Q3 default: new migration, not amend 0009) | queued |
+| **CP8** | `0011_scope_alerts_retention` migration (Q3 default: new migration, not amend 0009) | **done** (commit `39595da` + this docs finalize) |
 
 Each CP = 1 commit + worklog "What was done" append + STATUS.md
 refresh (CLAUDE.md §5.3).
@@ -599,6 +599,94 @@ Implementation notes worth carrying forward to CP8:
   can disable scope_guard standalone, analytics_sink
   standalone, or both.
 
+### CP8 — migration 0011 scope_alerts retention (done; commit `39595da` + this docs finalize)
+
+Closes ADR-0030 (the last CP). Q3 resolved per the CP1
+decision: a new migration over amending 0009.
+
+- Created
+  `packages/llm_tracker_server/alembic/versions/0011_scope_alerts_retention.py`
+  with `down_revision = "0010_scope_guard_tables"`. Mirrors
+  the migration-0009 shape — one `DO $$ … $$` block gated on
+  `pg_available_extensions WHERE name='pg_cron'`, with the
+  `RAISE NOTICE` skip-path for environments without the
+  extension. Schedules one daily job:
+  `llm-tracker-retention-scope-alerts` at `0 3 * * *` running
+  `DELETE FROM public.scope_alerts WHERE created_at < now() -
+  INTERVAL '6 months'`. The cutoff math is direct because
+  `scope_alerts.created_at` is `timestamptz` (ADR-0030 §D8),
+  same shape as 0009's plugin_analytics job — no unix-ms
+  conversion needed.
+- `scope_documents` + `scope_chunks` are **not** included
+  in the cron job (ADR-0030 §D8: operator-curated baseline
+  content, retained indefinitely). The module docstring
+  spells this out so a future "why isn't this table being
+  cleaned" doesn't have to re-derive — the answer is in
+  ADR-0030 §D8 + the docstring + the CP8 migration's omission.
+- Downgrade unschedules the job by name (idempotent — wrapped
+  in an `EXISTS` check); does **not** drop `pg_cron`. Matches
+  the migration-0009 stance on blast radius (and the
+  migration-0010 stance on `vector`).
+- Modified `docs/deploy.md` §"Data collection & privacy"
+  retention bullet: bumped "two `pg_cron` jobs" → "three"
+  with the new job name (`llm-tracker-retention-scope-alerts`)
+  alongside the existing two, named the two migrations that
+  ship them (`0009_retention_deletion_job` + `0011_scope_alerts_retention`),
+  and added an explicit sentence that `scope_documents` /
+  `scope_chunks` are operator-curated baseline content and
+  intentionally not retention-managed — directing the operator
+  to `process-scope-document` CLI re-registration or manual
+  SQL for those tables.
+
+Verified end to end:
+
+```
+$ .venv/bin/python3.12 -m ruff check packages/llm_tracker_server/alembic/versions/0011_scope_alerts_retention.py
+All checks passed!
+$ LLMTRACK_DATABASE_URL=postgresql://localhost/dummy \
+    .venv/bin/python3.12 -m alembic upgrade \
+    0010_scope_guard_tables:0011_scope_alerts_retention --sql
+... emits BEGIN; <DO $$ … END$$;>; UPDATE alembic_version …; COMMIT;
+$ LLMTRACK_DATABASE_URL=postgresql://localhost/dummy \
+    .venv/bin/python3.12 -m alembic downgrade \
+    0011_scope_alerts_retention:0010_scope_guard_tables --sql
+... emits BEGIN; <DO $$ … unschedule … END$$;>; UPDATE alembic_version …; COMMIT;
+$ LLMTRACK_TEST_DATABASE_URL=... .venv/bin/python3.12 -m pytest -q
+239 passed in 35.43s
+```
+
+Test suite unchanged at 239 passed — the new migration adds
+a cron row to the `cron.job` table when `pg_cron` is present;
+no behavioural change to the test fixtures. Scope_guard
+package suite still 75 tests.
+
+Operational consequences after the next `fly deploy`:
+
+1. `alembic upgrade head` advances the stamp from
+   `0010_scope_guard_tables` to
+   `0011_scope_alerts_retention`. `cron.job` gains one
+   `llm-tracker-retention-scope-alerts` row alongside the
+   `…-exchanges` and `…-plugin-analytics` rows from 0009; no
+   data deletion at migration time.
+2. First scheduled scope_alerts deletion fires at the next
+   03:00 UTC tick; the recurring job deletes alert rows older
+   than 6 months on each tick. `scope_documents` and
+   `scope_chunks` continue to grow until the operator
+   deletes them manually or re-registers via the CP6 CLI.
+
+ADR-0030 open-question ledger after CP8: **zero outstanding
+questions.** Q1 resolved at CP3 (chunker boundary
+parameters), Q3 resolved here at CP8 time per the CP1 pre-pin
+(new migration over amending 0009), Q4 resolved at CP4
+(judge prompt template frozen in `judge.py`). Q2 (pgvector
+ANN index) stays MVP-deferred per the ADR itself — revisit
+when any org's `scope_chunks` count approaches ~10k.
+
+scope_guard implementation closes here. Phase 1c shipped end
+to end against ADR-0030: migration + plugin package + chunker
++ OpenAI clients + pipeline + storage + plugin wiring +
+operator CLI + disclosure docs + retention cron.
+
 ## Decisions
 
 - **Q3 default — new `0011_scope_alerts_retention` migration,
@@ -891,21 +979,51 @@ Found and fixed during CP4:
 
 ## What's left / known limits
 
-- CP8 not started. CP8 is the next active step (the last CP).
-- ADR-0030's open questions reduce to one: Q1 **resolved at
-  CP3**, Q4 **resolved at CP4**, Q3 resolved at CP1 time (new
-  0011 migration over amending 0009). Q2 stays MVP-deferred
-  (linear scan acceptable until any org's chunk count
-  approaches ~10k). CP8 ships the Q3 migration and closes the
-  ADR's open-question ledger.
-- Test baseline after CP7: still **239 passed** under the DB
-  fixture (CP7 is docs-only; no test changes). Scope_guard
-  package suite still 75 tests.
-- No real OpenAI call has fired yet — operator-side smoke
-  against a real key (`process-scope-document <org_id> <scope.md>`
-  followed by a normal Claude Code request) is unblocked now
-  that the `.env.example` + deploy.md disclosure are in place.
-  Smoke is a separate follow-up; CP8 doesn't gate on it.
+- **All 8 CPs done.** ADR-0030's open-question ledger is
+  zero: Q1 resolved at CP3, Q3 resolved at CP8 per the CP1
+  pre-pin, Q4 resolved at CP4. Q2 (pgvector ANN index) stays
+  MVP-deferred per the ADR itself — revisit when any org's
+  `scope_chunks` count approaches ~10k.
+- Test baseline after CP8: **239 passed** under the DB
+  fixture (unchanged from CP7 — CP8 ships a cron row, not a
+  schema change visible to the existing test surface).
+  Scope_guard package suite is 75 tests across 8 files.
+- **No real OpenAI call has fired yet.** Operator-side smoke
+  (`process-scope-document <org_id> <scope.md>` followed by a
+  normal Claude Code request through the proxy) is unblocked
+  now that the `.env.example` + deploy.md disclosure are in
+  place. Tracked as the queued follow-up below; not gating.
+- pgvector ANN index not present (Q2 deferred). When any
+  org's `scope_chunks` count starts approaching ~10k, revisit
+  and add an `HNSW` or `IVFFlat` index on `embedding`.
+- Chunker token-count proxy is whitespace word count, not a
+  real tokenizer. English token : word ratio is ~1.3 : 1 so
+  the 50/500 word bounds map to ~65/~650 actual tokens.
+  CJK-heavy corpora may want to retune; flagged in the module
+  comment.
+- Sentence segmenter is MVP regex — abbreviations like "Mr."
+  or decimal numbers like "3.14" can mis-split. Library swap
+  to `blingfire` / `pysbd` queued under ADR-0030 §Deferred §6.
+
+### Queued follow-ups (post-CP8)
+
+- **Operator-side live smoke** — `process-scope-document
+  <org_id> <scope.md>` against a real `OPENAI_API_KEY` +
+  Supabase, followed by a Claude Code request that exercises
+  each routing branch (stage1_in / stage1_out / stage2_in /
+  stage2_out). Confirms the real `text-embedding-3-small` +
+  `gpt-4o-mini` calls write expected `scope_alerts` rows in
+  production. Not gating on any other work.
+- **`docs/plugins.md §11` table cleanup** — surfaced during
+  CP7. Drop the archived `supabase_sink` row and add
+  `analytics_sink` + `keyword_block` + `token_counter`. CLAUDE.md
+  §2.3 kept CP7 scoped to scope_guard; a docs sweep can fix
+  the drift in one pass.
+- **Real-time blocking mode** (ADR-0030 §Deferred §1) — bind
+  `on_request_received` and return `Block(reason=...)` when
+  Stage 2 verdicts `out_of_scope`. Reframes scope_guard from
+  monitor to gate. Requires threshold stability data (≥ 30
+  days of `scope_alerts` from the live smoke above).
 - pgvector ANN index not present (ADR-0030 §Q2 defers it). When
   any org's `scope_chunks` count starts approaching ~10k,
   revisit and add an `HNSW` or `IVFFlat` index on `embedding`.
@@ -927,60 +1045,47 @@ Found and fixed during CP4:
 
 ## Handoff
 
-CP1–CP7 closed by commits `2511c3a` + `b6cdf5f` + `2fe84e6` +
+CP1–CP8 closed by commits `2511c3a` + `b6cdf5f` + `2fe84e6` +
 `44cd664` + `80ca424` + `f0042f6` + `c0c000f` + `8e18892` +
-this docs finalize. The active work board is the "Checkpoint
-plan" table above: CP1 + CP2 + CP3 + CP4 + CP5 + CP6 + CP7
-done, CP8 pending (last CP).
+`39595da` + this docs finalize. **scope_guard
+implementation complete (all 8 CPs done).** ADR-0030
+open-question ledger: zero outstanding (Q1/Q3/Q4 resolved
+during implementation, Q2 stays MVP-deferred per the ADR).
 
-**Next active step — CP8: migration `0011_scope_alerts_retention`.**
-Resolves ADR-0030 §Q3 (decided at CP1 time: new migration
-over amending 0009 — each retention concern owns its own
-reversible migration; mixing a third cron row with a
-different table/column/unit shape into 0009 muddies the
-downgrade). Concrete spec:
+**Next active step for a future session is operational, not
+implementation:** an operator-side live smoke against a
+real `OPENAI_API_KEY` to confirm the
+`text-embedding-3-small` + `gpt-4o-mini` round-trips write
+expected `scope_alerts` rows on production traffic. The
+plumbing is all green; the live first-call hasn't happened
+because the DB-fixture suite uses stubs to keep tests
+off-network (intentional — ADR-0029-aligned, no third-party
+calls in CI). See §What's left → Queued follow-ups.
 
-1. New migration file
-   `packages/llm_tracker_server/alembic/versions/0011_scope_alerts_retention.py`,
-   `down_revision = "0010_scope_guard_tables"`.
-2. Inside a `DO $$ … $$` block gated on `pg_cron`
-   availability (same pattern as
-   `0009_retention_deletion_job`), schedule one daily job at
-   03:00 UTC: `llm-tracker-retention-scope-alerts` runs
-   `DELETE FROM public.scope_alerts WHERE created_at < now()
-   - INTERVAL '6 months'` (timestamptz column → direct,
-   unlike `exchanges.started_at` which is bigint unix-ms).
-3. `scope_documents` + `scope_chunks` are **explicitly not
-   retention-managed** — operator-curated baseline content,
-   not user-generated data (ADR-0030 §D8). Don't include
-   them in the cron job.
-4. Downgrade unschedules the job by name; does NOT drop the
-   `pg_cron` extension (matches the migration-0009 stance on
-   blast radius).
-5. Extend `docs/deploy.md` §"Data collection & privacy"
-   bullet on retention to name the third job alongside the
-   existing two (`llm-tracker-retention-exchanges` +
-   `llm-tracker-retention-plugin-analytics` →
-   `…-scope-alerts`).
-6. Round-trip verification: `alembic upgrade
-   0010_scope_guard_tables:0011_scope_alerts_retention --sql`
-   then the reverse `--sql` invocation; no actual DB writes
-   needed, the cycle just emits the BEGIN/SQL/COMMIT block.
-
-The CP8 commit closes the implementation phase; ADR-0030's
-open-question ledger drops to zero (Q1/Q3/Q4 resolved during
-implementation, Q2 stays MVP-deferred per the ADR).
+Beyond the live smoke, the post-CP8 queued track is:
+- `docs/plugins.md §11` table cleanup (drop archived
+  `supabase_sink`, add `analytics_sink` / `keyword_block` /
+  `token_counter` — surfaced during CP7, scoped out per
+  CLAUDE.md §2.3).
+- Real-time blocking mode (ADR-0030 §Deferred §1) once ≥ 30
+  days of `scope_alerts` accumulate from the live smoke.
+- The other ADR-0030 §Deferred items (local embedding model,
+  registration HTTP API, prompt-injection defense, task
+  hierarchy, embedding cache, operator review dashboard) —
+  none gating, all individually scoped.
 
 The Decisions section above carries every ADR-0030
 open-question commitment + the implementation-tier choices
 (the `session_factory` Protocol, the pgvector text-literal
 codec, the always-write-a-row stage1_in interpretation, the
-`HookContext` ceiling quirk in tests, the in-package CLI path
-vs. ADR's `tools/` suggestion, the `_ToolEgressClient`
-audit-skip, the CP7 docs split across three files) so CP8
-doesn't re-derive them. Read STATUS.md → this worklog → last
-5 commits (`80ca424` + `f0042f6` + `5472463` + `c0c000f` +
-`cd5c706` + `8e18892` + finalize).
+`HookContext` ceiling quirk in tests, the in-package CLI
+path vs. ADR's `tools/` suggestion, the `_ToolEgressClient`
+audit-skip, the CP7 docs split across three files, the
+new-0011-migration-over-amending-0009 retention decision)
+so a future session resumes here with full context. Read
+STATUS.md → this worklog → last 5 commits (`f0042f6` +
+`5472463` + `c0c000f` + `cd5c706` + `8e18892` + `b8a9f37`
++ `39595da` + finalize).
 
 ## Suggestions (untouched)
 

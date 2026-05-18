@@ -6,8 +6,8 @@
 
 ---
 
-**Last updated**: 2026-05-18 (Claude Code; **scope_guard CP7 of 8 done — commit `8e18892` (docs: scope_guard disclosure + env knobs + plugins.md CLI entry) + this docs-finalize commit.** Docs-only CP. `.env.example` gains a new `# -- scope_guard plugin (ADR-0030)` section between the Local PG test loop and Per-request headers info-block: `OPENAI_API_KEY` (framed as "needed when the plugin is enabled" since `on_init` already fail-closes) + five `LLMTRACK_PLUGIN_SCOPE_GUARD_*` knobs (`THRESHOLD=0.6`, `AMBIGUOUS_BAND=0.1`, `WINDOW=5`, `JUDGE_MODEL=gpt-4o-mini`, `JUDGE_TOP_K=3`), each with an ADR-section pointer + behaviour note so the operator doesn't need to flip to the ADR. `docs/deploy.md` §"Data collection & privacy" gains a new Privacy posture bullet carrying the ADR-0030 §Consequences — Disclosure paragraph verbatim ("the most recent user-initiated turns from each exchange are sent to OpenAI's embedding API (`text-embedding-3-small`); ambiguous-band requests additionally trigger a `gpt-4o-mini` Chat Completions call.…") plus a closing pointer to the `process-scope-document` CLI; the `LLMTRACK_PLUGINS_DISABLED` bullet now names both `analytics_sink` and `scope_guard` as valid off-switch targets. `docs/plugins.md` §11 Reference plugins row for scope_guard refined to "Server-side scope monitor on `on_persisted` (ADR-0030, Phase 1c). Two-stage embedding + judge pipeline; observe-only; writes `public.scope_alerts`."; a new paragraph after the install-via-git-URL snippet documents the `process-scope-document` CLI (both invocations, accepted formats, idempotency contract, env requirements). Drift surfaced for future cleanup: §11 table still lists archived `supabase_sink` + omits `analytics_sink` / `keyword_block` / `token_counter` (left for a future docs sweep per CLAUDE.md §2.3). 239 tests still pass under DB fixture (CP7 docs-only, no test changes). **Next is CP8 — migration `0011_scope_alerts_retention` (the last CP).** Daily `pg_cron` job `llm-tracker-retention-scope-alerts` at 03:00 UTC deleting rows older than 6 months; `scope_documents` + `scope_chunks` are operator-curated baseline content and explicitly not retention-managed. Plus a deploy.md retention-bullet refresh to name the third job. CP6 closed earlier same session by commit `c0c000f`; CP5 by `f0042f6`; CP4 by `80ca424`; CP3 by `44cd664`; CP2 by `2fe84e6`; CP1 by `2511c3a` (migration 0010) + `b6cdf5f` (docs).)
-**Updated by**: Claude Code (scope_guard implementation; CP7 of 8)
+**Last updated**: 2026-05-18 (Claude Code; **scope_guard CP8 of 8 done — commit `39595da` (server: migration 0011 scope_alerts retention) + this docs-finalize commit. ALL 8 CPs DONE; scope_guard implementation complete.** Migration `0011_scope_alerts_retention` ships one daily `pg_cron` job `llm-tracker-retention-scope-alerts` at 03:00 UTC running `DELETE FROM public.scope_alerts WHERE created_at < now() - INTERVAL '6 months'` — `timestamptz` cutoff is direct (same shape as 0009's plugin_analytics job, unlike `exchanges.started_at` which is unix-ms). `scope_documents` + `scope_chunks` are operator-curated baseline content (ADR-0030 §D8) and intentionally NOT retention-managed; the module docstring spells this out so a future "why isn't this cleaned" doesn't have to re-derive. Same pg_cron-gated `DO $$ … $$` pattern as 0009 keeps alembic upgrade green on environments without the extension. Downgrade unschedules by name (idempotent EXISTS-checked) without dropping pg_cron — same blast-radius stance as 0009/0010. `docs/deploy.md` §"Data collection & privacy" retention bullet bumped from "two pg_cron jobs" to "three" with the new job name + an explicit sentence on the `scope_documents`/`scope_chunks` exemption + the `process-scope-document` CLI re-registration path. Verified: ruff clean, alembic upgrade/downgrade --sql round-trip emits clean BEGIN/SQL/COMMIT blocks, 239 tests pass under DB fixture (unchanged from CP7 — cron job appears in `cron.job` table; no test surface change). ADR-0030 open-question ledger now ZERO outstanding (Q1 resolved at CP3, Q3 resolved at CP8 per the CP1 pre-pin, Q4 resolved at CP4; Q2 ANN index stays MVP-deferred per the ADR — revisit when any org's scope_chunks count approaches ~10k). **Next active step is operational, not implementation: operator-side live smoke against a real OPENAI_API_KEY to exercise the actual `text-embedding-3-small` + `gpt-4o-mini` round-trips on production traffic.** Phase 1c scope_guard shipped end-to-end: migration + package + chunker + OpenAI clients + pipeline + storage + plugin wiring + operator CLI + disclosure docs + retention cron. CP7 closed earlier same session by commit `8e18892`; CP6 by `c0c000f`; CP5 by `f0042f6`; CP4 by `80ca424`; CP3 by `44cd664`; CP2 by `2fe84e6`; CP1 by `2511c3a` + `b6cdf5f`.)
+**Updated by**: Claude Code (scope_guard implementation; CP8 of 8 — COMPLETE)
 
 ## Current phase
 
@@ -29,8 +29,8 @@
     smoke: 503 propagates to Anthropic SDK → 10 retries with
     backoff → user-facing failure, no Anthropic bypass.
 - **Active task**: **scope_guard implementation against
-  ADR-0030 (Accepted 2026-05-18). CP1 + CP2 + CP3 + CP4 + CP5
-  + CP6 + CP7 of 8 done.** Migration `0010_scope_guard_tables`
+  ADR-0030 (Accepted 2026-05-18). ALL 8 CPs DONE — Phase 1c
+  scope_guard shipped end-to-end.** Migration `0010_scope_guard_tables`
   (commit `2511c3a`) lands the three tables + RLS + GRANTs
   per ADR §D8; package skeleton
   `packages/llm_tracker_plugin_scope_guard/` (commit
@@ -63,21 +63,29 @@
   ADR-0030 §Consequences — Disclosure paragraph verbatim plus
   a closing CLI pointer, and `docs/plugins.md` §11 gains a
   refined scope_guard table row + a `process-scope-document`
-  CLI invocation paragraph. Full suite 239 passed under the
-  `pgvector/pgvector:pg15` DB fixture (CP7 is docs-only — no
-  test changes). **Next is CP8 — migration
-  `0011_scope_alerts_retention` (the last CP).** New daily
+  CLI invocation paragraph; CP8 (commit `39595da`) ships
+  migration `0011_scope_alerts_retention` — one daily
   `pg_cron` job `llm-tracker-retention-scope-alerts` at 03:00
-  UTC deleting `scope_alerts` rows older than 6 months;
-  `scope_documents` + `scope_chunks` are operator-curated
-  baseline content and explicitly not retention-managed (per
-  ADR-0030 §D8). Plus a `docs/deploy.md` retention-bullet
-  refresh naming the third job alongside the existing two.
-  Per-CP work board lives in
+  UTC deleting `scope_alerts` rows older than 6 months
+  (`scope_documents` + `scope_chunks` deliberately not
+  retention-managed per ADR-0030 §D8 — operator-curated
+  baseline content), pg_cron-gated, reversible downgrade
+  unschedules-by-name without dropping the extension, plus a
+  `docs/deploy.md` retention-bullet refresh naming the third
+  job alongside the existing two. Full suite 239 passed under
+  the `pgvector/pgvector:pg15` DB fixture; alembic
+  upgrade/downgrade `--sql` round-trip clean. **ADR-0030
+  open-question ledger: zero outstanding** (Q1 resolved at
+  CP3, Q3 resolved at CP8 per the CP1 pre-pin, Q4 resolved at
+  CP4; Q2 ANN index stays MVP-deferred per the ADR — revisit
+  when any org's `scope_chunks` count approaches ~10k).
+  **Next active step is operational, not implementation:
+  operator-side live smoke against a real `OPENAI_API_KEY` to
+  exercise the actual `text-embedding-3-small` +
+  `gpt-4o-mini` round-trips on production traffic.** Per-CP
+  work board lives in
   `docs/worklog/2026-05-18-scope-guard-impl.md` §"Checkpoint
-  plan"; CP8 resolves ADR-0030 §Q3 and closes the open-question
-  ledger (Q1/Q3/Q4 resolved during implementation, Q2 stays
-  MVP-deferred per the ADR).
+  plan".
 - **Queued follow-ups** (none gating; pick one to continue):
   - **`plugin_analytics` RLS axis — ADR-level revisit.** 0007's
     docstring chose "no RLS on this table" deliberately ("Analytics
@@ -104,8 +112,8 @@
 ## Active worklog
 
 `docs/worklog/2026-05-18-scope-guard-impl.md` — scope_guard
-implementation against ADR-0030 (Accepted). CP1 + CP2 + CP3 +
-CP4 + CP5 + CP6 + CP7 of 8 done: migration
+implementation against ADR-0030 (Accepted). **ALL 8 CPs DONE
+— Phase 1c scope_guard complete.** Migration
 `0010_scope_guard_tables` (commit `2511c3a`), package
 skeleton + manifest (commit `2fe84e6`), the full ADR §D5
 chunker (commit `44cd664`) with Q1 pinned to
@@ -137,13 +145,20 @@ the scope_guard table row + adds a
 `process-scope-document` CLI invocation paragraph. 75
 scope_guard tests (22 chunker + 7 embeddings + 11 judge + 8
 pipeline + 13 plugin + 5 DB-fixture integration + 9
-process-scope-document); full suite 239 passed under the
-`pgvector/pgvector:pg15` DB fixture without regression. CP8
-(migration `0011_scope_alerts_retention` — daily `pg_cron`
-job at 03:00 UTC, 6-month delete on `scope_alerts.created_at`
-+ deploy.md retention-bullet refresh) is the last remaining
-checkpoint and resolves the only outstanding ADR-0030 open
-question (Q3).
+process-scope-document); CP8 (commit `39595da`) ships
+migration `0011_scope_alerts_retention` — daily `pg_cron`
+job `llm-tracker-retention-scope-alerts` at 03:00 UTC
+deleting `scope_alerts` rows older than 6 months
+(`scope_documents`/`scope_chunks` intentionally not
+retention-managed per ADR-0030 §D8) plus a `docs/deploy.md`
+retention-bullet refresh naming the third job. Full suite
+239 passed under the `pgvector/pgvector:pg15` DB fixture
+without regression; alembic upgrade/downgrade `--sql`
+round-trip clean. **ADR-0030 open-question ledger is zero
+outstanding** (Q1/Q3/Q4 resolved during implementation, Q2
+stays MVP-deferred per the ADR). Next active step is
+operational, not implementation: operator-side live smoke
+against a real `OPENAI_API_KEY`.
 
 Prior worklog (same day, earlier session):
 `docs/worklog/2026-05-18-adr-0030-scope-guard.md` — ADR-0030
@@ -190,21 +205,116 @@ CP14 proper).
 ## Recent commits
 
 ```
-<finalize>   docs: STATUS + worklog — scope_guard CP7
+<finalize>   docs: STATUS + worklog — scope_guard CP8 (COMPLETE)
+39595da   server: migration 0011 scope_alerts retention (ADR-0030 §Q3)
+b8a9f37   docs: STATUS + worklog — scope_guard CP7
 8e18892   docs: scope_guard disclosure + env knobs + plugins.md CLI entry (CP7)
 cd5c706   docs: STATUS + worklog — scope_guard CP6
 c0c000f   scope-guard: process_scope_document CLI (ADR-0030 §D5)
-5472463   docs: STATUS + worklog — scope_guard CP5
-f0042f6   scope-guard: pipeline + storage + plugin wired (ADR-0030 §D1-§D8)
 ```
 
 ## Where we paused
 
-**scope_guard implementation CP1 + CP2 + CP3 + CP4 + CP5 + CP6
-+ CP7 of 8 done (2026-05-18, commits `2511c3a` + `b6cdf5f` +
+**scope_guard implementation ALL 8 CPs DONE — Phase 1c
+complete (2026-05-18, commits `2511c3a` + `b6cdf5f` +
 `2fe84e6` + `0fcb2c4` + `44cd664` + `6840281` + `80ca424` +
 `c7ec9bd` + `f0042f6` + `5472463` + `c0c000f` + `cd5c706` +
-`8e18892` + docs-finalize).**
+`8e18892` + `b8a9f37` + `39595da` + docs-finalize).**
+
+CP8 ships migration `0011_scope_alerts_retention` — the
+last CP. Mirrors the 0009 retention pattern: one `DO $$ …
+$$` block gated on `pg_available_extensions WHERE name =
+'pg_cron'`, with the `RAISE NOTICE` skip-path for
+environments without the extension. Schedules one daily job
+`llm-tracker-retention-scope-alerts` at `0 3 * * *` running
+`DELETE FROM public.scope_alerts WHERE created_at < now()
+- INTERVAL '6 months'` — the `timestamptz` cutoff is direct
+(same shape as 0009's plugin_analytics job, unlike
+`exchanges.started_at` which is bigint unix-ms).
+
+`scope_documents` + `scope_chunks` are **not** retention-
+managed (ADR-0030 §D8: operator-curated baseline content,
+retained indefinitely). The module docstring spells this out
+so a future "why isn't this table being cleaned" doesn't
+have to re-derive — the answer is in ADR-0030 §D8 + the
+docstring + the CP8 migration's deliberate omission.
+
+Downgrade unschedules the job by name (idempotent EXISTS-
+checked); does **not** drop `pg_cron`. Matches the
+migration-0009 stance on blast radius (and migration-0010's
+on `vector`).
+
+`docs/deploy.md` §"Data collection & privacy" retention
+bullet bumped from "two `pg_cron` jobs" to "three", named
+the two migrations that ship them
+(`0009_retention_deletion_job` + `0011_scope_alerts_retention`),
+and added an explicit sentence that `scope_documents` /
+`scope_chunks` are operator-curated and intentionally not
+retention-managed — directing the operator to the CP6
+`process-scope-document` CLI for re-registration or manual
+SQL.
+
+Verified end to end:
+
+```
+$ .venv/bin/python3.12 -m ruff check packages/llm_tracker_server/alembic/versions/0011_scope_alerts_retention.py
+All checks passed!
+$ LLMTRACK_DATABASE_URL=postgresql://localhost/dummy \
+    .venv/bin/python3.12 -m alembic upgrade \
+    0010_scope_guard_tables:0011_scope_alerts_retention --sql
+... emits BEGIN; <DO $$ … END$$;>; UPDATE alembic_version …; COMMIT;
+$ LLMTRACK_DATABASE_URL=postgresql://localhost/dummy \
+    .venv/bin/python3.12 -m alembic downgrade \
+    0011_scope_alerts_retention:0010_scope_guard_tables --sql
+... emits BEGIN; <DO $$ … unschedule … END$$;>; UPDATE alembic_version …; COMMIT;
+$ LLMTRACK_TEST_DATABASE_URL=... .venv/bin/python3.12 -m pytest -q
+239 passed in 35.43s
+```
+
+Test suite unchanged at 239 passed — the new migration adds
+one row to `cron.job` when `pg_cron` is present; no
+behavioural change to the test fixtures. Scope_guard package
+suite still 75 tests across 8 files.
+
+Operational consequences after the next `fly deploy`:
+
+1. `alembic upgrade head` advances stamp from
+   `0010_scope_guard_tables` to
+   `0011_scope_alerts_retention`. `cron.job` gains one
+   `llm-tracker-retention-scope-alerts` row alongside the
+   `…-exchanges` and `…-plugin-analytics` rows from 0009;
+   no data deletion at migration time.
+2. First scheduled `scope_alerts` deletion fires at the next
+   03:00 UTC tick; the recurring job deletes alert rows
+   older than 6 months on each tick. `scope_documents` and
+   `scope_chunks` continue to grow until the operator
+   deletes them manually or re-registers via the
+   `process-scope-document` CLI.
+
+ADR-0030 open-question ledger after CP8: **zero outstanding
+questions.** Q1 resolved at CP3 (chunker boundary
+parameters), Q3 resolved here at CP8 time per the CP1
+pre-pin (new migration over amending 0009), Q4 resolved at
+CP4 (judge prompt template frozen in `judge.py`). Q2
+(pgvector ANN index) stays MVP-deferred per the ADR — revisit
+when any org's `scope_chunks` count approaches ~10k.
+
+scope_guard implementation closes here. Phase 1c shipped
+end-to-end against ADR-0030: migration + plugin package +
+chunker + OpenAI clients + pipeline + storage + plugin
+wiring + operator CLI + disclosure docs + retention cron.
+Next active step for a future session is **operational, not
+implementation**: operator-side live smoke against a real
+`OPENAI_API_KEY` to confirm the `text-embedding-3-small` +
+`gpt-4o-mini` round-trips write expected `scope_alerts`
+rows on production traffic. The DB-fixture suite uses stubs
+by design (ADR-0029-aligned, no third-party calls in CI),
+so the first live call needs an operator on a real key.
+
+CP7 narrative preserved below for cold-start sessions:
+
+**scope_guard implementation CP1 + CP2 + CP3 + CP4 + CP5 +
+CP6 + CP7 of 8 done (2026-05-18).**
 
 CP7 is docs-only — lands the three operator-facing surfaces
 ADR-0030 §Consequences — Disclosure obliged us to update:

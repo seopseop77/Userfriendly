@@ -278,7 +278,7 @@ trust root for server-side plugin loading is the deploy pipeline itself
 | Package | Location | Purpose |
 |---|---|---|
 | `llm-tracker-plugin-hello-world` | `packages/llm_tracker_plugin_hello_world/` | Phase 0 verification no-op |
-| `llm-tracker-plugin-scope-guard` | `packages/llm_tracker_plugin_scope_guard/` | Task-scope enforcement (Phase 1c) |
+| `llm-tracker-plugin-scope-guard` | `packages/llm_tracker_plugin_scope_guard/` | Server-side scope monitor on `on_persisted` (ADR-0030, Phase 1c). Two-stage embedding + judge pipeline; observe-only; writes `public.scope_alerts`. |
 | `llm-tracker-plugin-supabase-sink` | `packages/llm_tracker_plugin_supabase_sink/` | Mode R upload sink (Phase 2) |
 
 Install from git URL:
@@ -286,6 +286,22 @@ Install from git URL:
 ```
 pip install "git+https://github.com/<owner>/Userfriendly.git#subdirectory=packages/llm_tracker_plugin_hello_world"
 ```
+
+The `scope_guard` plugin needs a per-org scope corpus before its
+`on_persisted` evaluations have anything to score against. Register
+one with the bundled CLI (added in ADR-0030 CP6) — both invocations
+work after `uv sync`:
+
+```
+process-scope-document <org_id> <file.md>
+python -m llm_tracker_plugin_scope_guard.process_scope_document <org_id> <file.md>
+```
+
+Accepted formats: `.txt` and `.md`. The CLI is idempotent on
+`(org_id, title)` (delete-then-insert per ADR-0030 §D5; `title`
+defaults to the file's stem). It needs `OPENAI_API_KEY` +
+`LLMTRACK_DATABASE_URL` in env — same shape as the plugin's
+`on_init`.
 
 ## 12. Running locally — server-side load path
 

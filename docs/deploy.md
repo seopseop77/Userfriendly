@@ -375,7 +375,20 @@ Privacy posture (ADR-0029):
 - **The plugin off-switch is `LLMTRACK_PLUGINS_DISABLED`.** Setting
   this to `analytics_sink` stops the per-exchange write to
   `plugin_analytics`; the per-request audit row in `public.exchanges`
-  is unaffected.
+  is unaffected. The same switch turns off `scope_guard` (set to
+  `scope_guard`, or comma-separate to disable both).
+- **When `scope_guard` is enabled** (ADR-0030, Phase 1c), the most
+  recent user-initiated turns from each exchange are sent to OpenAI's
+  embedding API (`text-embedding-3-small`); ambiguous-band requests
+  additionally trigger a `gpt-4o-mini` Chat Completions call.
+  Assistant responses and tool-result contents are not sent. OpenAI's
+  standard API ToS applies; the operator should configure
+  [zero data retention](https://platform.openai.com/docs/guides/your-data)
+  on the API key used. The plugin writes one row per evaluation to
+  `public.scope_alerts` (org_id, stage, flagged, max_similarity,
+  matched_chunk_id, stage2_verdict, stage2_reason); the operator-side
+  CLI `process-scope-document <org_id> <file>` registers the
+  per-org corpus the alerts are scored against.
 
 External (non-team) testing of the server requires that this disclosure
 reach the end user before their traffic is routed through it. Team /

@@ -205,9 +205,9 @@ def test_missing_messages_key_returns_none() -> None:
 
 
 @pytest.mark.asyncio
-async def test_disabled_when_openai_key_missing(monkeypatch) -> None:
-    """No ``OPENAI_API_KEY`` → ``on_init`` logs + disables; ``on_persisted`` no-ops."""
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+async def test_disabled_when_gemini_key_missing(monkeypatch) -> None:
+    """No ``GEMINI_API_KEY`` → ``on_init`` logs + disables; ``on_persisted`` no-ops."""
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     plugin = ScopeGuard()
     await plugin.on_init()
     assert not plugin._ready()
@@ -225,7 +225,7 @@ async def test_disabled_when_openai_key_missing(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_disabled_when_egress_missing(monkeypatch) -> None:
     """Key is set but the host did not wire egress → disabled."""
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "sk-test")
     plugin = ScopeGuard()
     # ``BasePlugin.egress`` defaults to None — simulate "host did not wire".
     plugin.egress = None
@@ -236,7 +236,7 @@ async def test_disabled_when_egress_missing(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_disabled_when_database_url_missing(monkeypatch) -> None:
     """Embed/judge clients can build, but no DB URL → still disabled."""
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "sk-test")
     monkeypatch.delenv("LLMTRACK_DATABASE_URL", raising=False)
     plugin = ScopeGuard()
 

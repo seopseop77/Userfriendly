@@ -32,7 +32,7 @@ from llm_tracker_plugin_scope_guard.process_scope_document import (
 TEST_DB_URL = os.environ.get("LLMTRACK_TEST_DATABASE_URL", "")
 SKIP_REASON = "LLMTRACK_TEST_DATABASE_URL not set; PG smoke test skipped"
 
-_EMBED_DIM = 1536
+_EMBED_DIM = 768
 
 
 # -----------------------------------------------------------------------------

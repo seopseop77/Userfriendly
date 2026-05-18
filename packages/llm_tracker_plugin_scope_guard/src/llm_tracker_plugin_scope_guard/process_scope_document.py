@@ -1,11 +1,12 @@
-"""Operator CLI for scope-document registration (ADR-0030 §D5 + §D9).
+"""Operator CLI for scope-document registration (ADR-0030 §D5 + §D9;
+provider rev ADR-0031).
 
 Reads a ``.txt`` or ``.md`` file, chunks it via the same algorithm
 ``ScopeGuard.on_persisted`` uses on the live corpus (ADR-0030 §D5),
-embeds each chunk with ``text-embedding-3-small`` through a standalone
-egress client (``_ToolEgressClient`` — no host, no audit log;
-appropriate because the operator runs this script locally and the only
-destination is OpenAI's embeddings endpoint), and writes one
+embeds each chunk with Gemini ``text-embedding-004`` through a
+standalone egress client (``_ToolEgressClient`` — no host, no audit
+log; appropriate because the operator runs this script locally and
+the only destination is Gemini's embeddings endpoint), and writes one
 ``scope_documents`` row + N ``scope_chunks`` rows under the given
 ``org_id``.
 
@@ -20,7 +21,7 @@ Invocations (both work after ``uv sync``)::
     process-scope-document <org_id> <file> [--title TITLE]
     python -m llm_tracker_plugin_scope_guard.process_scope_document ...
 
-Required env: ``OPENAI_API_KEY`` and ``LLMTRACK_DATABASE_URL``. The CLI
+Required env: ``GEMINI_API_KEY`` and ``LLMTRACK_DATABASE_URL``. The CLI
 refuses to start when either is unset (exit 2), mirroring the plugin's
 ``on_init`` fail-closed posture.
 
@@ -62,7 +63,7 @@ from .embeddings import EmbeddingClient
 from .storage import _vector_literal
 
 _SUPPORTED_SUFFIXES = (".txt", ".md")
-_OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
+_GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
 _DATABASE_URL_ENV = "LLMTRACK_DATABASE_URL"
 
 
@@ -79,8 +80,8 @@ class _ToolEgressClient(EgressClient):
     capability checks fire on every fetch. This script runs out-of-host
     (no ``PluginHost``, no audit log), so it just forwards to httpx.
     Safe because operators run this script locally and the only egress
-    destination is OpenAI's embeddings endpoint — the same allowlisted
-    destination the plugin uses.
+    destination is Gemini's embeddings endpoint — the same allowlisted
+    destination the plugin uses (ADR-0031 §D5).
     """
 
     def __init__(self, http_client: httpx.AsyncClient) -> None:
@@ -114,7 +115,7 @@ async def _chunk_document_async(text: str, embed_client: _EmbedProtocol) -> list
 
     Reuses the chunker's pure helpers (sentence segmenter, boundary
     detection, group building, size enforcement) but ``await``s the
-    OpenAI embedding call instead of expecting a sync callable.
+    Gemini embedding call instead of expecting a sync callable.
     Sequential is acceptable for a one-shot operator script — the
     chunker needs sentence vectors before computing similarities, so
     batching mid-pipeline would re-engineer the algorithm. The CLI
@@ -252,9 +253,9 @@ async def _amain(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     org_id, file_path, title = _validate_args(args)
 
-    api_key = os.environ.get(_OPENAI_API_KEY_ENV)
+    api_key = os.environ.get(_GEMINI_API_KEY_ENV)
     if not api_key:
-        print(f"{_OPENAI_API_KEY_ENV} is not set", file=sys.stderr)
+        print(f"{_GEMINI_API_KEY_ENV} is not set", file=sys.stderr)
         return 2
     db_url = os.environ.get(_DATABASE_URL_ENV)
     if not db_url:

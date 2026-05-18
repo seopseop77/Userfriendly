@@ -4,8 +4,8 @@ description = "Server-side task-scope monitor. Async on_persisted: embed the use
 hooks = ["on_persisted"]
 capabilities = ["egress_http"]
 egress_destinations = [
-    "https://api.openai.com/v1/embeddings",
-    "https://api.openai.com/v1/chat/completions",
+    "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent",
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
 ]
 allowed_modes = ["R"]
 min_content_level = "L3"

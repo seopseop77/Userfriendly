@@ -2,7 +2,7 @@
 
 The :class:`EgressClient` is stubbed so tests never reach the network. The
 stub captures the request shape so we can pin the model / URL / auth header
-contract against ADR-0030 §D3.
+contract against ADR-0031 §D1.
 """
 
 from __future__ import annotations
@@ -48,8 +48,8 @@ class _StubEgress:
         return self._response
 
 
-def _ok_embedding(dim: int = 1536) -> EgressResponse:
-    payload = {"data": [{"embedding": [0.0] * dim}], "model": "text-embedding-3-small"}
+def _ok_embedding(dim: int = 768) -> EgressResponse:
+    payload = {"embedding": {"values": [0.0] * dim}}
     return EgressResponse(
         status_code=200,
         headers={"content-type": "application/json"},
@@ -62,26 +62,31 @@ async def test_embed_returns_vector_of_expected_dim():
     egress = _StubEgress(_ok_embedding())
     client = EmbeddingClient(api_key="sk-test", egress=egress)
     vec = await client.embed("hello world")
-    assert len(vec) == 1536
+    assert len(vec) == 768
     assert all(isinstance(v, float) for v in vec)
 
 
 @pytest.mark.asyncio
 async def test_embed_request_pins_url_model_and_auth():
-    """ADR-0030 §D3: target the embeddings endpoint, the exact model, and
-    carry the API key as a bearer token."""
+    """ADR-0031 §D1: target the Gemini embedContent endpoint, the exact model,
+    and carry the API key as ``x-goog-api-key``."""
     egress = _StubEgress(_ok_embedding())
-    client = EmbeddingClient(api_key="sk-test-42", egress=egress)
+    client = EmbeddingClient(api_key="gemini-test-42", egress=egress)
     await client.embed("input text")
 
     assert len(egress.calls) == 1
     call = egress.calls[0]
-    assert call["url"] == "https://api.openai.com/v1/embeddings"
+    assert call["url"] == (
+        "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent"
+    )
     assert call["method"] == "POST"
-    assert call["headers"]["Authorization"] == "Bearer sk-test-42"
+    assert call["headers"]["x-goog-api-key"] == "gemini-test-42"
     assert call["headers"]["Content-Type"] == "application/json"
     body = json.loads(call["body"])
-    assert body == {"model": "text-embedding-3-small", "input": "input text"}
+    assert body == {
+        "model": "models/text-embedding-004",
+        "content": {"parts": [{"text": "input text"}]},
+    }
 
 
 @pytest.mark.asyncio
@@ -106,7 +111,7 @@ async def test_embed_raises_on_non_2xx():
 @pytest.mark.asyncio
 async def test_embed_raises_on_malformed_payload():
     egress = _StubEgress(
-        EgressResponse(status_code=200, headers={}, body=b'{"error": "no data field"}')
+        EgressResponse(status_code=200, headers={}, body=b'{"error": "no embedding field"}')
     )
     client = EmbeddingClient(api_key="sk", egress=egress)
     with pytest.raises(EmbeddingError):

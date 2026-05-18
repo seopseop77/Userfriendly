@@ -1,8 +1,9 @@
 """Unit tests for ``llm_tracker_plugin_scope_guard.judge``.
 
-Pins the Stage-2 prompt template (ADR-0030 §Q4) and the malformed-JSON
-fallback behaviour. The :class:`EgressClient` is stubbed so tests do not
-touch the network.
+Pins the Stage-2 prompt template (ADR-0030 §Q4 — frozen wording carried
+forward unchanged by ADR-0031 §D2) and the malformed-JSON fallback
+behaviour. The :class:`EgressClient` is stubbed so tests do not touch
+the network.
 """
 
 from __future__ import annotations
@@ -51,10 +52,7 @@ class _StubEgress:
 
 def _chat_response(verdict: str = "out_of_scope", reason: str = "off topic") -> EgressResponse:
     content = json.dumps({"verdict": verdict, "reason": reason})
-    payload = {
-        "choices": [{"message": {"role": "assistant", "content": content}}],
-        "model": "gpt-4o-mini",
-    }
+    payload = {"candidates": [{"content": {"role": "model", "parts": [{"text": content}]}}]}
     return EgressResponse(
         status_code=200,
         headers={"content-type": "application/json"},
@@ -63,7 +61,7 @@ def _chat_response(verdict: str = "out_of_scope", reason: str = "off topic") -> 
 
 
 def _raw_chat_response(raw_content: str) -> EgressResponse:
-    payload = {"choices": [{"message": {"role": "assistant", "content": raw_content}}]}
+    payload = {"candidates": [{"content": {"role": "model", "parts": [{"text": raw_content}]}}]}
     return EgressResponse(
         status_code=200,
         headers={"content-type": "application/json"},
@@ -73,7 +71,8 @@ def _raw_chat_response(raw_content: str) -> EgressResponse:
 
 def test_q4_prompt_template_is_frozen():
     """ADR-0030 §Q4 pins the system prompt's exact wording. Future tweaks must
-    bump the test (and become diff-visible in review)."""
+    bump the test (and become diff-visible in review). ADR-0031 §D2 keeps the
+    wording identical across the provider swap."""
     sentinels = [
         "scope-monitoring judge",
         "strict JSON only",
@@ -103,20 +102,22 @@ async def test_judge_returns_verdict_and_reason_on_success():
 @pytest.mark.asyncio
 async def test_judge_request_pins_url_model_and_message_shape():
     egress = _StubEgress(_chat_response())
-    client = JudgeClient(api_key="sk-test-99", egress=egress)
+    client = JudgeClient(api_key="gemini-test-99", egress=egress)
     await client.judge("user msg", ["chunk one", "chunk two"])
 
     assert len(egress.calls) == 1
     call = egress.calls[0]
-    assert call["url"] == "https://api.openai.com/v1/chat/completions"
-    assert call["headers"]["Authorization"] == "Bearer sk-test-99"
+    assert call["url"] == (
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    )
+    assert call["headers"]["x-goog-api-key"] == "gemini-test-99"
     body = json.loads(call["body"])
-    assert body["model"] == "gpt-4o-mini"
-    assert body["response_format"] == {"type": "json_object"}
-    assert body["temperature"] == 0.0
-    assert body["messages"][0]["role"] == "system"
-    assert body["messages"][0]["content"] == _SYSTEM_PROMPT
-    user_content = body["messages"][1]["content"]
+    assert body["systemInstruction"] == {"parts": [{"text": _SYSTEM_PROMPT}]}
+    assert body["generationConfig"]["responseMimeType"] == "application/json"
+    assert body["generationConfig"]["temperature"] == 0.0
+    assert len(body["contents"]) == 1
+    assert body["contents"][0]["role"] == "user"
+    user_content = body["contents"][0]["parts"][0]["text"]
     assert "user msg" in user_content
     assert "1. chunk one" in user_content
     assert "2. chunk two" in user_content
@@ -130,13 +131,14 @@ async def test_judge_handles_empty_chunks():
     client = JudgeClient(api_key="sk", egress=egress)
     verdict, _ = await client.judge("anything", [])
     body = json.loads(egress.calls[0]["body"])
-    assert "(no scope chunks supplied)" in body["messages"][1]["content"]
+    user_content = body["contents"][0]["parts"][0]["text"]
+    assert "(no scope chunks supplied)" in user_content
     assert verdict == "out_of_scope"
 
 
 @pytest.mark.asyncio
 async def test_judge_tolerates_whitespace_around_content_json():
-    """OpenAI's JSON mode is reliable but tests pin the trim path explicitly so
+    """Gemini's JSON mode is reliable but tests pin the trim path explicitly so
     a leading/trailing newline never re-routes to the fallback."""
     egress = _StubEgress(
         _raw_chat_response('\n  {"verdict": "in_scope", "reason": "matches chunk 1"}  \n')
@@ -176,8 +178,8 @@ async def test_judge_falls_back_on_unexpected_verdict_value():
 
 
 @pytest.mark.asyncio
-async def test_judge_falls_back_on_missing_choices_field():
-    """Body shape that doesn't match OpenAI's documented response → fallback,
+async def test_judge_falls_back_on_missing_candidates_field():
+    """Body shape that doesn't match Gemini's documented response → fallback,
     not raise. The transport returned 2xx so the audit log already booked a
     successful egress; surfacing as a crash would mis-attribute the failure."""
     egress = _StubEgress(EgressResponse(status_code=200, headers={}, body=b'{"oops": true}'))

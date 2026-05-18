@@ -299,9 +299,9 @@ python -m llm_tracker_plugin_scope_guard.process_scope_document <org_id> <file.m
 
 Accepted formats: `.txt` and `.md`. The CLI is idempotent on
 `(org_id, title)` (delete-then-insert per ADR-0030 §D5; `title`
-defaults to the file's stem). It needs `OPENAI_API_KEY` +
+defaults to the file's stem). It needs `GEMINI_API_KEY` +
 `LLMTRACK_DATABASE_URL` in env — same shape as the plugin's
-`on_init`.
+`on_init` (provider rev ADR-0031).
 
 ## 12. Running locally — server-side load path
 

@@ -1,15 +1,15 @@
 """scope_guard entry point — async monitor on ``on_persisted`` (ADR-0030 §D1).
 
-Wiring (CP5):
+Wiring (CP5; provider rev ADR-0031):
 
-* ``on_init`` reads ``OPENAI_API_KEY`` + the plugin's env-tunable knobs
-  (``LLMTRACK_PLUGIN_SCOPE_GUARD_*``), constructs the two OpenAI clients
+* ``on_init`` reads ``GEMINI_API_KEY`` + the plugin's env-tunable knobs
+  (``LLMTRACK_PLUGIN_SCOPE_GUARD_*``), constructs the two Gemini clients
   on top of the host-injected :class:`EgressClient`, and opens an
   ``AsyncEngine`` against ``LLMTRACK_DATABASE_URL``. Anything missing
   → ``structlog.warning`` + the plugin disables itself for this process
   (ADR-0030 §D1 is observe-only; "do nothing" is the right degraded
-  state, and ADR-0030 §D9 explicitly mandates the silent no-op when
-  ``OPENAI_API_KEY`` is unset).
+  state, and ADR-0030 §D9 — as amended by ADR-0031 §D4 — mandates the
+  silent no-op when ``GEMINI_API_KEY`` is unset).
 * ``on_persisted`` extracts the user-initiated message text per ADR-0030
   §D6, runs :func:`.pipeline.evaluate` over the org's ``scope_chunks``
   corpus, and writes one row to ``scope_alerts``.
@@ -40,7 +40,7 @@ from .pipeline import ScopeEvaluation, Thresholds, evaluate
 from .storage import SessionFactory, insert_alert, select_top_chunks_by_cosine
 
 DATABASE_URL_ENV = "LLMTRACK_DATABASE_URL"
-OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
+GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
 THRESHOLD_ENV = "LLMTRACK_PLUGIN_SCOPE_GUARD_THRESHOLD"
 BAND_ENV = "LLMTRACK_PLUGIN_SCOPE_GUARD_AMBIGUOUS_BAND"
 WINDOW_ENV = "LLMTRACK_PLUGIN_SCOPE_GUARD_WINDOW"
@@ -154,7 +154,7 @@ class ScopeGuard(BasePlugin):
         self._judge_client = judge_client
         # Any field left ``None`` at construction time is filled from env by
         # ``on_init``. Tests typically inject everything; the host wires the
-        # OpenAI clients + DB engine through ``on_init`` in production.
+        # Gemini clients + DB engine through ``on_init`` in production.
         self._thresholds: Thresholds | None = thresholds
         self._window: int | None = window
         self._engine: AsyncEngine | None = None
@@ -172,9 +172,9 @@ class ScopeGuard(BasePlugin):
 
     async def on_init(self) -> None:
         if self._embed_client is None or self._judge_client is None:
-            api_key = os.environ.get(OPENAI_API_KEY_ENV)
+            api_key = os.environ.get(GEMINI_API_KEY_ENV)
             if not api_key:
-                self._log.warning("scope_guard.disabled", reason=f"{OPENAI_API_KEY_ENV} not set")
+                self._log.warning("scope_guard.disabled", reason=f"{GEMINI_API_KEY_ENV} not set")
                 return
             if self.egress is None:
                 self._log.warning("scope_guard.disabled", reason="egress client not wired by host")
@@ -268,7 +268,7 @@ class ScopeGuard(BasePlugin):
     ) -> ScopeEvaluation | None:
         """Wrap :func:`pipeline.evaluate` with failure-mode logging.
 
-        OpenAI failures (network / non-2xx / EgressDenied) degrade to "no
+        Gemini failures (network / non-2xx / EgressDenied) degrade to "no
         alert this exchange" rather than crashing the host — ADR-0030 §D1
         observe-only contract.
         """
@@ -301,7 +301,7 @@ class ScopeGuard(BasePlugin):
             )
         except (EmbeddingError, JudgeError) as exc:
             self._log.warning(
-                "scope_guard.openai_failure",
+                "scope_guard.gemini_failure",
                 error=str(exc),
                 exchange_id=exchange_id,
             )

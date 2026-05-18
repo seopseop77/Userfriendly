@@ -16,7 +16,7 @@ What we pin here:
    evaluation matches the org-A chunk (not org-B's), and vice versa.
 4. An org with zero chunks → no ``scope_alerts`` row (ADR-0030 §D9).
 
-The OpenAI clients are swapped out for in-process stubs so the test
+The Gemini clients are swapped out for in-process stubs so the test
 never touches the network; the pipeline math runs over real pgvector
 cosine distance, not the stubbed similarity values from the pure-pipeline
 unit tests.
@@ -40,11 +40,11 @@ SKIP_REASON = "LLMTRACK_TEST_DATABASE_URL not set; PG smoke test skipped"
 
 pytestmark = pytest.mark.skipif(not TEST_DB_URL, reason=SKIP_REASON)
 
-_EMBED_DIM = 1536
+_EMBED_DIM = 768
 
 
 # -----------------------------------------------------------------------------
-# Stubs — replace the real OpenAI clients
+# Stubs — replace the real Gemini clients
 # -----------------------------------------------------------------------------
 
 
@@ -79,14 +79,14 @@ class _StubJudge:
 
 
 def _unit_vector(position: int) -> list[float]:
-    """1536-dim unit vector with the only non-zero at ``position``."""
+    """768-dim unit vector with the only non-zero at ``position``."""
     v = [0.0] * _EMBED_DIM
     v[position] = 1.0
     return v
 
 
 def _two_axis_vector(p0: float, p1: float) -> list[float]:
-    """1536-dim vector with mass only on dims 0 and 1.
+    """768-dim vector with mass only on dims 0 and 1.
 
     For a unit-vector chunk at position 0 the cosine similarity reduces to
     ``p0 / sqrt(p0² + p1²)`` — so ``(0.6, 0.8)`` gives a clean ``0.6``

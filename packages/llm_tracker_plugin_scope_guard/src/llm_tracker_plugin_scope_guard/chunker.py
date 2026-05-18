@@ -10,12 +10,15 @@ Pipeline:
    opener. Library swap to ``blingfire`` or ``pysbd`` is queued under
    ADR-0030 §Deferred §6 if quality is insufficient.
 2. The caller-injected ``embed(text)`` callable embeds each sentence. Tests
-   stub this; CP4 wires it to the real OpenAI ``EmbeddingClient``.
+   stub this; the live path wires it to the Gemini ``EmbeddingClient``
+   (ADR-0031; was OpenAI under ADR-0030 §D3).
 3. ``_detect_boundaries`` walks adjacent-sentence cosine similarities and
    flags a chunk boundary where similarity drops below
    ``rolling_mean - DROP_THRESHOLD`` over the previous ``WINDOW`` similarities.
 4. ``_enforce_size_bounds`` applies the min-50 / max-500 token bounds from
    ADR-0030 §D5 §4 (whitespace-word approximation — see ``_token_count``).
+   The 500-word ceiling stays comfortably inside Gemini ``text-embedding-004``'s
+   ~2048-token input limit (ADR-0031 §D1).
 5. Each resulting chunk is re-embedded so the returned vector matches the
    chunk's final content (the same string later written to
    ``scope_chunks.content``).
@@ -65,11 +68,11 @@ _BOUNDARY_DROP_THRESHOLD = 0.15
 
 # ADR-0030 §D5 §4 — chunk size bounds. Token count is approximated by
 # whitespace-split word count: cheap, predictable, and avoids pulling
-# ``tiktoken`` as a dependency. For English text the
+# a tokenizer as a dependency. For English text the
 # token : word ratio runs about 1.3 : 1 so 50 words ≈ 65 tokens and
 # 500 words ≈ 650 tokens — both inside the band the ADR meant to
-# express (chunks readable in isolation, well below the 8191-token
-# embedding-input ceiling).
+# express (chunks readable in isolation, well below Gemini
+# ``text-embedding-004``'s ~2048-token input ceiling per ADR-0031 §D1).
 _MIN_TOKENS = 50
 _MAX_TOKENS = 500
 
@@ -195,10 +198,11 @@ def _enforce_size_bounds(
 def chunk_document(text: str, embed: Callable[[str], list[float]]) -> list[ChunkRecord]:
     """Chunk ``text`` per ADR-0030 §D5; return one ``ChunkRecord`` per chunk.
 
-    ``embed`` is injected so unit tests stub it; CP4 supplies the real OpenAI
-    client. Each chunk's embedding is the embedding of its concatenated
-    sentence content — not an average of sentence embeddings — so the stored
-    vector exactly represents the string written to ``scope_chunks.content``.
+    ``embed`` is injected so unit tests stub it; the live path supplies the
+    Gemini client (ADR-0031). Each chunk's embedding is the embedding of its
+    concatenated sentence content — not an average of sentence embeddings —
+    so the stored vector exactly represents the string written to
+    ``scope_chunks.content``.
     """
     sentences = _segment_sentences(text)
     if not sentences:

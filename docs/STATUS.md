@@ -6,8 +6,8 @@
 
 ---
 
-**Last updated**: 2026-05-18 (Claude Code; **scope_guard CP6 of 8 done — commit `c0c000f` (scope-guard: process_scope_document CLI) + this docs-finalize commit.** New module `packages/llm_tracker_plugin_scope_guard/src/llm_tracker_plugin_scope_guard/process_scope_document.py` exposes both a library function `register_document(session_factory, embed_client, *, org_id, title, text) -> (document_id, chunk_count)` and an argparse-driven `main()` entry-point. CLI runnable as `process-scope-document <org_id> <file>` after `uv sync` (console script registered in pyproject) or `python -m llm_tracker_plugin_scope_guard.process_scope_document ...`. Validates UUID + file existence + suffix (`.txt` / `.md` only, ADR-0030 §D5 — PDFs/DOCX queued under §Deferred §3) before any DB or network call; refuses with exit code 2 when `OPENAI_API_KEY` or `LLMTRACK_DATABASE_URL` is unset (mirrors plugin's fail-closed `on_init`). Idempotent re-registration: `DELETE FROM scope_documents WHERE (org_id, title)` runs first inside the same session, the migration-0010 FK `ON DELETE CASCADE` on `scope_chunks.document_id` drops the prior chunks in the same statement, then fresh INSERTs land — single commit at the end so a mid-run failure leaves no partial document. Async port of `chunker.chunk_document` (`_chunk_document_async`) reuses the chunker's pure helpers (`_segment_sentences` / `_detect_boundaries` / `_group_into_chunks` / `_enforce_size_bounds` / `_cosine`) and awaits the OpenAI embedding one sentence at a time — sequential is fine for an operator one-shot. New `_ToolEgressClient(EgressClient)` adapter wraps httpx without audit-log mediation (safe because the script runs out-of-host and only hits OpenAI's allowlisted embeddings endpoint). New direct dep `httpx>=0.27`. 9 new tests: 6 arg-validation (non-UUID `org_id`, missing file, unsupported suffix `.pdf`, default-title-is-stem, explicit `--title` wins, `.md` accepted); 3 DB-fixture (idempotency two-round contract, sequential `chunk_index` 0..N-1, per-title isolation under same org). Smoke-tested both invocation paths: `.venv/bin/process-scope-document --help` and `.venv/bin/python3.12 -m llm_tracker_plugin_scope_guard.process_scope_document --help` both render argparse help. Full suite 239 passed under the `pgvector/pgvector:pg15` DB fixture (was 230 in CP5). Path deviation from ADR: in-package module + console script chosen over `tools/process_scope_document.py` to avoid spinning up a top-level `tools/` dir for one file and over a server CLI Typer subcommand to avoid a server → plugin import dependency that would reverse the architecture. **Next is CP7 — `.env.example` + `docs/deploy.md` §"Data collection & privacy" disclosure extension + `docs/plugins.md` §11 entry (docs-only commit; wording pinned in ADR-0030 §Consequences — Disclosure).** CP5 closed earlier same session by commit `f0042f6`; CP4 by `80ca424`; CP3 by `44cd664`; CP2 by `2fe84e6`; CP1 by `2511c3a` (migration 0010) + `b6cdf5f` (docs).)
-**Updated by**: Claude Code (scope_guard implementation; CP6 of 8)
+**Last updated**: 2026-05-18 (Claude Code; **scope_guard CP7 of 8 done — commit `8e18892` (docs: scope_guard disclosure + env knobs + plugins.md CLI entry) + this docs-finalize commit.** Docs-only CP. `.env.example` gains a new `# -- scope_guard plugin (ADR-0030)` section between the Local PG test loop and Per-request headers info-block: `OPENAI_API_KEY` (framed as "needed when the plugin is enabled" since `on_init` already fail-closes) + five `LLMTRACK_PLUGIN_SCOPE_GUARD_*` knobs (`THRESHOLD=0.6`, `AMBIGUOUS_BAND=0.1`, `WINDOW=5`, `JUDGE_MODEL=gpt-4o-mini`, `JUDGE_TOP_K=3`), each with an ADR-section pointer + behaviour note so the operator doesn't need to flip to the ADR. `docs/deploy.md` §"Data collection & privacy" gains a new Privacy posture bullet carrying the ADR-0030 §Consequences — Disclosure paragraph verbatim ("the most recent user-initiated turns from each exchange are sent to OpenAI's embedding API (`text-embedding-3-small`); ambiguous-band requests additionally trigger a `gpt-4o-mini` Chat Completions call.…") plus a closing pointer to the `process-scope-document` CLI; the `LLMTRACK_PLUGINS_DISABLED` bullet now names both `analytics_sink` and `scope_guard` as valid off-switch targets. `docs/plugins.md` §11 Reference plugins row for scope_guard refined to "Server-side scope monitor on `on_persisted` (ADR-0030, Phase 1c). Two-stage embedding + judge pipeline; observe-only; writes `public.scope_alerts`."; a new paragraph after the install-via-git-URL snippet documents the `process-scope-document` CLI (both invocations, accepted formats, idempotency contract, env requirements). Drift surfaced for future cleanup: §11 table still lists archived `supabase_sink` + omits `analytics_sink` / `keyword_block` / `token_counter` (left for a future docs sweep per CLAUDE.md §2.3). 239 tests still pass under DB fixture (CP7 docs-only, no test changes). **Next is CP8 — migration `0011_scope_alerts_retention` (the last CP).** Daily `pg_cron` job `llm-tracker-retention-scope-alerts` at 03:00 UTC deleting rows older than 6 months; `scope_documents` + `scope_chunks` are operator-curated baseline content and explicitly not retention-managed. Plus a deploy.md retention-bullet refresh to name the third job. CP6 closed earlier same session by commit `c0c000f`; CP5 by `f0042f6`; CP4 by `80ca424`; CP3 by `44cd664`; CP2 by `2fe84e6`; CP1 by `2511c3a` (migration 0010) + `b6cdf5f` (docs).)
+**Updated by**: Claude Code (scope_guard implementation; CP7 of 8)
 
 ## Current phase
 
@@ -30,7 +30,7 @@
     backoff → user-facing failure, no Anthropic bypass.
 - **Active task**: **scope_guard implementation against
   ADR-0030 (Accepted 2026-05-18). CP1 + CP2 + CP3 + CP4 + CP5
-  + CP6 of 8 done.** Migration `0010_scope_guard_tables`
+  + CP6 + CP7 of 8 done.** Migration `0010_scope_guard_tables`
   (commit `2511c3a`) lands the three tables + RLS + GRANTs
   per ADR §D8; package skeleton
   `packages/llm_tracker_plugin_scope_guard/` (commit
@@ -56,15 +56,28 @@
   plus `python -m` fallback) with idempotent delete-then-insert
   per `(org_id, title)` using migration-0010
   `ON DELETE CASCADE`, fail-closed env checks, and 9 new tests
-  (6 arg-validation + 3 DB-fixture). Full suite 239 passed
-  under the `pgvector/pgvector:pg15` DB fixture (was 230 in
-  CP5). **Next is CP7 — `.env.example` + `docs/deploy.md`
-  §"Data collection & privacy" extension + `docs/plugins.md`
-  §11 entry (docs-only; wording pinned in ADR-0030
-  §Consequences — Disclosure).** Per-CP work board lives in
+  (6 arg-validation + 3 DB-fixture); CP7 (commit `8e18892`) is
+  docs-only — `.env.example` gains the 6 plugin env knobs with
+  ADR-section pointers, `docs/deploy.md` §"Data collection &
+  privacy" gains a new Privacy posture bullet carrying the
+  ADR-0030 §Consequences — Disclosure paragraph verbatim plus
+  a closing CLI pointer, and `docs/plugins.md` §11 gains a
+  refined scope_guard table row + a `process-scope-document`
+  CLI invocation paragraph. Full suite 239 passed under the
+  `pgvector/pgvector:pg15` DB fixture (CP7 is docs-only — no
+  test changes). **Next is CP8 — migration
+  `0011_scope_alerts_retention` (the last CP).** New daily
+  `pg_cron` job `llm-tracker-retention-scope-alerts` at 03:00
+  UTC deleting `scope_alerts` rows older than 6 months;
+  `scope_documents` + `scope_chunks` are operator-curated
+  baseline content and explicitly not retention-managed (per
+  ADR-0030 §D8). Plus a `docs/deploy.md` retention-bullet
+  refresh naming the third job alongside the existing two.
+  Per-CP work board lives in
   `docs/worklog/2026-05-18-scope-guard-impl.md` §"Checkpoint
-  plan"; CP8 still pins one of the remaining ADR open
-  questions at that checkpoint.
+  plan"; CP8 resolves ADR-0030 §Q3 and closes the open-question
+  ledger (Q1/Q3/Q4 resolved during implementation, Q2 stays
+  MVP-deferred per the ADR).
 - **Queued follow-ups** (none gating; pick one to continue):
   - **`plugin_analytics` RLS axis — ADR-level revisit.** 0007's
     docstring chose "no RLS on this table" deliberately ("Analytics
@@ -92,36 +105,45 @@
 
 `docs/worklog/2026-05-18-scope-guard-impl.md` — scope_guard
 implementation against ADR-0030 (Accepted). CP1 + CP2 + CP3 +
-CP4 + CP5 + CP6 of 8 done: migration `0010_scope_guard_tables`
-(commit `2511c3a`), package skeleton + manifest (commit
-`2fe84e6`), the full ADR §D5 chunker (commit `44cd664`) with
-Q1 pinned to `window=3, drop=0.15`, the OpenAI clients
-(commit `80ca424`) with **ADR-0030 §Q4 pinned** as a
-module-top frozen prompt template, the
-pipeline + storage + plugin wiring (commit `f0042f6`) —
-`pipeline.evaluate(...)` pure two-stage routing +
-`storage.select_top_chunks_by_cosine(...)` +
+CP4 + CP5 + CP6 + CP7 of 8 done: migration
+`0010_scope_guard_tables` (commit `2511c3a`), package
+skeleton + manifest (commit `2fe84e6`), the full ADR §D5
+chunker (commit `44cd664`) with Q1 pinned to
+`window=3, drop=0.15`, the OpenAI clients (commit `80ca424`)
+with **ADR-0030 §Q4 pinned** as a module-top frozen prompt
+template, the pipeline + storage + plugin wiring (commit
+`f0042f6`) — `pipeline.evaluate(...)` pure two-stage routing
++ `storage.select_top_chunks_by_cosine(...)` +
 `storage.insert_alert(...)` over pgvector text literals + the
 RLS-off `scope_alerts` table + `plugin.ScopeGuard.on_init`
 fail-closed wiring + `on_persisted` §D6 message-extraction —
-and the operator CLI (commit `c0c000f`):
+the operator CLI (commit `c0c000f`):
 `process_scope_document.register_document(session_factory,
 embed_client, *, org_id, title, text)` library +
 `process-scope-document <org_id> <file>` console script with
 idempotent delete-then-insert per `(org_id, title)`
-(`ON DELETE CASCADE` cleans prior chunks), `_ToolEgressClient`
-httpx adapter for out-of-host egress, fail-closed env checks
-mirroring plugin's `on_init`, and an async port of
-`chunker.chunk_document` reusing the chunker's pure helpers.
-75 scope_guard tests (22 chunker + 7 embeddings + 11 judge +
-8 pipeline + 13 plugin + 5 DB-fixture integration + 9
+(`ON DELETE CASCADE` cleans prior chunks),
+`_ToolEgressClient` httpx adapter for out-of-host egress,
+fail-closed env checks mirroring plugin's `on_init`, and an
+async port of `chunker.chunk_document` reusing the chunker's
+pure helpers — and the CP7 docs (commit `8e18892`):
+`.env.example` adds the 6 `LLMTRACK_PLUGIN_SCOPE_GUARD_*`
+knobs + `OPENAI_API_KEY` section, `docs/deploy.md` §"Data
+collection & privacy" gains the ADR-0030 §Consequences —
+Disclosure bullet (OpenAI `text-embedding-3-small` +
+`gpt-4o-mini`, assistant + tool-result content not sent,
+zero-data-retention pointer), `docs/plugins.md` §11 refines
+the scope_guard table row + adds a
+`process-scope-document` CLI invocation paragraph. 75
+scope_guard tests (22 chunker + 7 embeddings + 11 judge + 8
+pipeline + 13 plugin + 5 DB-fixture integration + 9
 process-scope-document); full suite 239 passed under the
-`pgvector/pgvector:pg15` DB fixture without regression. CP7
-(`.env.example` + `docs/deploy.md` §"Data collection &
-privacy" extension + `docs/plugins.md` §11 entry — docs-only,
-wording pinned in ADR-0030 §Consequences — Disclosure) is
-next; CP8 pins the remaining retention-job question at that
-checkpoint.
+`pgvector/pgvector:pg15` DB fixture without regression. CP8
+(migration `0011_scope_alerts_retention` — daily `pg_cron`
+job at 03:00 UTC, 6-month delete on `scope_alerts.created_at`
++ deploy.md retention-bullet refresh) is the last remaining
+checkpoint and resolves the only outstanding ADR-0030 open
+question (Q3).
 
 Prior worklog (same day, earlier session):
 `docs/worklog/2026-05-18-adr-0030-scope-guard.md` — ADR-0030
@@ -168,21 +190,91 @@ CP14 proper).
 ## Recent commits
 
 ```
-<finalize>   docs: STATUS + worklog — scope_guard CP6
+<finalize>   docs: STATUS + worklog — scope_guard CP7
+8e18892   docs: scope_guard disclosure + env knobs + plugins.md CLI entry (CP7)
+cd5c706   docs: STATUS + worklog — scope_guard CP6
 c0c000f   scope-guard: process_scope_document CLI (ADR-0030 §D5)
 5472463   docs: STATUS + worklog — scope_guard CP5
 f0042f6   scope-guard: pipeline + storage + plugin wired (ADR-0030 §D1-§D8)
-c7ec9bd   docs: STATUS + worklog — scope_guard CP4
-80ca424   scope-guard: embeddings + judge clients (ADR-0030 §D3/§D4)
 ```
 
 ## Where we paused
 
 **scope_guard implementation CP1 + CP2 + CP3 + CP4 + CP5 + CP6
-of 8 done (2026-05-18, commits `2511c3a` + `b6cdf5f` +
++ CP7 of 8 done (2026-05-18, commits `2511c3a` + `b6cdf5f` +
 `2fe84e6` + `0fcb2c4` + `44cd664` + `6840281` + `80ca424` +
-`c7ec9bd` + `f0042f6` + `5472463` + `c0c000f` +
-docs-finalize).**
+`c7ec9bd` + `f0042f6` + `5472463` + `c0c000f` + `cd5c706` +
+`8e18892` + docs-finalize).**
+
+CP7 is docs-only — lands the three operator-facing surfaces
+ADR-0030 §Consequences — Disclosure obliged us to update:
+
+- `.env.example` gains a new
+  `# -- scope_guard plugin (ADR-0030)` section between the
+  Local PG test loop and the Per-request headers info-block.
+  Lists `OPENAI_API_KEY` (framed as "needed when the plugin
+  is enabled" since the plugin's `on_init` already fail-closes
+  when it's missing) and the five
+  `LLMTRACK_PLUGIN_SCOPE_GUARD_*` knobs: `THRESHOLD` (0.6),
+  `AMBIGUOUS_BAND` (0.1), `WINDOW` (5), `JUDGE_MODEL`
+  (`gpt-4o-mini`), `JUDGE_TOP_K` (3). Each variable carries an
+  ADR-section pointer + behaviour note so the operator
+  doesn't need to flip to the ADR.
+- `docs/deploy.md` §"Data collection & privacy" gains one
+  new bullet on the existing Privacy posture list carrying
+  the ADR-0030 §Consequences — Disclosure paragraph verbatim
+  ("the most recent user-initiated turns from each exchange
+  are sent to OpenAI's embedding API (`text-embedding-3-small`);
+  ambiguous-band requests additionally trigger a `gpt-4o-mini`
+  Chat Completions call.…") plus a closing pointer to the
+  `process-scope-document` CLI for the per-org corpus that
+  scope_alerts are scored against. The existing
+  `LLMTRACK_PLUGINS_DISABLED` bullet now names both
+  `analytics_sink` and `scope_guard` as valid off-switch
+  targets (comma-separate to disable both).
+- `docs/plugins.md` §11 Reference plugins: the scope_guard
+  table row's Purpose column updated to "Server-side scope
+  monitor on `on_persisted` (ADR-0030, Phase 1c). Two-stage
+  embedding + judge pipeline; observe-only; writes
+  `public.scope_alerts`." A new paragraph after the
+  install-via-git-URL snippet documents the
+  `process-scope-document` CLI — both invocations
+  (`process-scope-document <org_id> <file.md>` and the
+  `python -m` fallback), accepted formats (`.txt` / `.md`),
+  idempotency contract, and env requirements
+  (`OPENAI_API_KEY` + `LLMTRACK_DATABASE_URL`).
+
+`git diff --stat` for CP7 shows 71 lines added / 2 lines
+removed across the three files (the only deletion is the old
+scope_guard row in plugins.md being expanded inline). Test
+suite unchanged at 239 passed under the DB fixture — CP7
+ships no code paths.
+
+Implementation notes worth carrying forward to CP8:
+
+- **`docs/plugins.md` §11 table drift surfaced.** The
+  Reference plugins table still lists
+  `llm-tracker-plugin-supabase-sink` but the package directory
+  was removed in 2026-05-17 (commit `8ef166d`'s sidecar
+  archive). It also doesn't list `analytics_sink`,
+  `keyword_block`, or `token_counter`, all of which exist as
+  workspace packages. CP7 deliberately scoped to scope_guard
+  per CLAUDE.md §2.3 surgical changes; the table drift is
+  queued for a future docs sweep (see worklog §Suggestions).
+- **Disclosure-paragraph wording is pinned in ADR-0030.** The
+  bullet in `docs/deploy.md` matches the ADR §Consequences
+  — Disclosure block verbatim plus the closing CLI pointer.
+  If the ADR wording ever changes, `docs/deploy.md` follows
+  in the same PR — the canonical source is the ADR, the
+  deploy doc is the operator-facing surface.
+- **`LLMTRACK_PLUGINS_DISABLED` is the unified off-switch
+  for both plugins.** Comma-separated CSV semantics (the
+  host's plugin-host already parses it this way for
+  analytics_sink). Documented in the extended deploy.md
+  bullet so the operator can disable scope_guard standalone,
+  analytics_sink standalone, or both.
+
+CP6 narrative preserved below for cold-start sessions:
 
 CP6 ships the operator CLI that fills the
 ADR-0030 §D5 + §D9 registration UX. New module

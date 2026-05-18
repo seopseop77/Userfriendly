@@ -74,7 +74,7 @@ ships migration 0010 bumps STATUS.md §"Local dev loop revival" to
 | **CP4** | `embeddings.py` + `judge.py` via `HostEgressClient`; pin Q4 prompt | **done** (commit `80ca424` + this docs finalize) |
 | **CP5** | `pipeline.py` + `storage.py` + `plugin.py`; DB-fixture integration test | **done** (commit `f0042f6` + this docs finalize) |
 | **CP6** | operator CLI (`.txt` + `.md`, idempotent) — `process_scope_document.py` + console script | **done** (commit `c0c000f` + this docs finalize) |
-| CP7 | `.env.example` + `docs/deploy.md` §"Data collection & privacy" + `docs/plugins.md` §11 | queued |
+| **CP7** | `.env.example` + `docs/deploy.md` §"Data collection & privacy" + `docs/plugins.md` §11 | **done** (commit `8e18892` + this docs finalize) |
 | CP8 | `0011_scope_alerts_retention` migration (Q3 default: new migration, not amend 0009) | queued |
 
 Each CP = 1 commit + worklog "What was done" append + STATUS.md
@@ -527,6 +527,78 @@ Implementation notes worth carrying forward to CP7 / CP8:
   table to write to. Documented in the class docstring so a
   future "why isn't this audited" doesn't have to re-derive.
 
+### CP7 — disclosure + env knobs + plugins.md entry (done; commit `8e18892` + this docs finalize)
+
+Docs-only commit landing the three operator-facing surfaces
+ADR-0030 §Consequences — Disclosure obliged us to update:
+
+- Modified `.env.example`: new
+  `# -- scope_guard plugin (ADR-0030)` section between the
+  Local PG test loop and the Per-request headers info-block.
+  Lists `OPENAI_API_KEY` (with the "needed when the plugin is
+  enabled" framing — not a hard "required", since the plugin's
+  `on_init` already fail-closes when the key is missing) and
+  the five `LLMTRACK_PLUGIN_SCOPE_GUARD_*` knobs: `THRESHOLD`
+  (default 0.6), `AMBIGUOUS_BAND` (0.1), `WINDOW` (5),
+  `JUDGE_MODEL` (`gpt-4o-mini`), `JUDGE_TOP_K` (3). Each
+  variable carries an ADR-section pointer + behaviour note so
+  the operator doesn't need to flip to the ADR to understand
+  the knob.
+- Modified `docs/deploy.md` §"Data collection & privacy":
+  appended one new bullet to the existing Privacy posture list
+  carrying the ADR-0030 §Consequences — Disclosure paragraph
+  verbatim ("the most recent user-initiated turns from each
+  exchange are sent to OpenAI's embedding API
+  (`text-embedding-3-small`); ambiguous-band requests
+  additionally trigger a `gpt-4o-mini` Chat Completions
+  call.…"), plus a closing sentence pointing the operator to
+  the `process-scope-document` CLI for the per-org corpus that
+  scope_alerts are scored against. Extended the
+  `LLMTRACK_PLUGINS_DISABLED` bullet so it names both
+  `analytics_sink` and `scope_guard` as valid off-switch
+  targets (comma-separate for both).
+- Modified `docs/plugins.md` §11 Reference plugins:
+  - Updated the scope_guard table row's Purpose column from
+    "Task-scope enforcement (Phase 1c)" to the post-impl
+    shape: "Server-side scope monitor on `on_persisted`
+    (ADR-0030, Phase 1c). Two-stage embedding + judge
+    pipeline; observe-only; writes `public.scope_alerts`."
+  - Added a new paragraph after the install-via-git-URL
+    snippet covering the `process-scope-document` CLI — both
+    invocations (`process-scope-document <org_id> <file.md>`
+    and the `python -m` fallback), accepted formats (`.txt` +
+    `.md`), idempotency contract, and the env requirements
+    (`OPENAI_API_KEY` + `LLMTRACK_DATABASE_URL`).
+
+Verified end to end: docs-only; no code paths touched, no
+test changes. `git diff --stat` shows 71 lines added / 2 lines
+removed across the three files (the only deletion is the
+short scope_guard row in plugins.md being expanded inline).
+
+Implementation notes worth carrying forward to CP8:
+
+- **`docs/plugins.md` §11 table drift surfaced.** The Reference
+  plugins table lists `llm-tracker-plugin-supabase-sink` but
+  the package directory was removed in 2026-05-17 (commit
+  `8ef166d`'s sidecar archive). The table also doesn't list
+  `analytics_sink`, `keyword_block`, or `token_counter`, all of
+  which exist as workspace packages. CP7 didn't fix this —
+  scoped to scope_guard per CLAUDE.md §2.3. Flagged in
+  §Suggestions below for a future docs sweep.
+- **Disclosure-paragraph wording is pinned in ADR-0030.** The
+  bullet in `docs/deploy.md` matches the ADR-0030
+  §Consequences — Disclosure block verbatim plus the
+  closing CLI pointer. If the ADR wording ever changes,
+  `docs/deploy.md` follows in the same PR — the canonical
+  source is the ADR, the deploy doc is the operator-facing
+  surface.
+- **`LLMTRACK_PLUGINS_DISABLED` is the unified off-switch for
+  both plugins.** Comma-separated CSV semantics (the host's
+  plugin-host already parses it this way for analytics_sink).
+  Documented in the extended deploy.md bullet so the operator
+  can disable scope_guard standalone, analytics_sink
+  standalone, or both.
+
 ## Decisions
 
 - **Q3 default — new `0011_scope_alerts_retention` migration,
@@ -819,23 +891,21 @@ Found and fixed during CP4:
 
 ## What's left / known limits
 
-- CP7–CP8 not started. CP7 is the next active step.
+- CP8 not started. CP8 is the next active step (the last CP).
 - ADR-0030's open questions reduce to one: Q1 **resolved at
   CP3**, Q4 **resolved at CP4**, Q3 resolved at CP1 time (new
   0011 migration over amending 0009). Q2 stays MVP-deferred
   (linear scan acceptable until any org's chunk count
-  approaches ~10k).
-- Test baseline after CP6: **239 passed** with the DB fixture
-  (CP5's 230 + CP6's 9). Scope_guard alone goes 66 → 75 tests
-  (added 6 arg-validation + 3 DB-fixture for the CLI). Without
-  the DB fixture the scope_guard suite is 70 passed, 5 skipped
-  (the integration + CLI DB-fixture tests).
-- No real OpenAI call has fired yet — the CLI's
-  `register_document` is exercised in tests against a
-  `_UnitEmbed` stub. The first live call needs CP7's
-  `.env.example` + deploy.md disclosure paragraph to land, then
-  operator-side smoke against a real key
-  (`process-scope-document <org_id> <scope.md>`).
+  approaches ~10k). CP8 ships the Q3 migration and closes the
+  ADR's open-question ledger.
+- Test baseline after CP7: still **239 passed** under the DB
+  fixture (CP7 is docs-only; no test changes). Scope_guard
+  package suite still 75 tests.
+- No real OpenAI call has fired yet — operator-side smoke
+  against a real key (`process-scope-document <org_id> <scope.md>`
+  followed by a normal Claude Code request) is unblocked now
+  that the `.env.example` + deploy.md disclosure are in place.
+  Smoke is a separate follow-up; CP8 doesn't gate on it.
 - pgvector ANN index not present (ADR-0030 §Q2 defers it). When
   any org's `scope_chunks` count starts approaching ~10k,
   revisit and add an `HNSW` or `IVFFlat` index on `embedding`.
@@ -857,43 +927,49 @@ Found and fixed during CP4:
 
 ## Handoff
 
-CP1–CP6 closed by commits `2511c3a` + `b6cdf5f` + `2fe84e6` +
-`44cd664` + `80ca424` + `f0042f6` + `c0c000f` + this docs
-finalize. The active work board is the "Checkpoint plan"
-table above: CP1 + CP2 + CP3 + CP4 + CP5 + CP6 done,
-CP7 + CP8 pending.
+CP1–CP7 closed by commits `2511c3a` + `b6cdf5f` + `2fe84e6` +
+`44cd664` + `80ca424` + `f0042f6` + `c0c000f` + `8e18892` +
+this docs finalize. The active work board is the "Checkpoint
+plan" table above: CP1 + CP2 + CP3 + CP4 + CP5 + CP6 + CP7
+done, CP8 pending (last CP).
 
-**Next active step — CP7: external disclosure paragraph +
-operator documentation.** ADR-0030 §Consequences — Disclosure
-binds the implementation checkpoint to a follow-up that
-updates the three operator-facing surfaces with the OpenAI
-external-disclosure axis introduced by scope_guard:
+**Next active step — CP8: migration `0011_scope_alerts_retention`.**
+Resolves ADR-0030 §Q3 (decided at CP1 time: new migration
+over amending 0009 — each retention concern owns its own
+reversible migration; mixing a third cron row with a
+different table/column/unit shape into 0009 muddies the
+downgrade). Concrete spec:
 
-1. **`.env.example`** — add the six
-   `LLMTRACK_PLUGIN_SCOPE_GUARD_*` knobs under a new
-   `# scope_guard plugin (ADR-0030)` section + `OPENAI_API_KEY`
-   if not already there (with a "set when scope_guard is
-   enabled" comment, not a hard "required" — the plugin's
-   `on_init` already fail-closes when it's missing).
-2. **`docs/deploy.md` §"Data collection & privacy"** — append
-   the disclosure paragraph from ADR-0030 §Consequences —
-   Disclosure verbatim (the
-   `text-embedding-3-small` + `gpt-4o-mini` external-API mention,
-   the "assistant responses + tool-result contents not sent"
-   bullet, the zero-data-retention pointer to OpenAI's API
-   settings). The wording is already pinned in the ADR; copy
-   it across without editorial drift.
-3. **`docs/plugins.md` §11 Reference plugins** — add
-   `scope_guard` under the existing list (next to
-   `analytics_sink` / `keyword_block` etc.) with a one-line
-   description + a pointer to ADR-0030 + the CLI's invocation
-   form (`process-scope-document <org_id> <file>`).
+1. New migration file
+   `packages/llm_tracker_server/alembic/versions/0011_scope_alerts_retention.py`,
+   `down_revision = "0010_scope_guard_tables"`.
+2. Inside a `DO $$ … $$` block gated on `pg_cron`
+   availability (same pattern as
+   `0009_retention_deletion_job`), schedule one daily job at
+   03:00 UTC: `llm-tracker-retention-scope-alerts` runs
+   `DELETE FROM public.scope_alerts WHERE created_at < now()
+   - INTERVAL '6 months'` (timestamptz column → direct,
+   unlike `exchanges.started_at` which is bigint unix-ms).
+3. `scope_documents` + `scope_chunks` are **explicitly not
+   retention-managed** — operator-curated baseline content,
+   not user-generated data (ADR-0030 §D8). Don't include
+   them in the cron job.
+4. Downgrade unschedules the job by name; does NOT drop the
+   `pg_cron` extension (matches the migration-0009 stance on
+   blast radius).
+5. Extend `docs/deploy.md` §"Data collection & privacy"
+   bullet on retention to name the third job alongside the
+   existing two (`llm-tracker-retention-exchanges` +
+   `llm-tracker-retention-plugin-analytics` →
+   `…-scope-alerts`).
+6. Round-trip verification: `alembic upgrade
+   0010_scope_guard_tables:0011_scope_alerts_retention --sql`
+   then the reverse `--sql` invocation; no actual DB writes
+   needed, the cycle just emits the BEGIN/SQL/COMMIT block.
 
-The CP7 commit is docs-only; the implementation surface is
-all touched by the documentation, no code edits. CP8 then
-ships migration `0011_scope_alerts_retention` (the last open
-ADR-0030 question — Q3 was resolved at CP1 time to be a new
-migration over amending 0009).
+The CP8 commit closes the implementation phase; ADR-0030's
+open-question ledger drops to zero (Q1/Q3/Q4 resolved during
+implementation, Q2 stays MVP-deferred per the ADR).
 
 The Decisions section above carries every ADR-0030
 open-question commitment + the implementation-tier choices
@@ -901,9 +977,10 @@ open-question commitment + the implementation-tier choices
 codec, the always-write-a-row stage1_in interpretation, the
 `HookContext` ceiling quirk in tests, the in-package CLI path
 vs. ADR's `tools/` suggestion, the `_ToolEgressClient`
-audit-skip) so CP7 doesn't re-derive them. Read STATUS.md →
-this worklog → last 5 commits (`44cd664` + `80ca424` +
-`f0042f6` + `5472463` + `c0c000f` + finalize).
+audit-skip, the CP7 docs split across three files) so CP8
+doesn't re-derive them. Read STATUS.md → this worklog → last
+5 commits (`80ca424` + `f0042f6` + `5472463` + `c0c000f` +
+`cd5c706` + `8e18892` + finalize).
 
 ## Suggestions (untouched)
 
@@ -914,3 +991,10 @@ this worklog → last 5 commits (`44cd664` + `80ca424` +
 - `docs/design.md` still describes the local-sidecar architecture in
   places; ADR-0017 + ADR-0019 + ADR-0030 together are owed a v0.3
   pass once scope_guard ships.
+- `docs/plugins.md §11 Reference plugins` table is stale (surfaced
+  during CP7): lists `llm-tracker-plugin-supabase-sink` which was
+  archived in commit `8ef166d` (2026-05-17) and omits the workspace
+  packages `analytics_sink`, `keyword_block`, and `token_counter`.
+  CP7 only updated the scope_guard row + added the CLI paragraph
+  (CLAUDE.md §2.3 surgical changes). A future docs sweep should
+  drop the supabase_sink row and add the three missing plugins.

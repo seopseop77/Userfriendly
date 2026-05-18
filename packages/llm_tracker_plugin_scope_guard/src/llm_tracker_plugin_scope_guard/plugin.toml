@@ -1,0 +1,12 @@
+name = "scope_guard"
+version = "0.1.0"
+description = "Server-side task-scope monitor. Async on_persisted: embed the user-initiated turns, compare against the org's scope_chunks, and record a per-exchange alert. Two-stage pipeline (embedding pre-filter; LLM judge on ambiguous band). Records alerts; never blocks. Settles ADR-0002 in reframed form."
+hooks = ["on_persisted"]
+capabilities = ["egress_http"]
+egress_destinations = [
+    "https://api.openai.com/v1/embeddings",
+    "https://api.openai.com/v1/chat/completions",
+]
+allowed_modes = ["R"]
+min_content_level = "L3"
+db_namespace = "scope_guard"

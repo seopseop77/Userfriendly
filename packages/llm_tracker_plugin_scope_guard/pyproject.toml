@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llm-tracker-plugin-scope-guard"
+version = "0.1.0"
+description = "Server-side task-scope monitor (ADR-0030). On `on_persisted`, embeds the user-initiated turns of the exchange and compares them against the org's `scope_chunks` corpus via pgvector cosine distance. Two-stage pipeline: a cheap embedding pre-filter routes ambiguous-band requests to an LLM judge. Records one row per evaluation on `scope_alerts`; never blocks the request path. Settles ADR-0002 in reframed async-monitor form."
+requires-python = ">=3.11"
+authors = [{ name = "Userfriendly Team" }]
+license = { text = "Proprietary (internal research use)" }
+
+dependencies = [
+    "llm-tracker-sdk",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "pgvector>=0.2",
+    "python-ulid>=2",
+    "structlog",
+]
+
+[project.entry-points."llm_tracker.plugins"]
+scope_guard = "llm_tracker_plugin_scope_guard.plugin:ScopeGuard"
+
+[tool.uv.sources]
+llm-tracker-sdk = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/llm_tracker_plugin_scope_guard"]

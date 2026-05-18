@@ -354,16 +354,23 @@ Privacy posture (ADR-0029):
   replaced by `[REDACTED:…]` tags. The canonical bytes in the database
   remain unscrubbed for operator incident response.
 - **Retention is 6 months.** Rows older than 6 months are deleted by
-  two `pg_cron` jobs that run daily at 03:00 UTC, scheduled by
-  migration `0009_retention_deletion_job`:
+  three `pg_cron` jobs that run daily at 03:00 UTC, scheduled by
+  migrations `0009_retention_deletion_job` (first two) and
+  `0011_scope_alerts_retention` (third):
   `llm-tracker-retention-exchanges` removes from `public.exchanges`
   where `started_at` (unix ms) is older than 6 months;
   `llm-tracker-retention-plugin-analytics` removes from
-  `public.plugin_analytics` where `created_at` is older than 6 months.
-  The migration is gated on `pg_cron` availability — environments
+  `public.plugin_analytics` where `created_at` is older than 6 months;
+  `llm-tracker-retention-scope-alerts` removes from
+  `public.scope_alerts` where `created_at` is older than 6 months.
+  `scope_documents` and `scope_chunks` are intentionally **not**
+  retention-managed — they are operator-curated baseline content
+  (ADR-0030 §D8), retained indefinitely until the operator deletes
+  via SQL or re-registers with the `process-scope-document` CLI.
+  Both migrations are gated on `pg_cron` availability — environments
   without the extension log a `NOTICE` and skip the scheduler, leaving
-  the operator the same manual-DELETE fallback that pre-dated this
-  job. Inspect the scheduled jobs with `SELECT jobname, schedule,
+  the operator the same manual-DELETE fallback that pre-dated these
+  jobs. Inspect the scheduled jobs with `SELECT jobname, schedule,
   command FROM cron.job WHERE jobname LIKE 'llm-tracker-retention-%'`.
 - **Deletion requests are operator-handled today.** When an external
   user requests removal of their data, run `DELETE FROM

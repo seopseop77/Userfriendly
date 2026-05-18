@@ -69,8 +69,8 @@ ships migration 0010 bumps STATUS.md §"Local dev loop revival" to
 | CP | Scope | Status |
 |---|---|---|
 | **CP1** | Migration `0010_scope_guard_tables` + STATUS.md docker image bump | **done** (commits `2511c3a` + `b6cdf5f`) |
-| **CP2** | `packages/llm_tracker_plugin_scope_guard/` skeleton + manifest + workspace registration | **done** (commit `2fe84e6` + this docs finalize) |
-| CP3 | `chunker.py` + unit tests; resolve Q1 | queued |
+| **CP2** | `packages/llm_tracker_plugin_scope_guard/` skeleton + manifest + workspace registration | **done** (commit `2fe84e6` + docs finalize) |
+| **CP3** | `chunker.py` + unit tests; resolve Q1 | **done** (commit `44cd664` + this docs finalize) |
 | CP4 | `embeddings.py` + `judge.py` via `HostEgressClient`; pin Q4 prompt | queued |
 | CP5 | `pipeline.py` + `storage.py` + `plugin.py`; DB-fixture integration test | queued |
 | CP6 | `tools/process_scope_document.py` CLI (.txt + .md, idempotent) | queued |
@@ -133,6 +133,68 @@ refresh (CLAUDE.md §5.3).
 - Modified `uv.lock` — `pgvector==0.4.2` + transitive `numpy==2.4.5`
   installed alongside the new workspace package.
 
+### CP3 — chunker.py + Q1 parameters pinned (done; commit `44cd664` + this docs finalize)
+
+- Replaced
+  `packages/llm_tracker_plugin_scope_guard/src/llm_tracker_plugin_scope_guard/chunker.py`
+  (commit `44cd664`) with the full ADR-0030 §D5 implementation:
+  - `_segment_sentences` — paragraph-split on blank lines
+    (`\n{2,}`), then sentence-split on terminal punctuation
+    (Latin `.?!` + CJK `。？！`) followed by whitespace and an
+    opener class (Latin capital, ASCII `"` / `(`, curly left
+    double / single quote, or any CJK ideograph / Hangul
+    syllable). Library swap to `blingfire` / `pysbd` queued
+    under ADR-0030 §Deferred §6.
+  - `_detect_boundaries` — walks adjacent-sentence cosine
+    similarities. Flags sentence `i+1` as a boundary when
+    `similarities[i] < rolling_mean(prev WINDOW sims) - DROP`.
+    Window-size warm-up: the first WINDOW similarities cannot
+    themselves trigger a boundary.
+  - `_enforce_size_bounds` — two passes. Pass 1 merges
+    below-min chunks into the next neighbour (or previous, if
+    last). Pass 2 splits above-max chunks on the lowest internal
+    adjacent similarity, recursively, until every chunk is at or
+    below the max bound.
+  - `chunk_document(text, embed)` — orchestrates the above.
+    `embed` is dependency-injected (CP4 wires it to the real
+    OpenAI client). Each final chunk is **re-embedded** as one
+    string so the returned vector matches the chunk's stored
+    `scope_chunks.content` column exactly (not a sentence
+    average — explicit contract pinned by the
+    `embedding_is_chunk_content_not_sentence_average` test).
+- Pinned **ADR-0030 §Q1** to `_BOUNDARY_WINDOW = 3`,
+  `_BOUNDARY_DROP_THRESHOLD = 0.15`. Module docstring carries
+  the benchmark vs. `window=5` (under-splits short docs) and
+  `drop=0.10` (over-splits on smooth prose).
+- Created
+  `packages/llm_tracker_plugin_scope_guard/tests/test_chunker.py`
+  (22 tests). Coverage:
+  - Sentence segmenter: simple Latin punctuation, paragraph
+    breaks, CJK terminator, empty input.
+  - Cosine helper: orthogonal / parallel / zero-norm guard.
+  - `chunk_document` empty input / single-sentence / 3-topic
+    boundary recovery / per-chunk re-embedding contract.
+  - `_detect_boundaries` warm-up quiet behaviour, short-input
+    guard.
+  - **Q1 benchmark** — chosen tuple recovers the 3-topic
+    fixture boundaries `[5, 10]` and stays quiet on the smooth
+    prose fixture; `window=5` misses sentence-5 boundary;
+    `drop=0.10` fires a false positive on the same fixture.
+  - `_enforce_size_bounds` — below-min merge with neighbour,
+    below-min-with-no-neighbour kept as-is, above-max split on
+    lowest seam, recursive split for very long chunks,
+    single-oversized-sentence kept as-is (cannot split a single
+    sentence).
+  - `ChunkRecord` NamedTuple contract.
+- Modified root `pyproject.toml` — added
+  `packages/llm_tracker_plugin_scope_guard/tests` to `testpaths`.
+  Initially also added a `tests/__init__.py` but removed it
+  after `pytest` collection conflicted with the other plugin
+  packages' top-level `tests` namespace
+  (`ModuleNotFoundError: No module named 'tests.test_chunker'`);
+  the other plugin packages don't ship a `tests/__init__.py`,
+  so this package matches.
+
 ## Decisions
 
 - **Q3 default — new `0011_scope_alerts_retention` migration,
@@ -160,6 +222,45 @@ refresh (CLAUDE.md §5.3).
   OpenAI via `HostEgressClient`, which the host injects on
   `self.egress`. ADR-0030 §D3/§D4 are silent on Python packages;
   these are implementation-tier choices.
+- **Q1 pinned — `window=3`, `drop=0.15`.** Rolling-mean cosine
+  drop algorithm chosen over percentile-based (Greg Kamradt
+  style) and absolute-threshold variants — rolling-mean is
+  scale-robust to the embedding model's baseline cosine
+  distribution and works on short documents without needing a
+  global distance histogram. Benchmarked three candidate tuples
+  on synthetic fixtures: chosen tuple recovers all expected
+  boundaries on a 3-topic 15-sentence corpus while staying quiet
+  on a smooth-prose fixture with a single ~0.16 dip;
+  `window=5, drop=0.15` swallows the first boundary into its
+  warm-up region; `window=3, drop=0.10` over-fires on the
+  smooth-prose dip. The benchmark lives in the test module so
+  regressions on the picked parameters are CI-caught.
+- **Token count = whitespace word count.** ADR-0030 §D5 §4 says
+  "min 50 / max 500 tokens" without pinning the tokenizer.
+  Whitespace-split is cheap, predictable, and avoids pulling
+  `tiktoken` as a direct dep just to enforce a soft size bound.
+  English token : word ratio is ~1.3 : 1 so the bounds map to
+  ~65 / ~650 actual tokens — comfortably inside the 8191-token
+  embedding-input ceiling. CJK-heavy corpora may want to retune
+  at follow-up time (acknowledged in module comment); not
+  blocking MVP.
+- **Per-chunk re-embedding over sentence-vector averaging.**
+  ADR-0030 §D5 §5 says "each chunk gets one embedding stored in
+  `scope_chunks.embedding`". The chunker re-embeds the
+  concatenated chunk string so the stored vector represents the
+  string that goes into `content` — averaging the per-sentence
+  vectors would drift from that (especially under the
+  topic-tagged stub embedder used in tests). Costs one extra
+  embed call per chunk at registration time; chunks are written
+  once and queried many times, so the cost is amortised
+  immediately.
+- **`tests/__init__.py` not shipped.** pytest's rootdir-based
+  collection treats every `tests/` directory as a top-level
+  package named `tests`. With an `__init__.py` present, all
+  packages' `tests/` collide on the same module name and only
+  one gets collected. Mirrors the analytics_sink / keyword_block
+  / token_counter pattern — none of them ship a `tests/__init__.py`
+  either.
 
 ## Verification
 
@@ -256,31 +357,132 @@ group exposes `scope_guard` → `ScopeGuard`, which loads and
 instantiates cleanly; full test suite stays at 164 (CP2 added zero
 tests as designed — skeleton-only).
 
+CP3 verified after the chunker landed:
+
+```
+$ .venv/bin/python3.12 -m ruff check packages/llm_tracker_plugin_scope_guard/
+All checks passed!
+$ .venv/bin/python3.12 -m ruff format --check packages/llm_tracker_plugin_scope_guard/
+9 files already formatted
+
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker_plugin_scope_guard/tests -q
+22 passed in 0.17s
+
+$ .venv/bin/python3.12 -m pytest -q
+168 passed, 18 skipped in 5.89s
+```
+
+Three checks green: ruff clean across the package; scope_guard's
+own 22 chunker tests pass; the full suite picks up +22 tests
+(146 → 168 passed without the DB fixture; the 18 skipped are
+the DB-gated server tests, unchanged from before) with zero
+regression.
+
+Found and fixed during CP3:
+
+- **`RUF001` / `RUF003` ambiguous-glyph lint on the CJK regex.**
+  The sentence-segmenter character class legitimately contains
+  CJK fullwidth `？` `！` `。` and the curly left double / single
+  quotation marks `“ ‘` — ruff cannot tell pattern-intent CJK
+  from accidental Asian punctuation. Resolved with two
+  per-string `# noqa: RUF001` lines on the segments where the
+  ambiguous chars are pattern members. The EN-DASH `–` in the
+  module comment was the easy half: replaced with HYPHEN-MINUS.
+- **pytest collection collision on `tests/__init__.py`.** Initial
+  draft shipped an empty `tests/__init__.py` (mirroring the
+  server package). pytest's rootdir-based collection then treated
+  every plugin's `tests/` as a top-level `tests` package and they
+  fought over the same name (`ModuleNotFoundError: No module
+  named 'tests.test_chunker'` while collecting). Removed the
+  `__init__.py` to match the analytics_sink / keyword_block /
+  token_counter pattern — they don't ship one either.
+- **`SIM300` Yoda condition on `pytest.approx`.** Flipped to
+  `pytest.approx(0.15) == _BOUNDARY_DROP_THRESHOLD` per ruff
+  preference. `pytest.approx` is symmetric so the assertion is
+  equivalent.
+- **Above-max split test fixture math.** Initial draft used
+  three 300-word sentences (900 words total) and asserted a
+  single split at the lowest seam. The recursive splitter
+  correctly re-splits the 600-word half (still above the
+  500-word max), producing three groups rather than the
+  expected two. Adjusted the fixture to 250-word sentences
+  (750 total → splits to `[[0,1], [2]]` where `[0,1]` is exactly
+  at the bound) so the test pins one-pass split behaviour
+  precisely.
+
 ## What's left / known limits
 
-- CP3–CP8 not started.
-- ADR-0030's three remaining open questions (Q1 chunker algo,
-  Q2 ANN index, Q4 judge prompt) get pinned at CP3, MVP-defer,
-  CP4 respectively. Q3 was resolved at CP1 time (new 0011
-  migration over amending 0009).
-- Test baseline this session: **164 passed** with the DB fixture
-  active against `pgvector/pgvector:pg15`. CP2 added zero new
-  tests (skeleton only) and broke zero existing ones. CP3 will
-  start adding unit tests; CP5 + CP6 add the larger DB-fixture
-  integration tests.
-- pgvector ANN index not present (ADR-0030 §Q2 defers it). When any
-  org's `scope_chunks` count starts approaching ~10k, revisit and
-  add an `HNSW` or `IVFFlat` index on `embedding`.
-- `tests/` directory not yet created under
-  `packages/llm_tracker_plugin_scope_guard/` and not yet
-  registered in the root `pyproject.toml`'s `testpaths`. CP3 adds
-  both atomically with the first chunker test.
+- CP4–CP8 not started. CP4 is the next active step.
+- ADR-0030's three remaining open questions (Q1 chunker algo
+  → **resolved at CP3**, Q2 ANN index, Q4 judge prompt) now
+  reduce to two: Q2 stays MVP-deferred (linear scan acceptable
+  until any org's chunk count approaches ~10k), Q4 pins at CP4
+  (frozen module-top string in `judge.py`). Q3 resolved at
+  CP1 time (new 0011 migration over amending 0009).
+- Test baseline after CP3: **168 passed, 18 skipped** without
+  the DB fixture (the 18 skipped are DB-gated server tests
+  unchanged from CP1/CP2). With the DB fixture active against
+  `pgvector/pgvector:pg15` the baseline is 186 passed. CP5 +
+  CP6 add the larger DB-fixture integration tests; CP4 adds
+  unit tests for `embeddings.py` + `judge.py`.
+- pgvector ANN index not present (ADR-0030 §Q2 defers it). When
+  any org's `scope_chunks` count starts approaching ~10k,
+  revisit and add an `HNSW` or `IVFFlat` index on `embedding`.
+- Chunker token-count proxy is whitespace word count, not a
+  real tokenizer. English token : word ratio is ~1.3 : 1 so the
+  50/500 word bounds map to ~65/~650 actual tokens. CJK-heavy
+  corpora may want to retune; flagged in the module comment.
+- Sentence segmenter is MVP regex — abbreviations like "Mr." or
+  decimal numbers like "3.14" can mis-split. Library swap to
+  `blingfire` / `pysbd` queued under ADR-0030 §Deferred §6.
 
 ## Handoff
 
-CP1 + CP2 closed by commits `2511c3a` + `b6cdf5f` + `2fe84e6` +
-this docs finalize. The active work board is the "Checkpoint
-plan" table above: CP1 + CP2 done, CP3–CP8 pending.
+CP1–CP3 closed by commits `2511c3a` + `b6cdf5f` + `2fe84e6` +
+`44cd664` + this docs finalize. The active work board is the
+"Checkpoint plan" table above: CP1 + CP2 + CP3 done, CP4–CP8
+pending.
+
+**Next active step — CP4: `embeddings.py` + `judge.py` via
+`HostEgressClient`; pin Q4 prompt template.** ADR-0030 §D3 +
+§D4 spec:
+
+1. `EmbeddingClient` wraps a `HostEgressClient` for
+   `https://api.openai.com/v1/embeddings`. One method:
+   `async def embed(text: str) -> list[float]`. Returns the
+   1536-dim vector from `text-embedding-3-small`.
+2. `JudgeClient` wraps a `HostEgressClient` for
+   `https://api.openai.com/v1/chat/completions`. One method:
+   `async def judge(message_text: str, chunks: list[str]) ->
+   tuple[Verdict, str]` where `Verdict` is the literal
+   `"in_scope" | "out_of_scope"` and the string is a
+   one-sentence reason. Top-K (default 3) chunks accompany the
+   prompt per ADR §D2.
+3. **Q4 — pin the Stage-2 prompt template** as a frozen
+   module-top string in `judge.py`. The prompt instructs
+   `gpt-4o-mini` to return a strict JSON shape
+   `{"verdict": "...", "reason": "..."}`; the parser tolerates
+   leading whitespace + trailing newlines and falls back to a
+   default verdict on malformed JSON (better to record an alert
+   with a degraded verdict than to crash the `on_persisted` path).
+4. Unit tests stub `HostEgressClient.fetch` so the tests don't
+   touch the network. Pin: prompt shape (sentinels in the system
+   prompt + user prompt), JSON parse path, malformed-JSON
+   fallback path.
+5. `OPENAI_API_KEY` env var is read once at `on_init` time in
+   CP5; both clients accept the key by constructor injection so
+   they remain testable in isolation here.
+
+The CP4 commit lands `embeddings.py` + `judge.py` + their unit
+tests; no DB touches yet. CP5 then wires both into
+`pipeline.py` + `storage.py` + `plugin.py` and ships the
+end-to-end DB-fixture integration test.
+
+If the user is picking this up cold: STATUS.md → this worklog
+→ last 4 commits (`2511c3a` + `b6cdf5f` + `2fe84e6` +
+`44cd664` + finalize). The Decisions section above carries the
+ADR-0030 §Q1 pinning + tokenizer / re-embedding / `tests`
+namespace decisions so CP4 / CP5 don't re-derive them.
 
 **Next active step — CP3: `chunker.py` + unit tests.**
 ADR-0030 §D5 spec:

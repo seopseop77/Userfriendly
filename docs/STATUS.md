@@ -6,8 +6,8 @@
 
 ---
 
-**Last updated**: 2026-05-18 (Claude Code; **scope_guard CP2 of 8 done — commit `2fe84e6` (scope-guard: package skeleton + manifest) + this docs-finalize commit.** New workspace package `packages/llm_tracker_plugin_scope_guard/` per ADR-0030 §D9 frozen manifest shape: `pyproject.toml` (entry point → `ScopeGuard`), `plugin.toml` (`hooks=[on_persisted]`, `capabilities=[egress_http]`, two OpenAI egress destinations, `db_namespace="scope_guard"`, `min_content_level="L3"`), and six module stubs whose docstrings point to the CPs that fill them in (CP3..CP6). New direct dep `pgvector>=0.2` (sqlalchemy/asyncpg vector adapter) + transitive `numpy 2.4.5` — CP3 chunker reuses numpy for adjacent-sentence cosine math, no new direct dep there. Verified: `uv sync` clean install of `llm-tracker-plugin-scope-guard==0.1.0` + `pgvector==0.4.2`; `PluginManifest.from_path()` accepts §D9 verbatim; `importlib.metadata.entry_points(group='llm_tracker.plugins')` exposes `scope_guard` → `ScopeGuard`, loads + instantiates cleanly; 164 tests pass (CP2 added zero new tests by design). Q1 (chunker algo) is the next axis to pin, at CP3. CP1 of 8 was closed earlier this session by commits `2511c3a` (server migration `0010_scope_guard_tables`) + `b6cdf5f` (docs).)
-**Updated by**: Claude Code (scope_guard implementation; CP2 of 8)
+**Last updated**: 2026-05-18 (Claude Code; **scope_guard CP3 of 8 done — commit `44cd664` (scope-guard: chunker + Q1 params) + this docs-finalize commit.** `chunker.py` implements ADR-0030 §D5 end to end: paragraph + sentence segmenter (Latin + CJK terminator chars, paragraph break on `\n{2,}`), rolling-mean cosine-drop boundary detector, min-50 / max-500 token bound enforcement (whitespace-word proxy — `tiktoken` intentionally not a dep), per-chunk re-embedding so the stored vector exactly represents the chunk content. **Q1 pinned: `window=3, drop=0.15`** with a benchmark in `tests/test_chunker.py` that pins the choice against `window=5` (under-splits) and `drop=0.10` (over-splits). 22 new unit tests cover segmenter / cosine / boundary detector / size-bound enforcement / ChunkRecord contract. Verified: ruff clean, 22/22 chunker tests pass in 0.17s, full suite 168 passed + 18 skipped (no regression). `Q4 (judge prompt)` is the remaining open question — pins at CP4. CP2 closed earlier same session by commit `2fe84e6` (scope-guard: package skeleton + manifest); CP1 by `2511c3a` (migration 0010) + `b6cdf5f` (docs).)
+**Updated by**: Claude Code (scope_guard implementation; CP3 of 8)
 
 ## Current phase
 
@@ -29,17 +29,19 @@
     smoke: 503 propagates to Anthropic SDK → 10 retries with
     backoff → user-facing failure, no Anthropic bypass.
 - **Active task**: **scope_guard implementation against
-  ADR-0030 (Accepted 2026-05-18). CP1 + CP2 of 8 done.**
+  ADR-0030 (Accepted 2026-05-18). CP1 + CP2 + CP3 of 8 done.**
   Migration `0010_scope_guard_tables` (commit `2511c3a`) lands
   the three tables + RLS + GRANTs per ADR §D8; package skeleton
   `packages/llm_tracker_plugin_scope_guard/` (commit `2fe84e6`)
   lands the manifest + 6 module stubs per ADR §D9 + new
-  `pgvector` dep with transitive `numpy`. **Next is CP3 —
-  `chunker.py` semantic boundary detection + unit tests, pinning
-  ADR-0030 §Q1 (rolling-mean drop threshold + window size).**
+  `pgvector` dep with transitive `numpy`; `chunker.py`
+  implementation (commit `44cd664`) lands the full ADR §D5
+  pipeline + 22 unit tests + Q1 parameters pinned. **Next is
+  CP4 — `embeddings.py` + `judge.py` via `HostEgressClient`,
+  pinning ADR-0030 §Q4 (frozen Stage-2 prompt template).**
   Per-CP work board lives in
   `docs/worklog/2026-05-18-scope-guard-impl.md` §"Checkpoint
-  plan"; CP4 / CP8 each pin one of the remaining ADR open
+  plan"; CP8 still pins one of the remaining ADR open
   questions at that checkpoint.
 - **Queued follow-ups** (none gating; pick one to continue):
   - **`plugin_analytics` RLS axis — ADR-level revisit.** 0007's
@@ -67,13 +69,17 @@
 ## Active worklog
 
 `docs/worklog/2026-05-18-scope-guard-impl.md` — scope_guard
-implementation against ADR-0030 (Accepted). CP1 of 8 done:
-migration `0010_scope_guard_tables` (commit `2511c3a`) + STATUS
-docker bump to `pgvector/pgvector:pg15` + ADR-0030 Status
-Proposed → Accepted with pgvector Option A pre-decision noted.
-Round-trip verified, 164 tests pass. CP2 (package skeleton) is
-next; CP3/CP4/CP8 each pin one of the four ADR open questions
-at that checkpoint.
+implementation against ADR-0030 (Accepted). CP1 + CP2 + CP3 of
+8 done: migration `0010_scope_guard_tables` (commit `2511c3a`),
+package skeleton + manifest (commit `2fe84e6`), and the full
+ADR §D5 chunker (commit `44cd664`) — paragraph + sentence
+segmenter, rolling-mean cosine-drop boundary detector, min /
+max token bound enforcement, per-chunk re-embedding, and Q1
+parameters pinned to `window=3, drop=0.15` with a benchmark
+test. 22 new chunker tests; full suite 168 passed + 18 skipped
+without regression. CP4 (`embeddings.py` + `judge.py`) is next
+and pins ADR-0030 §Q4 (Stage-2 prompt template); CP8 pins the
+remaining retention-job question at that checkpoint.
 
 Prior worklog (same day, earlier session):
 `docs/worklog/2026-05-18-adr-0030-scope-guard.md` — ADR-0030
@@ -120,14 +126,120 @@ CP14 proper).
 ## Recent commits
 
 ```
-<finalize>   docs: STATUS + worklog — scope_guard CP2
+<finalize>   docs: STATUS + worklog — scope_guard CP3
+44cd664   scope-guard: chunker + Q1 params (ADR-0030 §D5)
+0fcb2c4   docs: STATUS + worklog — scope_guard CP2
 2fe84e6   scope-guard: package skeleton + manifest (ADR-0030 §D9)
 b6cdf5f   docs: STATUS + worklog + ADR-0030 Accepted — scope_guard CP1
 2511c3a   server: migration 0010 scope_guard tables (ADR-0030 §D8)
-a858036   docs: STATUS + worklog — ADR-0030 scope_guard (Proposed)
 ```
 
 ## Where we paused
+
+**scope_guard implementation CP1 + CP2 + CP3 of 8 done
+(2026-05-18, commits `2511c3a` + `b6cdf5f` + `2fe84e6` +
+`0fcb2c4` + `44cd664` + docs-finalize).**
+
+CP3 ships the chunker that registration-time CLI (CP6) calls
+on each scope document. The implementation lives at
+`packages/llm_tracker_plugin_scope_guard/src/llm_tracker_plugin_scope_guard/chunker.py`
+and reads top-down as four stages mapping 1 : 1 to ADR-0030 §D5:
+
+1. `_segment_sentences` — paragraph-split on `\n{2,}`, then
+   sentence-split on terminal punctuation (Latin `.?!` + CJK
+   `。？！`) followed by whitespace and an opener class (Latin
+   capital, ASCII `"` / `(`, curly left double / single quote,
+   CJK ideograph U+4E00..U+9FFF, Hangul syllable
+   U+AC00..U+D7AF). MVP-regex limitations (abbreviations like
+   "Mr." mis-split; decimals like "3.14" mis-split) are
+   acknowledged in the docstring; library swap to `blingfire` /
+   `pysbd` queued under ADR-0030 §Deferred §6.
+2. `_detect_boundaries` — walks adjacent-sentence cosine
+   similarities; flags sentence `i+1` as a chunk boundary when
+   `similarities[i] < rolling_mean(prev WINDOW sims) - DROP`.
+   **Q1 pinned at this checkpoint** to `WINDOW=3, DROP=0.15`
+   with a benchmark test that rejects `window=5, drop=0.15`
+   (under-splits — its 5-sim warm-up swallows the first
+   inter-topic drop in a 15-sentence corpus) and
+   `window=3, drop=0.10` (over-splits — fires a false boundary
+   on a smooth-prose fixture with a single ~0.16 dip).
+3. `_enforce_size_bounds` — two passes. Pass 1 merges
+   below-min chunks into the next neighbour (or previous if
+   last, or accepts as-is if the chunk is solo). Pass 2 splits
+   above-max chunks recursively on the lowest internal adjacent
+   similarity until every chunk is at or below `_MAX_TOKENS`.
+4. `chunk_document(text, embed)` — orchestrates the above. The
+   `embed` callable is injected so CP3 unit tests stub it
+   without touching the network (CP4 wires it to the real
+   OpenAI client). Each final chunk is **re-embedded as one
+   string** so the returned vector represents the chunk's
+   concatenated `content` exactly — not a sentence-vector
+   average — matching the `scope_chunks.embedding`/`content`
+   contract.
+
+Token count is approximated by whitespace-split word count
+rather than a tokenizer dependency: predictable, dep-free,
+maps to ~65 / ~650 actual tokens at the 1.3 token/word ratio
+typical of English. CJK-heavy corpora may want to retune;
+flagged in the module comment.
+
+Test coverage: 22 unit tests in
+`packages/llm_tracker_plugin_scope_guard/tests/test_chunker.py`.
+Sentence segmenter (simple punctuation, paragraph break, CJK
+terminator, empty input); cosine helper (orthogonal, parallel,
+zero-norm guard); `chunk_document` (empty / single-sentence /
+3-topic boundary recovery, per-chunk re-embedding contract);
+`_detect_boundaries` (warm-up quiet, short-input guard); **Q1
+benchmark** (chosen tuple recovers 3-topic boundaries `[5, 10]`
+and stays quiet on smooth prose; `window=5` misses
+sentence-5 boundary; `drop=0.10` over-fires on the smooth
+prose); `_enforce_size_bounds` (merge below-min, keep solo
+below-min, split above-max on lowest seam, recursive split,
+single-oversized-sentence kept as-is); `ChunkRecord` NamedTuple
+contract.
+
+Verified end to end:
+
+```
+$ .venv/bin/python3.12 -m ruff check packages/llm_tracker_plugin_scope_guard/
+All checks passed!
+$ .venv/bin/python3.12 -m ruff format --check packages/llm_tracker_plugin_scope_guard/
+9 files already formatted
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker_plugin_scope_guard/tests -q
+22 passed in 0.17s
+$ .venv/bin/python3.12 -m pytest -q
+168 passed, 18 skipped in 5.89s
+```
+
+The full-suite figure went from 146 → 168 passed without a DB
+fixture (+22 chunker tests, no regression); the 18 skipped are
+the unchanged DB-fixture-gated server tests. With the
+`pgvector/pgvector:pg15` DB fixture active the baseline is 186
+passed.
+
+Implementation notes picked up at CP3 (recorded so CP4 / CP5
+don't re-derive):
+
+- **ruff RUF001 / RUF003 ambiguous-glyph lint on the CJK
+  regex.** Pattern-intent CJK chars `？！。“‘` look like accidental
+  Asian punctuation to ruff. Resolved with two per-string
+  `# noqa: RUF001` lines on the segments where the ambiguous
+  chars are pattern members. The EN-DASH `–` in module comments
+  was the easy half — replaced with HYPHEN-MINUS.
+- **pytest collection collision on `tests/__init__.py`.** Plain
+  empty `tests/__init__.py` collides with every other plugin's
+  `tests/` namespace (`ModuleNotFoundError: No module named
+  'tests.test_chunker'` during collection). Matches the
+  analytics_sink / keyword_block / token_counter pattern —
+  none of them ship one either.
+- **Above-max split recursion is correct; the test fixture had
+  to grow into the bound.** A single split of three 300-word
+  sentences leaves a 600-word half that the recursive splitter
+  correctly splits again — so the fixture sentences are 250
+  words each (split lands exactly at 500 words and accepts
+  without recursion).
+
+CP1 / CP2 recaps preserved below for cold-start sessions:
 
 **scope_guard implementation CP1 + CP2 of 8 done (2026-05-18,
 commits `2511c3a` + `b6cdf5f` + `2fe84e6` + docs-finalize).**
@@ -1206,37 +1318,43 @@ reframes them server-side**:
 
 ## Next single step
 
-**CP3 of 8 — `chunker.py` + unit tests.** Per ADR-0030 §D5:
+**CP4 of 8 — `embeddings.py` + `judge.py` via `HostEgressClient`;
+pin ADR-0030 §Q4 (Stage-2 prompt template).** Per ADR-0030 §D3
++ §D4:
 
-1. Sentence-segment via the ADR's MVP regex
-   (`[.?!。？！]` + whitespace + capital / line-break heuristic).
-2. Embed each sentence — CP3's chunker takes an injected
-   `embed(text) -> list[float]` callable so tests stub it; the
-   real OpenAI client lands in CP4.
-3. Walk adjacent cosine similarities (numpy via the pgvector
-   transitive). Insert a chunk boundary where similarity drops
-   below the rolling-mean baseline. **Pin Q1 here** — benchmark
-   two or three candidate parameterisations
-   (threshold + window size) against a small fixture corpus and
-   freeze the chosen pair in the module.
-4. Enforce min 50 / max 500 token bounds: below-min merges with
-   next neighbour, above-max splits on longest gap.
+1. `EmbeddingClient` wraps a `HostEgressClient` for
+   `https://api.openai.com/v1/embeddings`. One method:
+   `async def embed(text: str) -> list[float]` returning the
+   1536-dim vector from `text-embedding-3-small`. Constructor
+   takes the egress client and the `OPENAI_API_KEY` so the
+   class stays testable in isolation; CP5 wires the actual
+   `self.egress` injection at `on_init` time.
+2. `JudgeClient` wraps a `HostEgressClient` for
+   `https://api.openai.com/v1/chat/completions`. One method:
+   `async def judge(message_text: str, chunks: list[str]) ->
+   tuple[Verdict, str]` where `Verdict` is
+   `"in_scope" | "out_of_scope"` and the string is a
+   one-sentence reason. Top-K (default 3) chunks accompany the
+   prompt (top-K is an env var read at CP5, not at CP4).
+3. **Q4 — pin the Stage-2 prompt template** as a frozen
+   module-top string in `judge.py`. The prompt asks
+   `gpt-4o-mini` for a strict JSON shape
+   `{"verdict": "...", "reason": "..."}`; parser tolerates
+   leading whitespace + trailing newlines; falls back to a
+   degraded `("out_of_scope", "parse_error: ...")` verdict on
+   malformed JSON so a flaky upstream cannot crash the
+   `on_persisted` path. Future tweaks become diff-visible.
+4. Unit tests stub `HostEgressClient.fetch` so no network
+   traffic. Pin: prompt-shape sentinels (system + user role
+   text), JSON happy-path parse, malformed-JSON fallback.
 
-Output type: `list[ChunkRecord]` where
-`ChunkRecord = (chunk_index, content, embedding)`. CP6's CLI
-calls the chunker and hands the result to
-`storage.insert_chunks(...)` once that lands at CP5.
+Output of CP4 is two reusable clients + their tests; CP5 then
+wires them into `pipeline.py` + `storage.py` + `plugin.py` and
+ships the end-to-end DB-fixture integration test.
 
-Add `packages/llm_tracker_plugin_scope_guard/tests/` and a
-matching entry in the root `pyproject.toml`'s
-`[tool.pytest.ini_options].testpaths` at the same time as the
-first chunker test.
-
-Remaining CP4 through CP8 work board (concise; full board in
+Remaining CP5 through CP8 work board (concise; full board in
 the impl worklog):
 
-- **CP4** — `embeddings.py` + `judge.py` via `HostEgressClient`;
-  pin Q4 judge prompt as a frozen module-top string.
 - **CP5** — `pipeline.py` + `storage.py` + `plugin.py`;
   DB-fixture integration test with a fake OpenAI client.
 - **CP6** — `tools/process_scope_document.py` CLI (`.txt` + `.md`,

@@ -6,8 +6,8 @@
 
 ---
 
-**Last updated**: 2026-05-18 (Claude Code; **scope_guard CP4 of 8 done — commit `80ca424` (scope-guard: embeddings + judge clients) + this docs-finalize commit.** `embeddings.py` implements ADR-0030 §D3: `EmbeddingClient` wraps the SDK's `EgressClient` Protocol (host-injected per ADR-0015), posts to `https://api.openai.com/v1/embeddings` with `text-embedding-3-small`, returns the 1536-dim vector, raises `EmbeddingError` on non-2xx / malformed payload / dim mismatch, propagates `EgressDenied`. `judge.py` implements ADR-0030 §D4 + pins **§Q4** as a module-top frozen `_SYSTEM_PROMPT` (+ `_USER_PROMPT_TEMPLATE`): instructs `gpt-4o-mini` to emit strict JSON `{"verdict": "in_scope" | "out_of_scope", "reason": "..."}`, reinforced by `response_format = {"type": "json_object"}` + `temperature = 0.0` on the wire. Observe-only fallback on 2xx + malformed body → `("in_scope", "stage2_malformed_response")` (ADR-0030 §D1 — never crash `on_persisted`); non-2xx raises `JudgeError`. 18 new unit tests (7 embeddings + 11 judge) stub `EgressClient.fetch` offline; the Q4 freeze test asserts six sentinel substrings so prompt edits are diff-visible. Verified: ruff clean, 40/40 scope_guard tests pass in 0.26s, full suite 186 passed + 18 skipped (no regression). ADR-0030 open questions now down to one: Q2 (ANN index) stays MVP-deferred. **Next is CP5 — `pipeline.py` + `storage.py` + `plugin.py` wired end-to-end + DB-fixture integration test.** CP3 closed earlier same session by commit `44cd664` (scope-guard: chunker + Q1 params); CP2 by `2fe84e6` (package skeleton); CP1 by `2511c3a` (migration 0010) + `b6cdf5f` (docs).)
-**Updated by**: Claude Code (scope_guard implementation; CP4 of 8)
+**Last updated**: 2026-05-18 (Claude Code; **scope_guard CP5 of 8 done — commit `f0042f6` (scope-guard: pipeline + storage + plugin wired) + this docs-finalize commit.** `pipeline.py` ships the pure two-stage routing function `evaluate(message_text, *, embed, judge, max_cosine_lookup, thresholds)` over a `Thresholds(threshold=0.6, band=0.1, judge_top_k=3)` knob set and a `ScopeEvaluation(stage, flagged, max_similarity, matched_chunk_id, stage2_verdict, stage2_reason)` return shape — empty corpus returns `None`; high/low similarity exits at Stage 1 without a judge call; in-band routes to Stage 2 and the judge verdict literal becomes `stage2_in` / `stage2_out`. `storage.py` ships `select_top_chunks_by_cosine(session_factory, ...)` (sets `app.org_id`, runs the ADR-0030 §D7 `ORDER BY embedding <=> CAST(:vec AS vector)` query, returns `ChunkCandidate(id, content, similarity)` rows) and `insert_alert(session_factory, ...)` (`ULID().to_uuid()` primary key, RLS-off `scope_alerts` table). pgvector is bound via the `[v1,v2,...]::vector` text-literal codec — no `pgvector.sqlalchemy` adapter required. `plugin.py` ships the full `ScopeGuard(BasePlugin)` — `on_init` builds the OpenAI clients + `AsyncEngine` from env (fail-closed warnings on missing `OPENAI_API_KEY` / `egress` / `LLMTRACK_DATABASE_URL`); `on_persisted` builds the §D6 message text via `_build_message_text(request_json, window)` (first-turn `<system-reminder>` block captured once, user-initiated text from each non-tool-result turn, assistant + top-level `system` excluded, most recent `window` turns), runs the pipeline, writes the alert row. OpenAI / EgressDenied failures degrade silently. Constructor injection (`session_factory`, `embed_client`, `judge_client`, `thresholds`, `window`) is the test path. 26 new tests (8 pipeline routing + 13 plugin §D6 extraction + disabled-path + 5 DB-fixture integration covering stage1_in / stage1_out / stage2 / per-org RLS isolation / no-corpus); scope_guard suite 40 → 66; full project suite 230 passed under the `pgvector/pgvector:pg15` DB fixture (was 186 without DB). Verified: ruff clean, 66/66 scope_guard tests pass in 5.81s. **Next is CP6 — `tools/process_scope_document.py` operator CLI for scope-document registration (`.txt` + `.md` only, idempotent delete-then-insert per ADR-0030 §D5).** CP4 closed earlier same session by commit `80ca424`; CP3 by `44cd664`; CP2 by `2fe84e6`; CP1 by `2511c3a` (migration 0010) + `b6cdf5f` (docs).)
+**Updated by**: Claude Code (scope_guard implementation; CP5 of 8)
 
 ## Current phase
 
@@ -29,20 +29,31 @@
     smoke: 503 propagates to Anthropic SDK → 10 retries with
     backoff → user-facing failure, no Anthropic bypass.
 - **Active task**: **scope_guard implementation against
-  ADR-0030 (Accepted 2026-05-18). CP1 + CP2 + CP3 + CP4 of 8
-  done.** Migration `0010_scope_guard_tables` (commit `2511c3a`)
-  lands the three tables + RLS + GRANTs per ADR §D8; package
-  skeleton `packages/llm_tracker_plugin_scope_guard/` (commit
-  `2fe84e6`) lands the manifest + 6 module stubs per ADR §D9 +
-  new `pgvector` dep with transitive `numpy`; `chunker.py`
-  (commit `44cd664`) lands the full ADR §D5 pipeline + 22 unit
-  tests + Q1 parameters pinned; `embeddings.py` + `judge.py`
-  (commit `80ca424`) land the OpenAI clients over
-  `EgressClient`, pin **§Q4** as a module-top frozen prompt
-  template, and add 18 offline unit tests (`EgressClient.fetch`
-  stubbed). **Next is CP5 — `pipeline.py` + `storage.py` +
-  `plugin.py` wired end-to-end + DB-fixture integration test.**
-  Per-CP work board lives in
+  ADR-0030 (Accepted 2026-05-18). CP1 + CP2 + CP3 + CP4 + CP5
+  of 8 done.** Migration `0010_scope_guard_tables` (commit
+  `2511c3a`) lands the three tables + RLS + GRANTs per ADR §D8;
+  package skeleton `packages/llm_tracker_plugin_scope_guard/`
+  (commit `2fe84e6`) lands the manifest + 6 module stubs per
+  ADR §D9 + new `pgvector` dep with transitive `numpy`;
+  `chunker.py` (commit `44cd664`) lands the full ADR §D5
+  pipeline + 22 unit tests + Q1 parameters pinned;
+  `embeddings.py` + `judge.py` (commit `80ca424`) land the
+  OpenAI clients over `EgressClient`, pin **§Q4** as a
+  module-top frozen prompt template, and add 18 offline unit
+  tests (`EgressClient.fetch` stubbed); `pipeline.py` +
+  `storage.py` + `plugin.py` (commit `f0042f6`) wire the
+  two-stage routing + pgvector max-cosine lookup + scope_alerts
+  insert + the `on_persisted` §D6 message-extraction +
+  fail-closed `on_init` wiring (`OPENAI_API_KEY` /
+  `LLMTRACK_DATABASE_URL` / `egress`) with 26 new tests
+  including a 5-case DB-fixture integration test (stage1_in,
+  stage1_out, stage2, per-org RLS isolation, no-corpus). Full
+  suite 230 passed under the `pgvector/pgvector:pg15` DB
+  fixture (was 186 in CP4 without DB). **Next is CP6 —
+  `tools/process_scope_document.py` operator CLI for
+  scope-document registration (`.txt` + `.md` only,
+  idempotent delete-then-insert per ADR-0030 §D5).** Per-CP
+  work board lives in
   `docs/worklog/2026-05-18-scope-guard-impl.md` §"Checkpoint
   plan"; CP8 still pins one of the remaining ADR open
   questions at that checkpoint.
@@ -73,21 +84,28 @@
 
 `docs/worklog/2026-05-18-scope-guard-impl.md` — scope_guard
 implementation against ADR-0030 (Accepted). CP1 + CP2 + CP3 +
-CP4 of 8 done: migration `0010_scope_guard_tables` (commit
-`2511c3a`), package skeleton + manifest (commit `2fe84e6`),
-the full ADR §D5 chunker (commit `44cd664`) with Q1 pinned to
-`window=3, drop=0.15`, and the OpenAI clients (commit
-`80ca424`) — `EmbeddingClient` over `EgressClient` for
-`text-embedding-3-small` (1536-dim, fail-on-mismatch) +
-`JudgeClient` for `gpt-4o-mini` with **ADR-0030 §Q4 pinned**
-as a module-top frozen prompt template, `response_format`
-`json_object`, `temperature=0.0`, observe-only fallback on
-malformed body. 40 scope_guard tests (22 chunker + 7
-embeddings + 11 judge); full suite 186 passed + 18 skipped
-without regression. CP5 (`pipeline.py` + `storage.py` +
-`plugin.py` wired end-to-end + DB-fixture integration test)
-is next; CP8 pins the remaining retention-job question at
-that checkpoint.
+CP4 + CP5 of 8 done: migration `0010_scope_guard_tables`
+(commit `2511c3a`), package skeleton + manifest (commit
+`2fe84e6`), the full ADR §D5 chunker (commit `44cd664`) with
+Q1 pinned to `window=3, drop=0.15`, the OpenAI clients
+(commit `80ca424`) with **ADR-0030 §Q4 pinned** as a
+module-top frozen prompt template, and the
+pipeline + storage + plugin wiring (commit `f0042f6`) —
+`pipeline.evaluate(...)` pure two-stage routing,
+`storage.select_top_chunks_by_cosine(...)` +
+`storage.insert_alert(...)` over pgvector text literals +
+the RLS-off `scope_alerts` table, `plugin.ScopeGuard.on_init`
+fail-closed wiring + `on_persisted` §D6 message-extraction
+(first-turn `<system-reminder>` block once, user-initiated
+text from each non-tool-result turn, assistant + top-level
+`system` excluded, most recent `window` turns,
+`\n\n`-joined). 66 scope_guard tests (22 chunker + 7
+embeddings + 11 judge + 8 pipeline + 13 plugin + 5 DB-fixture
+integration); full suite 230 passed under the
+`pgvector/pgvector:pg15` DB fixture without regression. CP6
+(`tools/process_scope_document.py` operator CLI) is next;
+CP8 pins the remaining retention-job question at that
+checkpoint.
 
 Prior worklog (same day, earlier session):
 `docs/worklog/2026-05-18-adr-0030-scope-guard.md` — ADR-0030
@@ -134,19 +152,153 @@ CP14 proper).
 ## Recent commits
 
 ```
-<finalize>   docs: STATUS + worklog — scope_guard CP3
+<finalize>   docs: STATUS + worklog — scope_guard CP5
+f0042f6   scope-guard: pipeline + storage + plugin wired (ADR-0030 §D1-§D8)
+c7ec9bd   docs: STATUS + worklog — scope_guard CP4
+80ca424   scope-guard: embeddings + judge clients (ADR-0030 §D3/§D4)
+6840281   docs: STATUS + worklog — scope_guard CP3
 44cd664   scope-guard: chunker + Q1 params (ADR-0030 §D5)
-0fcb2c4   docs: STATUS + worklog — scope_guard CP2
-2fe84e6   scope-guard: package skeleton + manifest (ADR-0030 §D9)
-b6cdf5f   docs: STATUS + worklog + ADR-0030 Accepted — scope_guard CP1
-2511c3a   server: migration 0010 scope_guard tables (ADR-0030 §D8)
 ```
 
 ## Where we paused
 
-**scope_guard implementation CP1 + CP2 + CP3 of 8 done
-(2026-05-18, commits `2511c3a` + `b6cdf5f` + `2fe84e6` +
-`0fcb2c4` + `44cd664` + docs-finalize).**
+**scope_guard implementation CP1 + CP2 + CP3 + CP4 + CP5 of 8
+done (2026-05-18, commits `2511c3a` + `b6cdf5f` + `2fe84e6` +
+`0fcb2c4` + `44cd664` + `6840281` + `80ca424` + `c7ec9bd` +
+`f0042f6` + docs-finalize).**
+
+CP5 wires the three implementation modules end-to-end:
+`pipeline.py` (pure two-stage routing), `storage.py` (pgvector
+lookup + alert insert), and `plugin.py` (lifecycle + §D6 message
+extraction). The `on_persisted` path now reads a real
+`HookContext`, builds the user-initiated message string per
+ADR-0030 §D6, runs `pipeline.evaluate(...)` against the org's
+`scope_chunks`, and writes one row to `scope_alerts` — observe
+only, no `Block` return.
+
+`pipeline.evaluate(message_text, *, embed, judge,
+max_cosine_lookup, thresholds)` is the pure entry point:
+embeds the message, runs the cosine lookup, applies
+`Thresholds(threshold=0.6, band=0.1, judge_top_k=3)` to route
+to `stage1_in` / `stage1_out` (no judge call) or to the judge
+for `stage2_in` / `stage2_out`. Empty corpus → `None` (the
+plugin treats that as "no alert" per ADR-0030 §D9). The
+`ScopeEvaluation` dataclass maps 1 : 1 to a `scope_alerts` row
+minus the plugin-stamped id / exchange_id / org_id /
+created_at.
+
+`storage.select_top_chunks_by_cosine(session_factory, *,
+org_id, vector, k)` issues `SELECT set_config('app.org_id',
+:v, true)` on the session then runs the ADR-0030 §D7 query
+(`ORDER BY embedding <=> CAST(:vec AS vector) ASC LIMIT :k`,
+similarity reported as `1 - distance`). pgvector is bound via
+a text-literal codec (`[v1,v2,...]::vector`) — no
+`pgvector.sqlalchemy` adapter required at the engine layer.
+`storage.insert_alert(session_factory, ...)` writes one row
+with `id = ULID().to_uuid()` for time-ordered keys. The
+`SessionFactory` Protocol is what both `async_sessionmaker`
+and the conftest role-wrapper expose — production wiring and
+the test fixture drop in without translation.
+
+`plugin.ScopeGuard.on_init` reads `OPENAI_API_KEY`,
+`LLMTRACK_DATABASE_URL`, and the four
+`LLMTRACK_PLUGIN_SCOPE_GUARD_*` knobs. Missing key /
+`self.egress` / DB URL → `structlog.warning("scope_guard.disabled",
+...)` and the plugin no-ops on subsequent `on_persisted`
+calls. Constructor injection (`session_factory`,
+`embed_client`, `judge_client`, `thresholds`, `window`) is
+the test path — anything not pre-injected is filled from env
+by `on_init`. The module-level `_build_message_text(request_json,
+window)` runs §D6 verbatim: first user turn's
+`<system-reminder>` / `<system>` blocks captured once,
+user-initiated text from each user turn whose blocks aren't
+all `tool_result`, assistant text + top-level `system` field
+excluded, most recent `window` turns retained, joined with
+`\n\n`. OpenAI failures (`EmbeddingError` / `JudgeError` /
+`EgressDenied`) degrade to "no alert this exchange" rather
+than crash the host.
+
+Test coverage adds 26 tests: 8 in
+`tests/test_pipeline.py` (stage routing edges + `judge_top_k`
+plumbing); 13 in `tests/test_plugin.py` (§D6 extraction —
+including the "first-turn system-reminder survives outside
+the window" and "tool_result-only turn skipped" cases —
+plus three disabled-path tests); 5 in
+`tests/test_integration.py` (DB-fixture-gated end-to-end:
+stage1_in 1.0-similarity, stage1_out orthogonal-vector,
+stage2 ambiguous-band judge call + verdict persistence,
+per-org RLS isolation with identical embeddings in two
+orgs, empty-corpus no-op). The conftest at
+`packages/llm_tracker_plugin_scope_guard/tests/conftest.py`
+is a copy-adapted version of the server's session_factory
+fixture pointed at the workspace's
+`packages/llm_tracker_server` for the alembic subprocess —
+same role-wrap pattern so docker-default superuser doesn't
+bypass RLS.
+
+Verified end to end:
+
+```
+$ .venv/bin/python3.12 -m ruff check packages/llm_tracker_plugin_scope_guard/
+All checks passed!
+$ .venv/bin/python3.12 -m ruff format --check packages/llm_tracker_plugin_scope_guard/
+14 files already formatted
+$ LLMTRACK_TEST_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker_test \
+    .venv/bin/python3.12 -m pytest packages/llm_tracker_plugin_scope_guard/tests -q
+66 passed in 5.81s
+$ LLMTRACK_TEST_DATABASE_URL=... .venv/bin/python3.12 -m pytest -q
+230 passed in 31.53s
+```
+
+The 230 figure is +44 over CP4's 186 — 26 new scope_guard
+tests plus the 18 DB-fixture-gated server tests that the
+test DB unblocks (no behaviour change there, only the gate
+that flips). Scope_guard alone goes 40 → 66 tests.
+
+Implementation notes picked up at CP5 (recorded so
+CP6 / CP7 / CP8 don't re-derive):
+
+- **`HookContext` ceiling in tests.** Constructing a
+  `HookContext` with `mode="R"` defaults to
+  `user_opted_in=False`, which makes `request_text()` return
+  `None` (effective ceiling drops below L2). The integration
+  test ctx helper passes `user_opted_in=True`; the
+  analytics_sink test pattern was the precedent. In
+  production the host pins `_ceiling=L3` from the manifest's
+  `min_content_level="L3"`, so this only bites tests that
+  build their own ctx.
+- **Pgvector text-literal codec.** Storage renders vectors
+  as `[v1,v2,...]` and binds via `CAST(:vec AS vector)` so
+  neither `pgvector.asyncpg` nor `pgvector.sqlalchemy` needs
+  to register a codec at engine-creation time. The SELECT
+  only returns floats (`1 - distance`), never the raw vector
+  — no codec needed on reads either.
+- **`session_factory` vs `engine` injection.** Storage
+  helpers take a `SessionFactory` Protocol (zero-arg
+  callable returning an async ctx-manager yielding
+  `AsyncSession`) instead of an `AsyncEngine`. That shape
+  is what both `async_sessionmaker(engine)` and the conftest
+  fixture's role-wrapper expose — the production wiring and
+  the test wiring drop in without a translation layer at the
+  storage boundary.
+- **Stage1_in writes a row (not "no alert").** ADR-0030
+  §D2's parenthetical "(no alert)" reads ambiguously against
+  §D8's "one row per `on_persisted` evaluation" docstring +
+  the partial index `WHERE flagged`. We picked "always write
+  a row, `flagged` is True iff terminal verdict is
+  `out_of_scope`" so the operator gets the full similarity
+  distribution for threshold tuning (the research-phase
+  priority §D1 names) and the partial index does its actual
+  job of separating cold rows from hot. Implementation-tier
+  decision; ADR not changed.
+- **IEEE-754 boundary fragility.** Default `threshold=0.6,
+  band=0.1` gives a lower bound of `0.5499999999999999` in
+  IEEE-754, so a similarity of exactly `0.55` lands inside
+  the band. The boundary test uses `threshold=0.5, band=0.2`
+  (lower=0.4, upper=0.6 — both exact) to pin the `>=` /
+  `<=` inequality direction unambiguously.
+
+CP1–CP4 recaps preserved below for cold-start sessions:
 
 CP3 ships the chunker that registration-time CLI (CP6) calls
 on each scope document. The implementation lives at

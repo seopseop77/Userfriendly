@@ -72,7 +72,7 @@ ships migration 0010 bumps STATUS.md §"Local dev loop revival" to
 | **CP2** | `packages/llm_tracker_plugin_scope_guard/` skeleton + manifest + workspace registration | **done** (commit `2fe84e6` + docs finalize) |
 | **CP3** | `chunker.py` + unit tests; resolve Q1 | **done** (commit `44cd664` + docs finalize) |
 | **CP4** | `embeddings.py` + `judge.py` via `HostEgressClient`; pin Q4 prompt | **done** (commit `80ca424` + this docs finalize) |
-| CP5 | `pipeline.py` + `storage.py` + `plugin.py`; DB-fixture integration test | queued |
+| **CP5** | `pipeline.py` + `storage.py` + `plugin.py`; DB-fixture integration test | **done** (commit `f0042f6` + this docs finalize) |
 | CP6 | `tools/process_scope_document.py` CLI (.txt + .md, idempotent) | queued |
 | CP7 | `.env.example` + `docs/deploy.md` §"Data collection & privacy" + `docs/plugins.md` §11 | queued |
 | CP8 | `0011_scope_alerts_retention` migration (Q3 default: new migration, not amend 0009) | queued |
@@ -253,6 +253,165 @@ refresh (CLAUDE.md §5.3).
     not OpenAI-shaped — log a degraded alert, don't raise).
   - Non-2xx → `JudgeError`.
   - `EgressDenied` propagation.
+
+### CP5 — pipeline.py + storage.py + plugin.py wired end-to-end (done; commit `f0042f6` + this docs finalize)
+
+- Replaced
+  `packages/llm_tracker_plugin_scope_guard/src/llm_tracker_plugin_scope_guard/pipeline.py`
+  with the pure two-stage routing function
+  `evaluate(message_text, *, embed, judge, max_cosine_lookup, thresholds)`.
+  Module exports `Thresholds(threshold=0.6, band=0.1, judge_top_k=3)`,
+  `ChunkCandidate(id, content, similarity)`, and
+  `ScopeEvaluation(stage, flagged, max_similarity, matched_chunk_id,
+  stage2_verdict, stage2_reason)`. Stage routing per ADR-0030 §D2:
+  `>= threshold + band/2` → `stage1_in` / `flagged=False`;
+  `<= threshold - band/2` → `stage1_out` / `flagged=True`; in-band
+  → judge call → `stage2_in` / `stage2_out` mirroring the verdict
+  literal. Empty candidate list → `None` (caller treats as "no
+  corpus, no alert" per ADR-0030 §D9).
+- Replaced
+  `packages/llm_tracker_plugin_scope_guard/src/llm_tracker_plugin_scope_guard/storage.py`
+  with the pgvector read + insert helpers:
+  - `select_top_chunks_by_cosine(session_factory, *, org_id, vector, k)`
+    issues `SELECT set_config('app.org_id', :v, true)` on the same
+    session then runs the ADR-0030 §D7 query
+    (`ORDER BY embedding <=> CAST(:vec AS vector) ASC LIMIT :k`,
+    similarity reported as `1 - distance`). Filters explicitly by
+    `org_id = :org_id` so the WHERE clause is correct even when the
+    session bypasses RLS (e.g. a local superuser DB).
+  - `insert_alert(session_factory, *, exchange_id, org_id, stage, ...)`
+    INSERTs one `scope_alerts` row with `id = ULID().to_uuid()` for
+    time-ordered primary keys. Calls `session.commit()` because the
+    RLS-off table is fine to write under any role.
+  - `_vector_literal(vec)` renders the pgvector text literal
+    (`[v1,v2,...]`) with `.18g` formatting for lossless float
+    round-trip. `SessionFactory` is the `Protocol` that both the
+    plain `async_sessionmaker` and the conftest role-wrapped factory
+    satisfy — same call signature, same yield type.
+- Replaced
+  `packages/llm_tracker_plugin_scope_guard/src/llm_tracker_plugin_scope_guard/plugin.py`
+  with the full `ScopeGuard(BasePlugin)` wiring:
+  - Constructor accepts `session_factory`, `embed_client`,
+    `judge_client`, `thresholds`, `window` — any non-`None` value
+    pre-seeds the field; `on_init` fills in remaining `None` fields
+    from env (`OPENAI_API_KEY`, `LLMTRACK_DATABASE_URL`, the four
+    `LLMTRACK_PLUGIN_SCOPE_GUARD_*` knobs). Tests pre-inject
+    everything; production wires through `on_init`.
+  - `on_init` fail-closed posture per ADR-0030 §D9 — missing API
+    key, missing `self.egress`, or missing `LLMTRACK_DATABASE_URL`
+    → `structlog.warning("scope_guard.disabled", ...)` + the plugin
+    no-ops on subsequent `on_persisted` calls. ADR-0030 §D1 is
+    observe-only so "do nothing" is the right degraded state.
+  - `on_persisted` builds the message text per ADR-0030 §D6 via the
+    module-level `_build_message_text(request_json, window)` helper
+    (first-turn `<system-reminder>` / `<system>` block captured
+    once; user-initiated text from every user turn whose blocks are
+    not entirely `tool_result`; assistant text + top-level `system`
+    field excluded; most recent `window` user turns retained,
+    joined with `\n\n`). Then calls `pipeline.evaluate(...)` and on
+    a non-`None` result calls `storage.insert_alert(...)`. OpenAI
+    failures (`EmbeddingError` / `JudgeError` / `EgressDenied`)
+    degrade to "no alert this exchange" — never re-raise.
+  - `on_shutdown` disposes the engine iff `on_init` constructed it
+    (matches `analytics_sink`'s `_engine_owned` flag).
+- Added 26 new tests across three files:
+  - `tests/test_pipeline.py` (8 tests) — pure-function routing:
+    empty corpus → `None`; high similarity → `stage1_in` and judge
+    not called; low similarity → `stage1_out` and judge not called;
+    clean-threshold boundary check (`0.5 / 0.2` pair so IEEE-754
+    edge math is unambiguous); ambiguous → `stage2_in` and
+    `stage2_out`; `judge_top_k` plumbed through to the lookup
+    callable.
+  - `tests/test_plugin.py` (13 tests) — §D6 extraction + disabled
+    paths: single-turn extraction; assistant text excluded; first-turn
+    `<system-reminder>` captured (and only once); `<system>` tag
+    variant; `tool_result`-only turn skipped; top-level `system` field
+    excluded; window truncation (`window=2` retains the last two
+    user turns); first-turn `<system-reminder>` survives even when
+    the first turn falls outside the window; no-user-text → `None`;
+    malformed JSON → `None`; missing `messages` key → `None`. Plus
+    three disabled-path tests: no `OPENAI_API_KEY` → `_ready()=False`
+    and `on_persisted` no-ops; missing `egress` → disabled; missing
+    `LLMTRACK_DATABASE_URL` → disabled.
+  - `tests/test_integration.py` (5 tests, DB-fixture-gated) — full
+    `on_persisted` against pgvector: high similarity (1.0) →
+    `stage1_in` row with correct `matched_chunk_id`; low similarity
+    (0.0 — orthogonal unit vectors) → `stage1_out`; ambiguous (0.6
+    similarity via a `[0.6, 0.8, 0, ...]` two-axis vector) → judge
+    called with the top-K chunk content and verdict + reason
+    persisted; RLS isolation — two orgs seed identical chunks at
+    the same embedding, org A's evaluation matches org A's chunk
+    and org B's matches org B's; org with zero chunks → no alert
+    row written.
+- Added `packages/llm_tracker_plugin_scope_guard/tests/conftest.py`
+  — a copy-adapted version of the server's session_factory fixture
+  with `SERVER_ROOT` pointed at the workspace's
+  `packages/llm_tracker_server` so the alembic subprocess runs in
+  the right cwd. Identical role-wrap pattern
+  (`SET LOCAL ROLE llm_tracker_app`) so docker-default superuser
+  doesn't bypass RLS in the local test loop.
+
+Verified end to end:
+
+```
+$ .venv/bin/python3.12 -m ruff check packages/llm_tracker_plugin_scope_guard/
+All checks passed!
+$ .venv/bin/python3.12 -m ruff format --check packages/llm_tracker_plugin_scope_guard/
+14 files already formatted
+$ LLMTRACK_TEST_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker_test \
+    .venv/bin/python3.12 -m pytest packages/llm_tracker_plugin_scope_guard/tests -q
+66 passed in 5.81s
+$ LLMTRACK_TEST_DATABASE_URL=... .venv/bin/python3.12 -m pytest -q
+230 passed in 31.53s
+```
+
+The 230 figure is +44 over CP4's 186 — 26 new scope_guard tests plus
+the 18 DB-fixture-gated server tests that the test DB unblocks (no
+behaviour change there, only the gate). Scope_guard alone goes
+40 → 66 tests.
+
+Implementation notes worth carrying forward (so CP6 / CP7 / CP8
+don't re-derive):
+
+- **`HookContext` ceiling in tests.** Constructing a `HookContext`
+  with `mode="R"` defaults to `user_opted_in=False`, which makes
+  `request_text()` return `None` (effective ceiling drops below
+  L2). The integration test ctx helper passes
+  `user_opted_in=True`; the analytics_sink test pattern was the
+  precedent. In production the host pins `_ceiling=L3` from the
+  manifest's `min_content_level="L3"`, so this only bites tests
+  that build their own ctx.
+- **Pgvector text-literal codec.** Storage renders vectors as
+  `[v1,v2,...]` and binds via `CAST(:vec AS vector)` so neither
+  `pgvector.asyncpg` nor `pgvector.sqlalchemy` needs to register a
+  codec at engine-creation time. The SELECT only returns floats
+  (`1 - distance`), never the raw vector — no codec needed on
+  reads either.
+- **`session_factory` vs `engine` injection.** Storage helpers
+  take a `SessionFactory` Protocol (zero-arg callable returning an
+  async ctx-manager yielding `AsyncSession`) instead of an
+  `AsyncEngine`. That shape is what both
+  `async_sessionmaker(engine)` and the conftest fixture's
+  role-wrapper expose — the production wiring and the test
+  wiring drop in without a translation layer at the storage
+  boundary.
+- **Boundary tests use a binary-clean threshold pair.** The
+  default `threshold=0.6, band=0.1` gives a lower bound of
+  `0.5499999999999999` in IEEE-754, so a similarity of exactly
+  `0.55` lands inside the band. The boundary test uses
+  `threshold=0.5, band=0.2` (lower=0.4, upper=0.6 — both exact)
+  to pin the `>=` / `<=` inequality direction unambiguously. The
+  high-similarity / low-similarity tests use clean margins so
+  they don't depend on the boundary edge at all.
+- **Stage1_in writes a row (not "no alert").** ADR-0030 §D2's
+  parenthetical "(no alert)" reads ambiguously against §D8's
+  "one row per `on_persisted` evaluation" docstring + the
+  partial index `WHERE flagged`. We picked "always write a row,
+  `flagged` is True iff terminal verdict is `out_of_scope`" so
+  the operator gets the full similarity distribution for
+  threshold tuning (the research-phase priority §D1 names) and
+  the partial index does its actual job of separating cold rows
+  from hot. Implementation-tier decision; ADR not changed.
 
 ## Decisions
 
@@ -546,21 +705,24 @@ Found and fixed during CP4:
 
 ## What's left / known limits
 
-- CP5–CP8 not started. CP5 is the next active step.
+- CP6–CP8 not started. CP6 is the next active step.
 - ADR-0030's open questions reduce to one: Q1 **resolved at
   CP3**, Q4 **resolved at CP4**, Q3 resolved at CP1 time (new
   0011 migration over amending 0009). Q2 stays MVP-deferred
   (linear scan acceptable until any org's chunk count
   approaches ~10k).
-- Test baseline after CP4: **186 passed, 18 skipped** without
-  the DB fixture (the 18 skipped are DB-gated server tests
-  unchanged from CP1–CP3). CP5 + CP6 add the larger DB-fixture
-  integration tests against `pgvector/pgvector:pg15`.
-- Neither client makes a real OpenAI call yet — both unit-test
-  stubs feed the `EgressClient.fetch` Protocol. The first live
-  call lands at CP5 once `plugin.py` reads `OPENAI_API_KEY` at
-  `on_init` and constructs the real clients. No `.env.example`
-  entry yet — that lands at CP7.
+- Test baseline after CP5: **230 passed** with the DB fixture
+  (186 was CP4's no-DB baseline; CP5's 26 new scope_guard tests
+  plus the 18 DB-gated server tests the test DB unblocks bring
+  the total to 230). Scope_guard alone goes 40 → 66 tests.
+  Without the DB fixture the scope_guard suite is 61 passed,
+  5 skipped (the integration tests).
+- No real OpenAI call has fired yet — `plugin.on_init` builds
+  real `EmbeddingClient` / `JudgeClient` when env is set but
+  the integration test injects stubs to keep the DB fixture
+  off-network. The first live call needs CP7's `.env.example`
+  + deploy.md disclosure paragraph to land, then operator-side
+  smoke against a real key.
 - pgvector ANN index not present (ADR-0030 §Q2 defers it). When
   any org's `scope_chunks` count starts approaching ~10k,
   revisit and add an `HNSW` or `IVFFlat` index on `embedding`.
@@ -571,59 +733,55 @@ Found and fixed during CP4:
 - Sentence segmenter is MVP regex — abbreviations like "Mr." or
   decimal numbers like "3.14" can mis-split. Library swap to
   `blingfire` / `pysbd` queued under ADR-0030 §Deferred §6.
+- `tests/__init__.py` omitted in scope_guard's `tests/` (CP3
+  decision retained for CP5). The conftest at
+  `packages/llm_tracker_plugin_scope_guard/tests/conftest.py`
+  is a copy-adapted version of
+  `packages/llm_tracker_server/tests/conftest.py` — once a third
+  plugin needs the same DB fixture, hoist to a workspace-root
+  `tests/conftest.py` (queued as a §Suggestion-tier follow-up,
+  not blocking).
 
 ## Handoff
 
-CP1–CP4 closed by commits `2511c3a` + `b6cdf5f` + `2fe84e6` +
-`44cd664` + `80ca424` + this docs finalize. The active work
-board is the "Checkpoint plan" table above: CP1 + CP2 + CP3 +
-CP4 done, CP5–CP8 pending.
+CP1–CP5 closed by commits `2511c3a` + `b6cdf5f` + `2fe84e6` +
+`44cd664` + `80ca424` + `f0042f6` + this docs finalize. The
+active work board is the "Checkpoint plan" table above:
+CP1 + CP2 + CP3 + CP4 + CP5 done, CP6–CP8 pending.
 
-**Next active step — CP5: `pipeline.py` + `storage.py` +
-`plugin.py` wired end-to-end + DB-fixture integration test.**
-ADR-0030 §D1 + §D2 + §D6 + §D7 + §D8 spec:
+**Next active step — CP6: `tools/process_scope_document.py`
+CLI for operator-side scope-document registration.** ADR-0030
+§D5 + §D9:
 
-1. `plugin.py` — `on_init` reads `OPENAI_API_KEY` from env
-   (fail-closed: if absent, log `structlog.warning` and disable
-   the plugin for this process; ADR-0030 §D1 is observe-only so
-   "do nothing" is the right degraded state). Constructs the
-   real `EmbeddingClient` + `JudgeClient` from `self.egress` +
-   the API key, plus an `AsyncEngine` from
-   `LLMTRACK_DATABASE_URL` (analytics_sink pattern). `on_persisted`
-   builds the `HookContext`-derived message-input string per
-   ADR-0030 §D6, calls into `pipeline.evaluate(...)`, and
-   `storage.insert_alert(...)` writes the alert row.
-2. `pipeline.py` — pure-function `evaluate(message_text, *,
-   embed, judge, max_cosine_lookup, thresholds)` returns a
-   `ScopeEvaluation` (Stage-1 max-cosine + optional Stage-2
-   verdict). Thresholds default from env vars
-   (`LLMTRACK_PLUGIN_SCOPE_GUARD_STAGE1_LOW` /
-   `_STAGE1_HIGH`). Top-K (default 3) chunks accompany the
-   judge call per ADR §D2.
-3. `storage.py` — `select_top_chunks_by_cosine(org_id, vector,
-   k)` + `insert_alert(exchange_id, org_id, ...)`. Uses
-   `pgvector.sqlalchemy.Vector` for the `embedding` column.
-   `scope_alerts` writes follow the migration-0007 RLS-off
-   pattern (no `app.org_id` GUC needed; `org_id` is on the row).
-4. Integration test — DB fixture (`LLMTRACK_TEST_DATABASE_URL`)
-   against `pgvector/pgvector:pg15`; seed three
-   `scope_documents` + their `scope_chunks` for two orgs; assert
-   `on_persisted` writes the correct `scope_alerts` row and that
-   RLS isolates org-A's scope from org-B's lookup. Stub the
-   `EgressClient` for the OpenAI calls — no live network.
+1. CLI signature: `tools/process_scope_document.py <org_id> <file>`.
+   Reads the file, calls `chunker.chunk_document(text, embed)`
+   where `embed` is the real `EmbeddingClient.embed`, then
+   does an idempotent delete-then-insert against
+   `scope_documents` + `scope_chunks` for `(org_id, title)`
+   where `title` defaults to the filename stem.
+2. Supported formats per §D5: `.txt` + `.md` only. PDFs / DOCX
+   queued under §Deferred §3.
+3. Must `SET LOCAL app.org_id` on the writing session because
+   `scope_documents` + `scope_chunks` are RLS-on (migration 0010).
+4. Reads `OPENAI_API_KEY` + `LLMTRACK_DATABASE_URL` from env
+   identical to `plugin.on_init`. Refuses to run if either is
+   unset.
+5. Test surface — at least one DB-fixture integration test
+   exercising the idempotent re-registration path (run twice;
+   confirm chunk count matches the second run, not 2×).
 
-The CP5 commit lands the pipeline + storage + plugin wiring +
-the integration test. CP6 then ships the
-`tools/process_scope_document.py` CLI for operator-side document
-registration (.txt + .md, idempotent delete-then-insert per
-ADR-0030 §D5).
+The CP6 commit lands the CLI + integration test. CP7 then
+adds `.env.example` + `docs/deploy.md` §"Data collection &
+privacy" extension + `docs/plugins.md` §11 entry. CP8 ships
+migration `0011_scope_alerts_retention`.
 
 The Decisions section above carries every ADR-0030 open-question
-commitment + the implementation-tier choices (`tests/__init__.py`
-omission, whitespace tokenizer, re-embedding, observe-only
-fallback) so CP5 doesn't re-derive them. Read STATUS.md → this
-worklog → last 5 commits (`2511c3a` + `b6cdf5f` + `2fe84e6` +
-`44cd664` + `80ca424` + finalize).
+commitment + the implementation-tier choices (the
+`session_factory` Protocol, the pgvector text-literal codec,
+the always-write-a-row stage1_in interpretation, the
+`HookContext` ceiling quirk in tests) so CP6 doesn't re-derive
+them. Read STATUS.md → this worklog → last 5 commits (`2fe84e6` +
+`44cd664` + `80ca424` + `f0042f6` + finalize).
 
 ## Suggestions (untouched)
 

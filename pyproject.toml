@@ -22,4 +22,5 @@ testpaths = [
     "packages/llm_tracker_plugin_token_counter/tests",
     "packages/llm_tracker_plugin_keyword_block/tests",
     "packages/llm_tracker_plugin_analytics_sink/tests",
+    "packages/llm_tracker_plugin_scope_guard/tests",
 ]

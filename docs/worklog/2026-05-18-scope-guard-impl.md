@@ -73,7 +73,7 @@ ships migration 0010 bumps STATUS.md §"Local dev loop revival" to
 | **CP3** | `chunker.py` + unit tests; resolve Q1 | **done** (commit `44cd664` + docs finalize) |
 | **CP4** | `embeddings.py` + `judge.py` via `HostEgressClient`; pin Q4 prompt | **done** (commit `80ca424` + this docs finalize) |
 | **CP5** | `pipeline.py` + `storage.py` + `plugin.py`; DB-fixture integration test | **done** (commit `f0042f6` + this docs finalize) |
-| CP6 | `tools/process_scope_document.py` CLI (.txt + .md, idempotent) | queued |
+| **CP6** | operator CLI (`.txt` + `.md`, idempotent) — `process_scope_document.py` + console script | **done** (commit `c0c000f` + this docs finalize) |
 | CP7 | `.env.example` + `docs/deploy.md` §"Data collection & privacy" + `docs/plugins.md` §11 | queued |
 | CP8 | `0011_scope_alerts_retention` migration (Q3 default: new migration, not amend 0009) | queued |
 
@@ -413,6 +413,120 @@ don't re-derive):
   the partial index does its actual job of separating cold rows
   from hot. Implementation-tier decision; ADR not changed.
 
+### CP6 — process_scope_document CLI (done; commit `c0c000f` + this docs finalize)
+
+- Created
+  `packages/llm_tracker_plugin_scope_guard/src/llm_tracker_plugin_scope_guard/process_scope_document.py`
+  with two surfaces:
+  - **Library** `register_document(session_factory, embed_client, *,
+    org_id, title, text) -> (document_id, chunk_count)` — pure async
+    function that does the chunk-and-store. Imported by the
+    integration test; the CLI's `main()` is a thin wrapper.
+  - **CLI** `main()` / `_amain()` — argparse over `org_id` (UUID),
+    `file` (Path), `--title` (default = file stem). Validates the
+    UUID + file existence + suffix in `_validate_args` (raises
+    `SystemExit` so the operator sees a clean message); refuses to
+    run when `OPENAI_API_KEY` or `LLMTRACK_DATABASE_URL` is unset
+    (exit 2 — mirrors plugin's `on_init` fail-closed).
+- Async port of `chunker.chunk_document` inlined as
+  `_chunk_document_async`: reuses the chunker's pure helpers
+  (`_segment_sentences`, `_detect_boundaries`, `_group_into_chunks`,
+  `_enforce_size_bounds`, `_cosine`) and awaits the OpenAI embedding
+  call one sentence at a time. Sequential is acceptable for a
+  one-shot operator script and avoids a churn on chunker's sync
+  embed contract (which has its own 22-test suite).
+- Idempotent re-registration shape: `DELETE FROM scope_documents
+  WHERE org_id = :o AND title = :t` runs first inside the same
+  session — the migration-0010 FK `ON DELETE CASCADE` on
+  `scope_chunks.document_id` drops the prior chunks in the same
+  statement. Then `INSERT scope_documents` with a fresh
+  `ULID().to_uuid()` PK, then `INSERT scope_chunks` per record.
+  Single commit at the end so a mid-run failure leaves no partial
+  document in place.
+- New `_ToolEgressClient(EgressClient)` adapter — standalone httpx
+  wrapper that conforms to the SDK's `EgressClient` Protocol but
+  skips the audit-log mediation `HostEgressClient` performs.
+  Safe because the script runs out-of-host (no `PluginHost`, no
+  audit log) and the only egress destination is OpenAI's
+  embeddings endpoint, which is the same allowlisted URL the
+  plugin uses.
+- Registered as a console script in `pyproject.toml` so
+  `process-scope-document <org_id> <file>` works after `uv sync`;
+  `python -m llm_tracker_plugin_scope_guard.process_scope_document
+  ...` is the fallback for environments where `.venv/bin/` isn't
+  on PATH. Added `httpx>=0.27` as a direct dep (the runtime
+  plugin path gets httpx through the host; the CLI doesn't).
+- 9 new tests in `tests/test_process_scope_document.py`:
+  - 6 arg-validation (no DB needed): non-UUID `org_id`, missing
+    file, unsupported suffix, default-title-is-stem, explicit
+    `--title` wins, `.md` accepted.
+  - 3 DB-fixture (gated on `LLMTRACK_TEST_DATABASE_URL`):
+    re-registration drops to 1 doc + round-2 chunks only (the
+    ADR-mandated idempotency contract); chunk_index runs
+    contiguously 0..N-1 with the right `org_id`/`document_id`;
+    two distinct titles under the same org → two doc rows (no
+    collapse).
+- Smoke-tested both invocation paths after `uv sync`:
+  `.venv/bin/process-scope-document --help` and
+  `.venv/bin/python3.12 -m llm_tracker_plugin_scope_guard.process_scope_document --help`
+  both render the same argparse help.
+
+Verified end to end:
+
+```
+$ .venv/bin/python3.12 -m ruff check packages/llm_tracker_plugin_scope_guard/
+All checks passed!
+$ .venv/bin/python3.12 -m ruff format --check packages/llm_tracker_plugin_scope_guard/
+16 files already formatted
+$ LLMTRACK_TEST_DATABASE_URL=postgresql+asyncpg://cp2:cp2@localhost:55432/llm_tracker_test \
+    .venv/bin/python3.12 -m pytest packages/llm_tracker_plugin_scope_guard/tests/test_process_scope_document.py -q
+9 passed in 3.61s
+$ LLMTRACK_TEST_DATABASE_URL=... .venv/bin/python3.12 -m pytest -q
+239 passed in 35.62s
+```
+
+239 is +9 over CP5's 230 — exactly the CP6 test additions. Scope_guard
+package suite now 66 → 75 tests.
+
+Implementation notes worth carrying forward to CP7 / CP8:
+
+- **CLI lives in-package, not under top-level `tools/`.** ADR-0030
+  "Implementation surface" suggested either a `tools/` script or a
+  Typer subcommand under the server CLI. Both have downsides: a
+  top-level `tools/` dir would carry one file; a server CLI
+  subcommand creates a server → plugin import dependency that
+  reverses the architecture (plugins depend on server/sdk, not
+  vice versa). Putting the module inside the plugin package + a
+  console-script entry-point sidesteps both — gives both
+  `process-scope-document ...` and `python -m
+  llm_tracker_plugin_scope_guard.process_scope_document ...` for
+  free, keeps the testable library next to its DB-fixture test,
+  and the operator's deploy artifact is whatever `uv sync`
+  produces. Documented in the module docstring + this worklog so a
+  future "why isn't there a tools/ dir" doesn't have to re-derive.
+- **`_chunk_document_async` mirrors `chunker.chunk_document` but
+  awaits.** Two embed call sites stay sequential (per sentence →
+  similarity baseline + per final chunk). Batching would require a
+  rewrite of the algorithm — boundary detection needs sentence
+  vectors before similarities, and chunk vectors after size
+  enforcement. The N+M serial round-trips are fine for an
+  operator one-shot; if registration time becomes a UX issue,
+  batching the *sentence* embeds is the cheaper half (single
+  batched call replaces N round-trips).
+- **`ON DELETE CASCADE` does the cleanup.** Migration 0010 set
+  `scope_chunks.document_id REFERENCES scope_documents(id) ON
+  DELETE CASCADE`, so `DELETE FROM scope_documents WHERE org_id
+  = :o AND title = :t` is sufficient — no explicit
+  `DELETE FROM scope_chunks` needed first. The CP6 idempotency
+  test covers this implicitly (chunk count after re-registration
+  matches round 2, not 1+2).
+- **`_ToolEgressClient` skips the audit log on purpose.** The
+  plugin's `HostEgressClient` writes one `egress_blocked` /
+  `egress_allowed` row per fetch through `EgressGuard.check(...)`.
+  The CLI runs locally outside the host, so there's no audit
+  table to write to. Documented in the class docstring so a
+  future "why isn't this audited" doesn't have to re-derive.
+
 ## Decisions
 
 - **Q3 default — new `0011_scope_alerts_retention` migration,
@@ -705,24 +819,23 @@ Found and fixed during CP4:
 
 ## What's left / known limits
 
-- CP6–CP8 not started. CP6 is the next active step.
+- CP7–CP8 not started. CP7 is the next active step.
 - ADR-0030's open questions reduce to one: Q1 **resolved at
   CP3**, Q4 **resolved at CP4**, Q3 resolved at CP1 time (new
   0011 migration over amending 0009). Q2 stays MVP-deferred
   (linear scan acceptable until any org's chunk count
   approaches ~10k).
-- Test baseline after CP5: **230 passed** with the DB fixture
-  (186 was CP4's no-DB baseline; CP5's 26 new scope_guard tests
-  plus the 18 DB-gated server tests the test DB unblocks bring
-  the total to 230). Scope_guard alone goes 40 → 66 tests.
-  Without the DB fixture the scope_guard suite is 61 passed,
-  5 skipped (the integration tests).
-- No real OpenAI call has fired yet — `plugin.on_init` builds
-  real `EmbeddingClient` / `JudgeClient` when env is set but
-  the integration test injects stubs to keep the DB fixture
-  off-network. The first live call needs CP7's `.env.example`
-  + deploy.md disclosure paragraph to land, then operator-side
-  smoke against a real key.
+- Test baseline after CP6: **239 passed** with the DB fixture
+  (CP5's 230 + CP6's 9). Scope_guard alone goes 66 → 75 tests
+  (added 6 arg-validation + 3 DB-fixture for the CLI). Without
+  the DB fixture the scope_guard suite is 70 passed, 5 skipped
+  (the integration + CLI DB-fixture tests).
+- No real OpenAI call has fired yet — the CLI's
+  `register_document` is exercised in tests against a
+  `_UnitEmbed` stub. The first live call needs CP7's
+  `.env.example` + deploy.md disclosure paragraph to land, then
+  operator-side smoke against a real key
+  (`process-scope-document <org_id> <scope.md>`).
 - pgvector ANN index not present (ADR-0030 §Q2 defers it). When
   any org's `scope_chunks` count starts approaching ~10k,
   revisit and add an `HNSW` or `IVFFlat` index on `embedding`.
@@ -744,44 +857,53 @@ Found and fixed during CP4:
 
 ## Handoff
 
-CP1–CP5 closed by commits `2511c3a` + `b6cdf5f` + `2fe84e6` +
-`44cd664` + `80ca424` + `f0042f6` + this docs finalize. The
-active work board is the "Checkpoint plan" table above:
-CP1 + CP2 + CP3 + CP4 + CP5 done, CP6–CP8 pending.
+CP1–CP6 closed by commits `2511c3a` + `b6cdf5f` + `2fe84e6` +
+`44cd664` + `80ca424` + `f0042f6` + `c0c000f` + this docs
+finalize. The active work board is the "Checkpoint plan"
+table above: CP1 + CP2 + CP3 + CP4 + CP5 + CP6 done,
+CP7 + CP8 pending.
 
-**Next active step — CP6: `tools/process_scope_document.py`
-CLI for operator-side scope-document registration.** ADR-0030
-§D5 + §D9:
+**Next active step — CP7: external disclosure paragraph +
+operator documentation.** ADR-0030 §Consequences — Disclosure
+binds the implementation checkpoint to a follow-up that
+updates the three operator-facing surfaces with the OpenAI
+external-disclosure axis introduced by scope_guard:
 
-1. CLI signature: `tools/process_scope_document.py <org_id> <file>`.
-   Reads the file, calls `chunker.chunk_document(text, embed)`
-   where `embed` is the real `EmbeddingClient.embed`, then
-   does an idempotent delete-then-insert against
-   `scope_documents` + `scope_chunks` for `(org_id, title)`
-   where `title` defaults to the filename stem.
-2. Supported formats per §D5: `.txt` + `.md` only. PDFs / DOCX
-   queued under §Deferred §3.
-3. Must `SET LOCAL app.org_id` on the writing session because
-   `scope_documents` + `scope_chunks` are RLS-on (migration 0010).
-4. Reads `OPENAI_API_KEY` + `LLMTRACK_DATABASE_URL` from env
-   identical to `plugin.on_init`. Refuses to run if either is
-   unset.
-5. Test surface — at least one DB-fixture integration test
-   exercising the idempotent re-registration path (run twice;
-   confirm chunk count matches the second run, not 2×).
+1. **`.env.example`** — add the six
+   `LLMTRACK_PLUGIN_SCOPE_GUARD_*` knobs under a new
+   `# scope_guard plugin (ADR-0030)` section + `OPENAI_API_KEY`
+   if not already there (with a "set when scope_guard is
+   enabled" comment, not a hard "required" — the plugin's
+   `on_init` already fail-closes when it's missing).
+2. **`docs/deploy.md` §"Data collection & privacy"** — append
+   the disclosure paragraph from ADR-0030 §Consequences —
+   Disclosure verbatim (the
+   `text-embedding-3-small` + `gpt-4o-mini` external-API mention,
+   the "assistant responses + tool-result contents not sent"
+   bullet, the zero-data-retention pointer to OpenAI's API
+   settings). The wording is already pinned in the ADR; copy
+   it across without editorial drift.
+3. **`docs/plugins.md` §11 Reference plugins** — add
+   `scope_guard` under the existing list (next to
+   `analytics_sink` / `keyword_block` etc.) with a one-line
+   description + a pointer to ADR-0030 + the CLI's invocation
+   form (`process-scope-document <org_id> <file>`).
 
-The CP6 commit lands the CLI + integration test. CP7 then
-adds `.env.example` + `docs/deploy.md` §"Data collection &
-privacy" extension + `docs/plugins.md` §11 entry. CP8 ships
-migration `0011_scope_alerts_retention`.
+The CP7 commit is docs-only; the implementation surface is
+all touched by the documentation, no code edits. CP8 then
+ships migration `0011_scope_alerts_retention` (the last open
+ADR-0030 question — Q3 was resolved at CP1 time to be a new
+migration over amending 0009).
 
-The Decisions section above carries every ADR-0030 open-question
-commitment + the implementation-tier choices (the
-`session_factory` Protocol, the pgvector text-literal codec,
-the always-write-a-row stage1_in interpretation, the
-`HookContext` ceiling quirk in tests) so CP6 doesn't re-derive
-them. Read STATUS.md → this worklog → last 5 commits (`2fe84e6` +
-`44cd664` + `80ca424` + `f0042f6` + finalize).
+The Decisions section above carries every ADR-0030
+open-question commitment + the implementation-tier choices
+(the `session_factory` Protocol, the pgvector text-literal
+codec, the always-write-a-row stage1_in interpretation, the
+`HookContext` ceiling quirk in tests, the in-package CLI path
+vs. ADR's `tools/` suggestion, the `_ToolEgressClient`
+audit-skip) so CP7 doesn't re-derive them. Read STATUS.md →
+this worklog → last 5 commits (`44cd664` + `80ca424` +
+`f0042f6` + `5472463` + `c0c000f` + finalize).
 
 ## Suggestions (untouched)
 

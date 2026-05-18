@@ -116,20 +116,60 @@ All checks passed!
 
 Live DB and backfill **not yet applied** (see Handoff).
 
+## Live apply + backfill (2026-05-19, same session)
+
+Operator authorised steps 1 and 2 (per user direction "1, 2번까지만
+해. fly deploy는 내가 따로 할게"). `fly deploy` is owned by the
+operator.
+
+**Migration applied** via Supabase MCP `execute_sql` — one atomic
+`BEGIN; ... COMMIT;` block ran the 5 `ALTER TABLE ADD COLUMN` + the
+2 `CREATE INDEX` + the alembic ledger bump
+`0013_schema_cleanup` → `0014_analytics_turn_class`. Post-state
+verified: `alembic_version.version_num = '0014_analytics_turn_class'`;
+5 new columns present on `plugin_analytics`; both indexes present.
+
+**Backfill applied** via Supabase MCP `execute_sql` — one
+`DO $$ ... $$` plpgsql block that ports `classify_request` +
+`compute_first_msg_hash` + the chain-lookup logic to SQL, walks
+`plugin_analytics` ordered by `(created_at, id)`, and updates the
+five new columns per row. SHA-256 uses `extensions.digest(...)`
+with `convert_to(text, 'UTF8')` (a direct `text::bytea` cast fails
+on rows that contain non-ASCII bytes); wrapper-prefix matching
+uses `regexp_replace(t, '^[[:space:]]+', '')` to mirror Python's
+`str.lstrip()` (PostgreSQL's bare `ltrim()` only trims spaces).
+
+**Post-backfill distribution** (56 rows total, 18 conversations, 14
+user-typed turn starts):
+
+| `turn_kind`            | rows | with `turn_seq` | with `conversation_id` |
+|------------------------|-----:|----------------:|-----------------------:|
+| `tool_continuation`    |   27 |              27 |                     27 |
+| `user_input_turn_start`|   14 |              14 |                     14 |
+| `internal_subprompt`   |    9 |               0 |                      9 |
+| `claude_manage_probe`  |    6 |               0 |                      6 |
+
+5/19 KST session (36 rows) groups into 4 conversations on the main
+Claude Code session + 2 isolated `claude-manage` probes — slightly
+finer than the 3-conversation estimate in the original analysis
+because the 00:19:35 post-compact attempt streamed-out with
+`stop_reason=null` and its retry at 00:20:00 sent a different
+`messages[0]` (so they hashed differently and split into two
+conversations rather than one). That's the design behaving
+correctly — each `messages[0]` defines its own conversation.
+
+Slash command extraction confirmed on the three live cases:
+`/compact` rows at 00:19:35 + 00:20:00, `/clear` row at 00:21:07
+all carry `slash_commands = '["compact"]'` / `'["clear"]'` as
+expected.
+
 ## What's left / known limits
 
-- **Apply migration 0014 to live Supabase** — same procedure as 0013
-  (`mcp__supabase__execute_sql` with one atomic `BEGIN; ... COMMIT;`
-  block that runs the 5 `ALTER TABLE ADD COLUMN` + 2 `CREATE INDEX` +
-  the alembic ledger bump).
-- **Backfill the existing 56 rows** (incl. the 36 from 5/19 the
-  classifier was developed against). Walk in `created_at` order and
-  apply the same classifier + chain-lookup offline. The plugin only
-  populates from new INSERTs forward.
-- **`fly deploy`** to ship the updated plugin so production
-  `analytics_sink` writes populate the new columns going forward.
-  Prior image will keep INSERTing with the old (12-column) shape — the
-  new columns just stay NULL until redeploy.
+- **`fly deploy`** still pending (operator-owned). Until that ships,
+  the prior image keeps INSERTing the old 12-column shape; new rows
+  in `plugin_analytics` will leave the five new columns NULL until
+  redeploy. Old rows (already backfilled) keep their populated
+  classification.
 - **No FK on `conversation_id`.** Pointing at `id` within the same
   table would create a self-reference; not worth it given the chain
   lookup already covers the integrity question.
@@ -139,18 +179,11 @@ Live DB and backfill **not yet applied** (see Handoff).
 
 ## Handoff
 
-The next session should:
-
-1. Apply migration 0014 against the live Supabase project (operator's
-   approval — present the SQL first; do not auto-apply per CLAUDE.md §4).
-2. Run the backfill — walk all `plugin_analytics` rows ordered by
-   `created_at`, compute `classify_request` + the chain-lookup
-   `conversation_id` per row, `UPDATE` in place.
-3. Verify the backfill produces the conversation grouping documented at
-   the top of this worklog (5/19 should yield 3 conversations on the
-   main Claude Code session + 2 isolated `claude-manage` probes).
-4. `fly deploy` from `main` so the running plugin starts populating the
-   columns on every new exchange.
+Track is now waiting on a single operator step: `fly deploy` from
+`main`. After that ships, every new `plugin_analytics` row will
+populate the five new columns via the in-process plugin path
+exercised by the 22 unit/integration tests in this session, not
+via the offline SQL backfill that handled the 56 historic rows.
 
 ## Suggestions (untouched)
 

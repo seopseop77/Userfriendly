@@ -7,7 +7,18 @@
 ---
 
 **Last updated**: 2026-05-18 (Claude Code; **scope_guard provider swap — ADR-0031 accepted; embedding/judge moved from OpenAI to Gemini in one commit.** Operator was Gemini-only on API procurement so the OpenAI-pinned ADR-0030 §D3/§D4 needed superseding; ADR-0031 records the swap, migration 0012 collapses `scope_chunks.embedding vector(1536) → vector(768)` (drop-and-add; safe on the empty table — STATUS-confirmed pre-swap), `embeddings.py` retargets `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent` with `x-goog-api-key`, `judge.py` retargets `…/gemini-2.5-flash:generateContent` with `systemInstruction` + `generationConfig.responseMimeType=application/json` + temp 0, env var `OPENAI_API_KEY` → `GEMINI_API_KEY`, log key `scope_guard.openai_failure` → `scope_guard.gemini_failure`, `plugin.toml` egress allowlist swapped exact-URL, `.env.example`/`docs/deploy.md` §"Data collection & privacy"/`docs/plugins.md` §11 retargeted at Google + Gemini API additional-terms link. ADR-0030 §Q4 frozen prompt template **carried over unchanged** — the swap is transport / shape, not contract. Tests rewritten: 38 offline scope_guard tests pass (was 38; structure unchanged), full repo suite still 213 passed + 26 DB-skipped, ruff clean. Earlier same session: scope_guard CP8 of 8 done — commit `39595da` (server: migration 0011 scope_alerts retention). **Fly.io deploy of `2d71cc4` failed `alembic upgrade head` (`StringDataRightTruncationError`: migration revision id `0012_scope_chunks_embedding_dim_768` was 35 chars, over alembic's default `alembic_version.version_num VARCHAR(32)`); follow-up commit renames the migration file + in-file `revision` to `0012_scope_chunks_embed_dim_768` (31 chars). Precedent: `0006_grant_app_role_set_membership.py` already keeps its in-file id short for the same reason.** Migration `0011_scope_alerts_retention` ships one daily `pg_cron` job `llm-tracker-retention-scope-alerts` at 03:00 UTC running `DELETE FROM public.scope_alerts WHERE created_at < now() - INTERVAL '6 months'` — `timestamptz` cutoff is direct (same shape as 0009's plugin_analytics job, unlike `exchanges.started_at` which is unix-ms). `scope_documents` + `scope_chunks` are operator-curated baseline content (ADR-0030 §D8) and intentionally NOT retention-managed; the module docstring spells this out so a future "why isn't this cleaned" doesn't have to re-derive. Same pg_cron-gated `DO $$ … $$` pattern as 0009 keeps alembic upgrade green on environments without the extension. Downgrade unschedules by name (idempotent EXISTS-checked) without dropping pg_cron — same blast-radius stance as 0009/0010. `docs/deploy.md` §"Data collection & privacy" retention bullet bumped from "two pg_cron jobs" to "three" with the new job name + an explicit sentence on the `scope_documents`/`scope_chunks` exemption + the `process-scope-document` CLI re-registration path. Verified: ruff clean, alembic upgrade/downgrade --sql round-trip emits clean BEGIN/SQL/COMMIT blocks, 239 tests pass under DB fixture (unchanged from CP7 — cron job appears in `cron.job` table; no test surface change). ADR-0030 open-question ledger now ZERO outstanding (Q1 resolved at CP3, Q3 resolved at CP8 per the CP1 pre-pin, Q4 resolved at CP4; Q2 ANN index stays MVP-deferred per the ADR — revisit when any org's scope_chunks count approaches ~10k). **Next active step is operational, not implementation: operator-side live smoke against a real OPENAI_API_KEY to exercise the actual `text-embedding-3-small` + `gpt-4o-mini` round-trips on production traffic.** Phase 1c scope_guard shipped end-to-end: migration + package + chunker + OpenAI clients + pipeline + storage + plugin wiring + operator CLI + disclosure docs + retention cron. CP7 closed earlier same session by commit `8e18892`; CP6 by `c0c000f`; CP5 by `f0042f6`; CP4 by `80ca424`; CP3 by `44cd664`; CP2 by `2fe84e6`; CP1 by `2511c3a` + `b6cdf5f`.)
-**Updated by**: Claude Code (scope_guard provider swap; ADR-0031 accepted + applied)
+**Updated by**: Claude Code (scope_guard track marked inactive — handed off to a separate owner)
+
+**Inactive track marker**: scope_guard is paused at commit `0c1ca9d`. The
+implementation is code-complete on Gemini (ADR-0031) but has NOT had a
+live smoke. A separate owner will pick up the work — possibly to reframe
+the feature as an offline analysis job instead of a plugin (open
+architecture question logged in `docs/worklog/2026-05-18-scope-guard-handoff.md`).
+This session does no further scope_guard work. **A new session must NOT
+auto-resume scope_guard CPs from STATUS.** The next single step is
+whatever the requestor lines up next, NOT a scope_guard CP. Dormancy
+posture for production: set `fly secrets set LLMTRACK_PLUGINS_DISABLED=scope_guard`
+to keep the plugin disabled at runtime while leaving the code in tree.
 
 ## Current phase
 
@@ -111,6 +122,15 @@
 
 ## Active worklog
 
+`docs/worklog/2026-05-18-scope-guard-handoff.md` — scope_guard track
+inactive marker. Handoff snapshot points: code complete on Gemini at
+commit `0c1ca9d`; the new owner picks up from ADR-0030, ADR-0031, and
+the prior worklogs listed in that handoff file. Dormancy posture
+recommended: `fly secrets set LLMTRACK_PLUGINS_DISABLED=scope_guard`.
+**This session and any near-term session should NOT advance
+scope_guard further.**
+
+Prior worklog (immediately preceding):
 `docs/worklog/2026-05-18-gemini-provider-swap.md` — scope_guard
 provider swap to Gemini per ADR-0031 (Accepted 2026-05-18 same
 session). Single-commit change spanning ADR-0031, migration 0012

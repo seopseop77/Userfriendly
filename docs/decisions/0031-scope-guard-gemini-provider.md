@@ -144,7 +144,7 @@ so the existing `_parse_verdict` / fallback path continues to apply.
 
 ### D3 — Schema: `scope_chunks.embedding vector(1536)` → `vector(768)`
 
-Alembic migration `0012_scope_chunks_embedding_dim_768`:
+Alembic migration `0012_scope_chunks_embed_dim_768`:
 
 ```sql
 ALTER TABLE scope_chunks DROP COLUMN embedding;

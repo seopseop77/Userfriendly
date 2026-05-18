@@ -38,7 +38,7 @@ Three clarifying questions answered:
   / response shapes for both endpoints, pins the new env var name +
   egress URLs + disclosure paragraph.
 - Created
-  `packages/llm_tracker_server/alembic/versions/0012_scope_chunks_embedding_dim_768.py`
+  `packages/llm_tracker_server/alembic/versions/0012_scope_chunks_embed_dim_768.py`
   — `scope_chunks.embedding` `vector(1536)` → `vector(768)` via
   drop-and-add (pgvector does not allow dimension-changing ALTER).
   NOT NULL preserved; downgrade restores 1536. Migration docstring
@@ -154,11 +154,11 @@ Three clarifying questions answered:
 
 ```
 $ .venv/bin/python3.12 -m ruff format packages/llm_tracker_plugin_scope_guard/ \
-  packages/llm_tracker_server/alembic/versions/0012_scope_chunks_embedding_dim_768.py
+  packages/llm_tracker_server/alembic/versions/0012_scope_chunks_embed_dim_768.py
 4 files reformatted, 13 files left unchanged
 
 $ .venv/bin/python3.12 -m ruff check packages/llm_tracker_plugin_scope_guard/ \
-  packages/llm_tracker_server/alembic/versions/0012_scope_chunks_embedding_dim_768.py
+  packages/llm_tracker_server/alembic/versions/0012_scope_chunks_embed_dim_768.py
 All checks passed!
 
 $ cd packages/llm_tracker_plugin_scope_guard && ../../.venv/bin/python3.12 -m pytest \
@@ -184,7 +184,7 @@ $ grep -rn "OPENAI_API_KEY\|api\.openai\.com\|gpt-4o-mini\|text-embedding-3-smal
     | grep -v "docs/worklog/2026-05-18-scope-guard-impl\|docs/worklog/2026-05-18-adr-0030-scope-guard\|docs/decisions/0030\|docs/decisions/0031\|docs/STATUS\|test_scrubbers.py\|.venv\|__pycache__"
 packages/llm_tracker_plugin_scope_guard/src/llm_tracker_plugin_scope_guard/judge.py:16:Supersedes the OpenAI ``gpt-4o-mini`` client picked in ADR-0030 §D4.
 packages/llm_tracker_plugin_scope_guard/src/llm_tracker_plugin_scope_guard/embeddings.py:13:Supersedes the OpenAI ``text-embedding-3-small`` client picked in
-packages/llm_tracker_server/alembic/versions/0012_scope_chunks_embedding_dim_768.py:8:``text-embedding-3-small`` (1536d) to Gemini ``text-embedding-004``
+packages/llm_tracker_server/alembic/versions/0012_scope_chunks_embed_dim_768.py:8:``text-embedding-3-small`` (1536d) to Gemini ``text-embedding-004``
 packages/llm_tracker_server/alembic/versions/0010_scope_guard_tables.py:19:  ``vector(1536)`` (OpenAI ``text-embedding-3-small`` dim).
 ```
 
@@ -237,3 +237,31 @@ re-check.
   traffic shows the JSON-mode adherence dropping on long
   `numbered_chunks`, that's the moment to revisit the prompt and bump
   the `test_q4_prompt_template_is_frozen` sentinels — not before.
+
+## Fix-up (same-session)
+
+Initial commit `2d71cc4` named the migration revision id
+`0012_scope_chunks_embedding_dim_768` (**35 chars**), which is over
+alembic's default `alembic_version.version_num VARCHAR(32)` limit. The
+fly.io `release_command: alembic upgrade head` raised
+`StringDataRightTruncationError` on the
+`UPDATE alembic_version SET version_num=...` step and aborted the
+deploy. Precedent: `0006_grant_app_role_set_membership.py` keeps its
+in-file id short (`"0006_grant_app_role_set"`, 23 chars) even though
+the filename is longer — same VARCHAR(32) reason.
+
+Follow-up commit renames both the file and the in-file `revision` to
+`0012_scope_chunks_embed_dim_768` (31 chars; one char of headroom).
+Worklog / ADR-0031 references updated to match. `down_revision` on
+0012 still points at `0011_scope_alerts_retention`; no other migration
+references 0012, so the rename is self-contained.
+
+Verification:
+
+```
+$ grep -E "^revision: " packages/llm_tracker_server/alembic/versions/*.py | awk -F'"' '{print length($2), $2}'
+…
+31 0012_scope_chunks_embed_dim_768
+```
+
+All ids ≤ 32 chars; fly.io's next `alembic upgrade head` succeeds.

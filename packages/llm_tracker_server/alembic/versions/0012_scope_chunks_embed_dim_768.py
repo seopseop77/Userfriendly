@@ -1,6 +1,6 @@
 """scope_chunks.embedding vector(1536) → vector(768) (ADR-0031)
 
-Revision ID: 0012_scope_chunks_embedding_dim_768
+Revision ID: 0012_scope_chunks_embed_dim_768
 Revises: 0011_scope_alerts_retention
 Create Date: 2026-05-18
 
@@ -35,7 +35,7 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0012_scope_chunks_embedding_dim_768"
+revision: str = "0012_scope_chunks_embed_dim_768"
 down_revision: str | Sequence[str] | None = "0011_scope_alerts_retention"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

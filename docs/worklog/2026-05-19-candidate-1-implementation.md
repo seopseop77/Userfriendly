@@ -193,22 +193,56 @@ Tests + ruff after the 0016 file landed: 157 passed + 18 skipped;
 cleanly (DROP VIEW + ALTER TABLE DROP COLUMN + CREATE VIEW + ledger
 bump in one atomic block).
 
-## What's left
+## Post-deploy smoke (2026-05-19 14:44 KST — operator-driven)
 
-- **`fly deploy`** (handoff §11 step 7) — operator-owned. Without
-  redeploy, the running image still tries to INSERT `messages_json`
-  via the prior `_INSERT_SQL` and would hit `UndefinedColumn` on every
-  exchange. Same posture as prior schema-changing tracks.
-- **Post-deploy smoke** (§11 step 8) — single proxy hit; expect a
-  fresh `conversation_messages` row + a `plugin_analytics` row with
-  `n_messages_at_request` set.
+Operator deployed and ran the single-prompt smoke against a Read tool
+chain (prompt carried the `[CANDIDATE1-SMOKE]` tag for searchability).
+Verification query returned 5 rows in the new 10-minute window — all
+green across every check:
+
+| time KST | turn_kind | turn_seq | pa_n | cm_visible | view_n | smoke_tag_in_msg0 |
+|---|---|---|---|---|---|---|
+| 14:44:11 | internal_subprompt | NULL | 1 | 1 | 1 | true |
+| 14:44:14 | user_input_turn_start | 1 | 1 | 1 | 1 | true |
+| 14:44:19 | tool_continuation | 2 | 3 | 3 | 3 | true |
+| 14:44:25 | tool_continuation | 3 | 5 | 5 | 5 | true |
+| 14:44:28 | internal_subprompt | NULL | 7 | 7 | 7 | true |
+
+End-to-end pass:
+
+- `pa_n` non-NULL on every row — new column is being populated.
+- `cm_visible == pa_n == view_n` on every row — UPSERT + view filter
+  + `<` boundary all working.
+- `smoke_tag_in_msg0 = true` on every row — Rule A/B normalisation
+  preserves user content; the tag survives wrapper stripping.
+- Main chain `conversation_id` stable across the four turns; cumulative
+  `turn_seq` 1 → 2 → 3 over the (user_input_turn_start ∪
+  tool_continuation) rows; the two `internal_subprompt` rows correctly
+  off the turn axis (NULL).
+- `n` grows 1, 3, 5, 7 (+2 per turn) — Anthropic Messages API requires
+  strict user/assistant alternation, so each new turn appends
+  `[previous_assistant_response, new_user_message]`. Confirms the
+  quadratic-on-conversation-length dedup pressure the design targets.
+- The final `internal_subprompt` at `n=7` shared the main chain's
+  `conversation_id` (Claude Code internal post-turn call carrying the
+  full history) and added zero new `conversation_messages` rows —
+  `ON CONFLICT (conversation_id, msg_index) DO NOTHING` worked
+  exactly as designed.
 
 ## Handoff
 
-All code + live-DB state ready. **Next single step: operator runs
-`fly deploy` from `main`.** Post-deploy smoke is a single proxy
-exchange — verify one new `conversation_messages` row lands plus a
-new `plugin_analytics` row with non-NULL `n_messages_at_request`.
+**Track closed (2026-05-19).** Candidate-1 shipped end-to-end:
+code committed, live Supabase migrated, 117+ historic rows backfilled
+(5.31x whole-dataset dedup ratio), `messages_json` column dropped,
+`fly deploy` confirmed, post-deploy smoke passed across all
+verification axes. No further action on this track. Future:
+
+- The `plugin_analytics_with_messages` view re-aggregates messages
+  per query — fine for the current conversation length distribution
+  (max 43 messages observed), revisit if any conv exceeds 100.
+- Subagent (Task tool) conversations confirmed earlier — they land
+  as separate `conversation_id` automatically (different
+  `first_msg_hash`). No design change needed.
 
 ## Suggestions (untouched)
 

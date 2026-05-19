@@ -37,15 +37,17 @@ _INSERT_SQL = sa.text(
 )
 
 # Chain-lookup: most recent row with this `first_msg_hash` in this org.
-# Used to (a) decide whether the new row continues an existing
-# conversation (`n_messages > prev.n_messages`) or starts a new one
-# (identical first-prompt typed twice), and (b) seed turn_seq via a
-# follow-up lookup keyed on the resolved conversation_id.
+# Used to inherit the prior conversation_id when one exists. (B) rule
+# (2026-05-19): same `first_msg_hash` in the same org always belongs to
+# the same conversation -- /compact and /clear are what change the hash
+# and start a new conversation, so the message-count comparison the
+# earlier (A) rule used is unnecessary. Dropping the JSONB cast on the
+# stored body also makes the lookup safe against historic rows that
+# carry a malformed JSON escape (the PII scrubber's orphan-backslash
+# bug discovered the same day -- now fixed in the SDK scrubber).
 _PREV_BY_HASH_SQL = sa.text(
     """
-    SELECT conversation_id,
-           length(messages_json) AS msgs_len,
-           (messages_json::jsonb -> 'messages') AS msgs
+    SELECT conversation_id
     FROM plugin_analytics
     WHERE first_msg_hash = :first_msg_hash
       AND org_id = :org_id
@@ -54,15 +56,18 @@ _PREV_BY_HASH_SQL = sa.text(
     """
 )
 
+# Max turn_seq already assigned in this conversation. New rows get
+# MAX(turn_seq) + 1, giving a cumulative per-conversation step counter
+# (a single user_input_turn_start is N, its tool_continuations are
+# N+1, N+2, ..., and the next user_input_turn_start picks up from
+# where they left off). internal_subprompt / claude_manage_probe stay
+# off the axis (turn_seq=NULL).
 _LAST_SEQ_IN_CONV_SQL = sa.text(
     """
-    SELECT turn_seq
+    SELECT MAX(turn_seq) AS turn_seq
     FROM plugin_analytics
     WHERE conversation_id = :conversation_id
       AND org_id = :org_id
-      AND turn_seq IS NOT NULL
-    ORDER BY created_at DESC
-    LIMIT 1
     """
 )
 
@@ -218,12 +223,17 @@ class AnalyticsSink(BasePlugin):
     ) -> tuple[str | None, int | None]:
         """Run the chain lookup and decide `(conversation_id, turn_seq)`.
 
-        Returns `(this_row_id, 1)` for a fresh user-input turn start
-        when no prior same-hash row exists OR the prior row's
-        message history is at least as long as ours (identical
-        first-prompt collision after /clear or session restart).
+        (B) rule: same `first_msg_hash` in the same org always inherits
+        the prior `conversation_id`. No prior row -> new conversation
+        (this row's id becomes the conversation id). /compact and
+        /clear are what change the hash and start a new conversation;
+        identical first-prompt collisions are deliberately folded into
+        one conversation per the 2026-05-19 design call.
 
-        Inherits the prior row's `conversation_id` otherwise.
+        `turn_seq` is the cumulative step counter for the conversation:
+        `MAX(turn_seq) + 1` across user_input_turn_start and
+        tool_continuation rows. internal_subprompt and
+        claude_manage_probe stay off the axis (NULL).
         """
         prev = (
             await conn.execute(
@@ -232,37 +242,23 @@ class AnalyticsSink(BasePlugin):
             )
         ).first()
 
-        prev_n_msgs: int | None = None
-        prev_conv_id: str | None = None
-        if prev is not None:
-            prev_conv_id = prev.conversation_id
-            msgs = prev.msgs  # JSON array shape
-            prev_n_msgs = len(msgs) if isinstance(msgs, list) else None
-
-        starts_new_conversation = (
-            prev_conv_id is None or prev_n_msgs is None or classification.n_messages <= prev_n_msgs
-        )
-
-        if starts_new_conversation:
-            conv_id: str | None = row_id
-        else:
-            conv_id = prev_conv_id
+        prev_conv_id = prev.conversation_id if prev is not None else None
+        conv_id: str | None = prev_conv_id if prev_conv_id is not None else row_id
 
         kind = classification.turn_kind
-        if kind == "user_input_turn_start":
-            turn_seq: int | None = 1
-        elif kind == "tool_continuation":
-            if conv_id is None:
-                turn_seq = None
-            else:
-                last_seq_row = (
-                    await conn.execute(
-                        _LAST_SEQ_IN_CONV_SQL,
-                        {"conversation_id": conv_id, "org_id": org_id},
-                    )
-                ).first()
-                base = int(last_seq_row.turn_seq) if last_seq_row is not None else 0
-                turn_seq = base + 1
+        if kind in ("user_input_turn_start", "tool_continuation"):
+            last_seq_row = (
+                await conn.execute(
+                    _LAST_SEQ_IN_CONV_SQL,
+                    {"conversation_id": conv_id, "org_id": org_id},
+                )
+            ).first()
+            base = (
+                int(last_seq_row.turn_seq)
+                if last_seq_row is not None and last_seq_row.turn_seq is not None
+                else 0
+            )
+            turn_seq: int | None = base + 1
         else:
             # internal_subprompt, claude_manage_probe — out of turn axis
             turn_seq = None

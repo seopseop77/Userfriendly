@@ -19,6 +19,17 @@ Patterns covered (privacy-tilted -- favours over-redaction on ambiguity):
   place).
 - Email addresses (RFC 5322 subset; enough for most user-prompt mentions).
 
+JSON-aware mode: when the input parses as JSON (request bodies and the
+extractor's assembled response JSON both do), the scrubber walks the parsed
+structure and applies the regexes to each *decoded* string value, then
+re-serialises. This avoids an orphan-backslash hazard observed live
+2026-05-19 -- the email regex's ``\\b`` word boundary matched between a
+literal ``\\`` and the ``t`` of a ``\\t`` JSON escape, consuming the ``t``
+as the leading character of ``test_user@example.com``; the substitution
+left the ``\\`` orphaned in front of ``[REDACTED:email]``, producing ``\\[``
+which is not a valid JSON escape and broke any downstream ``::jsonb`` cast.
+Operating on decoded values eliminates that class of corruption entirely.
+
 The structlog log-side scrubber in
 :mod:`llm_tracker_server.proxy.credential` is a *separate* defence-in-depth
 layer that redacts Anthropic credentials from log event dicts; this module
@@ -27,7 +38,9 @@ operates on raw text content destined for plugins.
 
 from __future__ import annotations
 
+import json
 import re
+from typing import Any
 
 _REDACTED = "[REDACTED:{kind}]"
 
@@ -48,9 +61,41 @@ def scrub(text: str) -> str:
     :meth:`HookContext.response_content_json`. Plugins never see the raw
     pattern matches; storage keeps the original bytes for operator
     investigation per ADR-0029.
+
+    Tries a JSON-aware pass first (parse -> scrub decoded strings ->
+    re-serialise) and falls back to flat-text scrubbing when the input is
+    not JSON. The JSON-aware pass is what keeps the regexes from chewing
+    half of a ``\\t`` / ``\\n`` escape and leaving an orphan backslash that
+    would invalidate the output for any downstream ``::jsonb`` consumer.
     """
+    if text and text[:1] in ("{", "["):
+        try:
+            parsed = json.loads(text)
+        except (ValueError, TypeError):
+            pass
+        else:
+            scrubbed = _scrub_value(parsed)
+            # ensure_ascii=False keeps non-ASCII (Korean, etc.) human-readable
+            # and byte-compact. separators=(',', ':') matches Anthropic's
+            # serialisation closely enough that downstream consumers (cache
+            # keys, dedup hashes) don't see noisy whitespace drift.
+            return json.dumps(scrubbed, ensure_ascii=False, separators=(",", ":"))
+    return _scrub_text(text)
+
+
+def _scrub_text(text: str) -> str:
     text = _BEARER_VALUE_RE.sub(_REDACTED.format(kind="bearer"), text)
     text = _SK_TOKEN_RE.sub(_REDACTED.format(kind="secret"), text)
     text = _LTS_TOKEN_RE.sub(_REDACTED.format(kind="token"), text)
     text = _EMAIL_RE.sub(_REDACTED.format(kind="email"), text)
     return text
+
+
+def _scrub_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return _scrub_text(value)
+    if isinstance(value, dict):
+        return {k: _scrub_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub_value(v) for v in value]
+    return value

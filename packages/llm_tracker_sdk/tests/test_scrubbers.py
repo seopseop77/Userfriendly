@@ -132,3 +132,62 @@ def test_scrub_is_idempotent_on_already_scrubbed_text() -> None:
     once = scrub("Bearer abcdef12 + ops@example.com")
     twice = scrub(once)
     assert once == twice
+
+
+# -- JSON-aware mode + orphan-backslash regression ------------------------
+
+
+def test_scrub_json_body_remains_valid_json() -> None:
+    """A JSON request body with an email inside a string value scrubs to
+    valid JSON that still round-trips through json.loads."""
+    import json as _json
+
+    body = _json.dumps(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "email: alice@example.com"}],
+                }
+            ]
+        }
+    )
+    out = scrub(body)
+    # Output must be parseable JSON.
+    parsed = _json.loads(out)
+    assert parsed["messages"][0]["content"][0]["text"] == "email: [REDACTED:email]"
+
+
+def test_scrub_json_orphan_backslash_regression() -> None:
+    """Live 2026-05-19 bug: the email regex consumed the ``t`` of a ``\\t``
+    JSON escape (word boundary between ``\\`` and ``t``), leaving the
+    backslash orphaned in front of ``[REDACTED:email]`` -- producing the
+    invalid JSON escape sequence ``\\[``. Operating on JSON-decoded values
+    avoids the hazard entirely; the output must round-trip and must not
+    contain a backslash followed immediately by ``[``.
+    """
+    import json as _json
+
+    # Source line content after Read tool: literal tab then an email.
+    raw_text = "77\ttest_user@example.com\n78\tasync def ..."
+    body = _json.dumps({"messages": [{"role": "user", "content": raw_text}]})
+    # Confirm the input has the hazardous shape (`\t` before the email).
+    assert "\\ttest_user@example.com" in body
+    out = scrub(body)
+    # Must round-trip as JSON (the failure mode wrote `\[REDACTED:email]`
+    # which fails any ::jsonb cast or strict json.loads in some runtimes).
+    parsed = _json.loads(out)
+    user_text = parsed["messages"][0]["content"]
+    assert "[REDACTED:email]" in user_text
+    assert "test_user@example.com" not in user_text
+    # Defensive: there must be no `\[` substring (single-backslash-bracket)
+    # anywhere in the serialised output.
+    assert "\\[" not in out  # this checks the literal 2-char `\[`
+
+
+def test_scrub_falls_back_to_text_for_non_json_input() -> None:
+    """Plain text input (no JSON shape) still goes through the flat-text
+    rules. Smoke-checks the fallback branch."""
+    out = scrub("contact alice@example.com")
+    assert "[REDACTED:email]" in out
+    assert "alice@example" not in out

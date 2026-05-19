@@ -227,8 +227,8 @@ def _fake_engine_with_prev(
 
 @pytest.mark.asyncio
 async def test_tool_continuation_inherits_conversation_id() -> None:
-    """tool_continuation request with same first_msg_hash and longer
-    history inherits the prior row's conversation_id; turn_seq increments.
+    """tool_continuation request with same first_msg_hash inherits the
+    prior row's conversation_id; turn_seq increments off the last seq.
     """
     engine, conn = _fake_engine_with_prev(
         prev_conversation_id="conv_root_ulid",
@@ -251,16 +251,21 @@ async def test_tool_continuation_inherits_conversation_id() -> None:
 
     params = _insert_params(conn)
     assert params["turn_kind"] == "tool_continuation"
-    # Inherits prev conversation_id (n=3 > prev n=1).
+    # (B) rule: same first_msg_hash always inherits prev conv id.
     assert params["conversation_id"] == "conv_root_ulid"
-    # turn_seq = prev seq (1) + 1.
+    # turn_seq = MAX prev seq (1) + 1.
     assert params["turn_seq"] == 2
 
 
 @pytest.mark.asyncio
-async def test_identical_first_prompt_after_clear_starts_new_conversation() -> None:
-    """If a request with n=1 finds a prior same-hash row whose n>=1,
-    it starts a new conversation rather than inheriting.
+async def test_identical_first_prompt_inherits_under_b_rule() -> None:
+    """(B) rule (2026-05-19): same first_msg_hash always inherits the
+    prior conversation_id regardless of message count. The trade-off --
+    that two genuinely-separate sessions sharing an identical first
+    prompt fold into one conversation -- was an explicit design call
+    to avoid splitting a single Claude Code session into many
+    conversations whenever an internal_subprompt inflates the prev
+    row's message count past the next user turn's.
     """
     engine, conn = _fake_engine_with_prev(
         prev_conversation_id="conv_prev_ulid",
@@ -279,10 +284,11 @@ async def test_identical_first_prompt_after_clear_starts_new_conversation() -> N
 
     params = _insert_params(conn)
     assert params["turn_kind"] == "user_input_turn_start"
-    # New conversation: conversation_id == this row's id (NOT prev's).
-    assert params["conversation_id"] == params["id"]
-    assert params["conversation_id"] != "conv_prev_ulid"
-    assert params["turn_seq"] == 1
+    # (B): inherits the prior conv id rather than starting fresh.
+    assert params["conversation_id"] == "conv_prev_ulid"
+    assert params["conversation_id"] != params["id"]
+    # Cumulative seq: prev MAX was 1 (mock returns turn_seq=1), so 2.
+    assert params["turn_seq"] == 2
 
 
 @pytest.mark.asyncio

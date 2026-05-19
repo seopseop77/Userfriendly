@@ -319,12 +319,12 @@ CP14 proper).
 ## Recent commits
 
 ```
-11a9e9b   analytics: turn classification (migration 0014)
-253a941   docs: STATUS + worklog — schema cleanup track closed (fly deploy)
-f888e00   docs: STATUS + worklog — schema cleanup migration 0013 applied live
-efc7fb4   storage: schema cleanup (migration 0013)
-2e51bfe   docs: mark scope_guard track inactive (handoff)
-0c1ca9d   scope-guard: shorten migration 0012 revision id (VARCHAR(32) limit)
+94ef0fd   docs: STATUS + worklog — slash_commands JSONB bind fix
+c2536b6   analytics: JSON-encode slash_commands for asyncpg JSONB bind
+7179a72   docs: STATUS + worklog — turn-classification refinement
+98fbe9e   analytics: title-gen detection + sink fallback recovery
+164c6a6   docs: STATUS + worklog — turn classification (live apply + backfill)
+581acdd   docs: STATUS + worklog — turn classification (migration 0014)
 ```
 
 ## Where we paused

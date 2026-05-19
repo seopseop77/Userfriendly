@@ -327,6 +327,56 @@ async def test_persist_fallback_recovers_when_body_arrives_late() -> None:
 
 
 @pytest.mark.asyncio
+async def test_slash_commands_bound_as_json_string_not_python_list() -> None:
+    """Regression: live `analytics_sink.insert_failed` 2026-05-19 against
+    exchange 01KRZARYVBNAN9XCPNB8N8BAVT raised
+    `'list' object has no attribute 'encode'` because asyncpg's raw-SQL
+    path (sa.text) has no column-type info and cannot encode a Python
+    list as JSONB. The plugin must JSON-encode the value before binding;
+    the INSERT then casts it to jsonb in SQL.
+    """
+    import json as _json
+
+    engine, conn = _fake_engine()
+    plugin = AnalyticsSink(engine=engine)
+
+    body = (
+        b'{"model":"claude-x","messages":[{"role":"user","content":['
+        b'{"type":"text","text":"<command-name>/compact</command-name>"},'
+        b'{"type":"text","text":"resume after compact"}'
+        b']}]}'
+    )
+    ctx = _make_ctx(request_body=body, org_id=uuid.uuid4(), parsed_response=None)
+
+    await plugin.on_request_received("ex_slash", ctx)
+    await plugin.on_persisted("ex_slash", ctx)
+
+    params = _insert_params(conn)
+    assert isinstance(params["slash_commands"], str), (
+        "slash_commands must be JSON-encoded for asyncpg JSONB binding"
+    )
+    assert _json.loads(params["slash_commands"]) == ["compact"]
+
+
+@pytest.mark.asyncio
+async def test_slash_commands_none_passes_through_as_none() -> None:
+    """Null slash_commands must remain Python None (not the string 'null')
+    so the JSONB column stores SQL NULL.
+    """
+    engine, conn = _fake_engine()
+    plugin = AnalyticsSink(engine=engine)
+
+    body = b'{"model":"claude-x","messages":[{"role":"user","content":"hi"}]}'
+    ctx = _make_ctx(request_body=body, org_id=uuid.uuid4(), parsed_response=None)
+
+    await plugin.on_request_received("ex_nullslash", ctx)
+    await plugin.on_persisted("ex_nullslash", ctx)
+
+    params = _insert_params(conn)
+    assert params["slash_commands"] is None
+
+
+@pytest.mark.asyncio
 async def test_persist_skipped_when_body_never_arrives() -> None:
     """If neither hook can read the body, on_persisted bails out
     cleanly (no INSERT, no exception).

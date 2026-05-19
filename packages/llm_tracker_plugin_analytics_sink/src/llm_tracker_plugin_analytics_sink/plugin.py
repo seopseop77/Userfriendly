@@ -30,7 +30,7 @@ _INSERT_SQL = sa.text(
         :messages_json, :response_json,
         :input_tokens, :output_tokens, :cache_read_tokens,
         :cache_write_tokens, :stop_reason,
-        :turn_kind, :turn_seq, :slash_commands,
+        :turn_kind, :turn_seq, CAST(:slash_commands AS jsonb),
         :first_msg_hash, :conversation_id
     )
     """
@@ -137,8 +137,12 @@ class AnalyticsSink(BasePlugin):
         classification: Classification,
     ) -> dict[str, Any]:
         usage = ctx.response_usage()
-        # `slash_commands` is a list (or None) — sqlalchemy's JSONB
-        # binding accepts a Python list directly.
+        # Encode `slash_commands` as a JSON string. The INSERT casts it
+        # to jsonb in SQL. asyncpg's raw-SQL binding path (sa.text)
+        # has no column type info and rejects a Python list as JSONB
+        # input with "'list' object has no attribute 'encode'" —
+        # discovered live 2026-05-19, exchange 01KRZARYVBNAN9XCPNB8N8BAVT.
+        slash = classification.slash_commands
         return {
             "id": str(ULID()),
             "exchange_id": exchange_id,
@@ -154,7 +158,7 @@ class AnalyticsSink(BasePlugin):
             "stop_reason": getattr(usage, "stop_reason", None),
             "turn_kind": classification.turn_kind,
             "turn_seq": None,  # filled by caller after conversation resolution
-            "slash_commands": classification.slash_commands,
+            "slash_commands": json.dumps(slash) if slash is not None else None,
             "first_msg_hash": classification.first_msg_hash,
             "conversation_id": None,  # filled by caller
         }

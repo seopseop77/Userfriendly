@@ -64,14 +64,26 @@ def _fake_engine() -> tuple[MagicMock, AsyncMock]:
 
 
 def _insert_params(conn: AsyncMock) -> dict:
-    """Return the parameter dict from the INSERT call (last execute)."""
-    # The plugin runs a SELECT first (chain lookup), then the INSERT.
-    # Distinguish by params dict size — INSERT has many keys.
+    """Return the parameter dict from the analytics-row INSERT call.
+
+    The plugin runs (in order) a chain-lookup SELECT, optional
+    last-seq SELECT, N per-message UPSERTs, then the analytics-row
+    INSERT. The INSERT is the only call carrying `n_messages_at_request`.
+    """
     for call in reversed(conn.execute.await_args_list):
         params = call.args[1]
-        if isinstance(params, dict) and "messages_json" in params:
+        if isinstance(params, dict) and "n_messages_at_request" in params:
             return params
     raise AssertionError("INSERT call not found")
+
+
+def _upsert_calls(conn: AsyncMock) -> list[dict]:
+    """Return the parameter dicts from the conversation_messages UPSERTs."""
+    return [
+        call.args[1]
+        for call in conn.execute.await_args_list
+        if isinstance(call.args[1], dict) and "msg_index" in call.args[1]
+    ]
 
 
 @pytest.mark.asyncio
@@ -121,7 +133,11 @@ async def test_row_written_on_persisted_with_parsed_response() -> None:
     assert params["org_id"] == org_uuid
     assert params["model_requested"] == "claude-haiku-4-5-20251001"
     assert params["model_served"] == "claude-haiku-4-5-20251001"
-    assert params["messages_json"] == body.decode("utf-8")
+    # messages_json column dropped in migration 0015; the pointer
+    # `n_messages_at_request` replaces it. Body itself lands in the
+    # conversation_messages UPSERTs (see test_messages_upserted_*).
+    assert "messages_json" not in params
+    assert params["n_messages_at_request"] == 1
     assert params["response_json"] == '{"model":"claude-haiku-4-5-20251001","content":[]}'
     assert params["input_tokens"] == 42
     assert params["output_tokens"] == 15
@@ -169,6 +185,8 @@ async def test_missing_parsed_response_writes_nulls() -> None:
     assert params["response_json"] is None
     assert params["turn_kind"] == "user_input_turn_start"
     assert params["turn_seq"] == 1
+    assert params["n_messages_at_request"] == 1
+    assert "messages_json" not in params
 
 
 @pytest.mark.asyncio
@@ -329,7 +347,11 @@ async def test_persist_fallback_recovers_when_body_arrives_late() -> None:
     # INSERT fires from the fallback path — row is recovered.
     params = _insert_params(conn)
     assert params["exchange_id"] == "ex_late"
-    assert params["messages_json"] == body.decode("utf-8")
+    assert params["n_messages_at_request"] == 1
+    # And the recovered body produced one conversation_messages UPSERT.
+    upserts = _upsert_calls(conn)
+    assert len(upserts) == 1
+    assert upserts[0]["msg_index"] == 0
 
 
 @pytest.mark.asyncio
@@ -380,6 +402,63 @@ async def test_slash_commands_none_passes_through_as_none() -> None:
 
     params = _insert_params(conn)
     assert params["slash_commands"] is None
+
+
+@pytest.mark.asyncio
+async def test_messages_upserted_one_per_index() -> None:
+    """Each `messages[idx]` produces one UPSERT into conversation_messages
+    with the correct conversation_id (= row's conv id) and msg_index.
+    """
+    engine, conn = _fake_engine()
+    plugin = AnalyticsSink(engine=engine)
+
+    body = (
+        b'{"model":"claude-x","messages":['
+        b'{"role":"user","content":[{"type":"text","text":"first"}]},'
+        b'{"role":"assistant","content":[{"type":"text","text":"ok"}]},'
+        b'{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"x"}]}'
+        b"]}"
+    )
+    ctx = _make_ctx(request_body=body, org_id=uuid.uuid4(), parsed_response=None)
+
+    await plugin.on_request_received("ex_three", ctx)
+    await plugin.on_persisted("ex_three", ctx)
+
+    upserts = _upsert_calls(conn)
+    assert [u["msg_index"] for u in upserts] == [0, 1, 2]
+
+    params = _insert_params(conn)
+    # Every UPSERT carries the same conversation_id as the row's.
+    assert all(u["conversation_id"] == params["conversation_id"] for u in upserts)
+    assert params["n_messages_at_request"] == 3
+
+
+@pytest.mark.asyncio
+async def test_normalization_applied_at_upsert_boundary() -> None:
+    """Rule B (single bare text block array → bare string) is applied
+    in the UPSERT payload — `content_jsonb` is a JSON-encoded string,
+    not an array.
+    """
+    import json as _json
+
+    engine, conn = _fake_engine()
+    plugin = AnalyticsSink(engine=engine)
+
+    body = (
+        b'{"model":"claude-x","messages":['
+        b'{"role":"user","content":[{"type":"text","text":"hello"}]}'
+        b"]}"
+    )
+    ctx = _make_ctx(request_body=body, org_id=uuid.uuid4(), parsed_response=None)
+
+    await plugin.on_request_received("ex_norm", ctx)
+    await plugin.on_persisted("ex_norm", ctx)
+
+    upserts = _upsert_calls(conn)
+    assert len(upserts) == 1
+    # content_jsonb is JSON-encoded; the inner value is the bare string.
+    assert _json.loads(upserts[0]["content_jsonb"]) == "hello"
+    assert upserts[0]["role"] == "user"
 
 
 @pytest.mark.asyncio

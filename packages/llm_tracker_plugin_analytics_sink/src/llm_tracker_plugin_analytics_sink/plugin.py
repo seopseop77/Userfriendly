@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from ulid import ULID
 
 from .classifier import Classification, classify_request
+from .normalize import canonical_message
 
 DATABASE_URL_ENV = "LLMTRACK_DATABASE_URL"
 
@@ -20,19 +21,35 @@ _INSERT_SQL = sa.text(
     """
     INSERT INTO plugin_analytics (
         id, exchange_id, org_id, model_requested, model_served,
-        messages_json, response_json,
+        n_messages_at_request, response_json,
         input_tokens, output_tokens, cache_read_tokens,
         cache_write_tokens, stop_reason,
         turn_kind, turn_seq, slash_commands,
         first_msg_hash, conversation_id
     ) VALUES (
         :id, :exchange_id, :org_id, :model_requested, :model_served,
-        :messages_json, :response_json,
+        :n_messages_at_request, :response_json,
         :input_tokens, :output_tokens, :cache_read_tokens,
         :cache_write_tokens, :stop_reason,
         :turn_kind, :turn_seq, CAST(:slash_commands AS jsonb),
         :first_msg_hash, :conversation_id
     )
+    """
+)
+
+# Per-message UPSERT for the conversation_messages dedup table
+# (migration 0015). Runs once per `messages[idx]` before the analytics
+# row INSERT, inside the same transaction so the view never sees a row
+# whose messages haven't landed yet. `ON CONFLICT DO NOTHING` makes the
+# write idempotent against stream retries — the first arrival wins.
+_UPSERT_MESSAGE_SQL = sa.text(
+    """
+    INSERT INTO conversation_messages
+        (conversation_id, msg_index, org_id, role, content_jsonb)
+    VALUES
+        (:conversation_id, :msg_index, :org_id, :role,
+         CAST(:content_jsonb AS jsonb))
+    ON CONFLICT (conversation_id, msg_index) DO NOTHING
     """
 )
 
@@ -137,7 +154,6 @@ class AnalyticsSink(BasePlugin):
         self,
         exchange_id: str,
         ctx: HookContext,
-        messages_json: str,
         parsed: dict[str, Any] | None,
         classification: Classification,
     ) -> dict[str, Any]:
@@ -154,7 +170,7 @@ class AnalyticsSink(BasePlugin):
             "org_id": ctx.org_id,
             "model_requested": _model_from_request(parsed),
             "model_served": getattr(usage, "model_served", None),
-            "messages_json": messages_json,
+            "n_messages_at_request": classification.n_messages,
             "response_json": ctx.response_content_json(),
             "input_tokens": getattr(usage, "input_tokens", None),
             "output_tokens": getattr(usage, "output_tokens", None),
@@ -197,7 +213,9 @@ class AnalyticsSink(BasePlugin):
 
         parsed = _parse_request(messages_json)
         classification = classify_request(parsed or {})
-        row = self._build_row(exchange_id, ctx, messages_json, parsed, classification)
+        row = self._build_row(exchange_id, ctx, parsed, classification)
+
+        parsed_messages = (parsed or {}).get("messages") or []
 
         try:
             async with self._engine.begin() as conn:
@@ -209,6 +227,25 @@ class AnalyticsSink(BasePlugin):
                 )
                 row["conversation_id"] = conv_id
                 row["turn_seq"] = turn_seq
+                # Messages first — the helper view joins on
+                # conversation_id and msg_index, so the analytics row
+                # must not be visible before the messages it points to.
+                for idx, m in enumerate(parsed_messages):
+                    if not isinstance(m, dict):
+                        continue
+                    norm = canonical_message(m)
+                    await conn.execute(
+                        _UPSERT_MESSAGE_SQL,
+                        {
+                            "conversation_id": conv_id,
+                            "msg_index": idx,
+                            "org_id": ctx.org_id,
+                            "role": norm["role"] or "",
+                            "content_jsonb": json.dumps(
+                                norm["content"], ensure_ascii=False
+                            ),
+                        },
+                    )
                 await conn.execute(_INSERT_SQL, row)
         except Exception as exc:  # pragma: no cover — defensive
             self._log.warning("analytics_sink.insert_failed", error=str(exc))

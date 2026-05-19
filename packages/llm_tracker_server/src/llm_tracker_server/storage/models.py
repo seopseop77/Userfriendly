@@ -23,9 +23,10 @@ cross-org visibility. Per-request session binding lands in CP6.
 
 import uuid as uuid_module
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import BigInteger, ForeignKey, Index, String, Text, text
-from sqlalchemy.dialects.postgresql import TIMESTAMP, UUID
+from sqlalchemy import BigInteger, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -123,4 +124,40 @@ class ApiToken(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=True,
+    )
+
+
+class ConversationMessage(Base):
+    """Row-per-message dedup table backing `plugin_analytics` (migration 0015).
+
+    Keyed by `(conversation_id, msg_index)` so stream retries that
+    re-send the same index silently keep the first arrival via
+    `ON CONFLICT DO NOTHING` on the write path. `content_jsonb` holds
+    the canonicalised message body (Rule A + B from
+    `llm_tracker_plugin_analytics_sink.normalize`).
+    """
+
+    __tablename__ = "conversation_messages"
+
+    conversation_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    msg_index: Mapped[int] = mapped_column(Integer, primary_key=True)
+    org_id: Mapped[uuid_module.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("orgs.id"),
+        nullable=False,
+    )
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    content_jsonb: Mapped[Any] = mapped_column(JSONB, nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=text("now()"),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_conversation_messages_org_conv",
+            "org_id",
+            "conversation_id",
+        ),
     )

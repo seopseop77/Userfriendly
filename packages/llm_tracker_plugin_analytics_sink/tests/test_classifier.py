@@ -122,11 +122,98 @@ def test_suggestion_mode_internal_subprompt() -> None:
 
 
 def test_claude_manage_probe_detected() -> None:
+    """No Claude Code system + `<session>` wrapper = real claude-manage probe."""
     req = {
         "messages": [_user([{"type": "text", "text": "<session>\nSTATUS.md 읽어봐\n</session>"}])]
     }
     result = classify_request(req)
     assert result.turn_kind == "claude_manage_probe"
+
+
+def test_title_generation_call_is_internal_subprompt() -> None:
+    """Claude Code's per-session title fetch carries the user's first
+    message inside a small request gated by a distinctive system prompt.
+    Even with a `<session>` user wrapper, the system signature wins —
+    this is not a real user turn.
+    """
+    req = {
+        "system": [
+            {"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."},
+            {
+                "type": "text",
+                "text": (
+                    "Generate a concise, sentence-case title (3-7 words) "
+                    "that captures the main topic or goal of this coding session."
+                ),
+            },
+        ],
+        "messages": [
+            _user(
+                [
+                    {
+                        "type": "text",
+                        "text": "<session>\nRLS가 뭔지 자세하게 설명해봐\n</session>",
+                    }
+                ]
+            )
+        ],
+    }
+    result = classify_request(req)
+    assert result.turn_kind == "internal_subprompt"
+
+
+def test_claude_code_with_session_wrapper_is_real_user_turn() -> None:
+    """If Claude Code is the originator (system signature present) and
+    `<session>` is just the user's wrapper around their typed text, the
+    last text block being `<session>...` no longer marks it as a probe —
+    it's a real user turn.
+    """
+    req = {
+        "system": "You are Claude Code, Anthropic's official CLI for Claude.",
+        "messages": [
+            _user(
+                [
+                    {"type": "text", "text": "<system-reminder>\nAvailable agent types..."},
+                    {"type": "text", "text": "<session>\n반가워\n</session>"},
+                ]
+            )
+        ],
+    }
+    result = classify_request(req)
+    assert result.turn_kind == "user_input_turn_start"
+
+
+def test_step_away_recap_is_internal_subprompt() -> None:
+    """Claude Code's `The user stepped away` recap arrives as
+    string-shaped content; the content=string rule catches it.
+    """
+    req = {
+        "messages": [
+            _user("hello"),
+            _asst_tool_use(),
+            _user(
+                "The user stepped away and is coming back. "
+                "Recap in under 40 words, 1-2 plain sentences, no markdown."
+            ),
+        ]
+    }
+    result = classify_request(req)
+    assert result.turn_kind == "internal_subprompt"
+
+
+def test_title_generation_system_field_string_form() -> None:
+    """The `system` field may be a single string instead of a block list."""
+    req = {
+        "system": (
+            "You are Claude Code, Anthropic's official CLI for Claude.\n"
+            "Generate a concise, sentence-case title (3-7 words)."
+        ),
+        "messages": [
+            _user([{"type": "text", "text": "<session>\nSTATUS.md 읽어봐\n</session>"}])
+        ],
+    }
+    result = classify_request(req)
+    assert result.turn_kind == "internal_subprompt"
 
 
 def test_slash_command_clear_extracted() -> None:

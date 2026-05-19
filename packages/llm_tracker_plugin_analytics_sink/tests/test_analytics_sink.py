@@ -294,3 +294,51 @@ async def test_no_request_body_no_stash() -> None:
     result = await plugin.on_request_received("ex_x", ctx)
     assert "ex_x" not in plugin._stash
     assert result.__class__.__name__ == "Pass"
+
+
+@pytest.mark.asyncio
+async def test_persist_fallback_recovers_when_body_arrives_late() -> None:
+    """Stash miss at `on_request_received` is recovered by re-reading
+    the body at `on_persisted`. This guards against the forwarder
+    populating `_raw_request_body` after the first hook fires.
+    """
+    engine, conn = _fake_engine()
+    plugin = AnalyticsSink(engine=engine)
+
+    # First hook: ctx has no body yet — stash miss.
+    ctx = HookContext(
+        session_id="server", exchange_id="ex_late", mode="R", user_opted_in=True
+    )
+    ctx.org_id = uuid.uuid4()
+    await plugin.on_request_received("ex_late", ctx)
+    assert "ex_late" not in plugin._stash
+
+    # Body lands before on_persisted (simulating the forwarder
+    # finishing the body read between the two hooks).
+    body = b'{"model":"claude-x","messages":[{"role":"user","content":"hi"}]}'
+    ctx._raw_request_body = body
+
+    await plugin.on_persisted("ex_late", ctx)
+
+    # INSERT fires from the fallback path — row is recovered.
+    params = _insert_params(conn)
+    assert params["exchange_id"] == "ex_late"
+    assert params["messages_json"] == body.decode("utf-8")
+
+
+@pytest.mark.asyncio
+async def test_persist_skipped_when_body_never_arrives() -> None:
+    """If neither hook can read the body, on_persisted bails out
+    cleanly (no INSERT, no exception).
+    """
+    engine, conn = _fake_engine()
+    plugin = AnalyticsSink(engine=engine)
+
+    ctx = HookContext(
+        session_id="server", exchange_id="ex_never", mode="R", user_opted_in=True
+    )
+    ctx.org_id = uuid.uuid4()
+    await plugin.on_request_received("ex_never", ctx)
+    await plugin.on_persisted("ex_never", ctx)
+
+    assert conn.execute.await_count == 0

@@ -118,6 +118,12 @@ class AnalyticsSink(BasePlugin):
     async def on_request_received(self, exchange_id: str, ctx: HookContext) -> Pass:
         body = ctx.request_text()
         if body is None:
+            # The request body sometimes isn't readable yet at this hook
+            # (forwarder hasn't drained the body into the context — see
+            # HookContext.request_text docstring). Log loudly so the
+            # follow-up miss in on_persisted is traceable. on_persisted
+            # will re-try and recover when the body is available there.
+            self._log.warning("analytics_sink.stash_skipped", exchange_id=exchange_id)
             return Pass()
         self._stash[exchange_id] = body
         return Pass()
@@ -155,10 +161,29 @@ class AnalyticsSink(BasePlugin):
 
     async def on_persisted(self, exchange_id: str, ctx: HookContext) -> None:
         messages_json = self._stash.pop(exchange_id, None)
-        if messages_json is None or self._engine is None:
+        if messages_json is None:
+            # Fallback: if the body wasn't ready at on_request_received,
+            # try once more here. The context's raw body is typically
+            # populated by the forwarder before on_persisted fires.
+            messages_json = ctx.request_text()
+            if messages_json is None:
+                self._log.warning(
+                    "analytics_sink.persist_skipped",
+                    exchange_id=exchange_id,
+                    reason="no_request_body",
+                )
+                return
+            self._log.info(
+                "analytics_sink.persist_fallback_recovered", exchange_id=exchange_id
+            )
+        if self._engine is None:
             return
         if ctx.org_id is None:
-            self._log.warning("analytics_sink.skip", reason="ctx.org_id missing")
+            self._log.warning(
+                "analytics_sink.skip",
+                exchange_id=exchange_id,
+                reason="ctx.org_id missing",
+            )
             return
 
         parsed = _parse_request(messages_json)

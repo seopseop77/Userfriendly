@@ -42,7 +42,10 @@ backfill.
 
 ## What was done
 
-Code half shipped in commit `98fbe9e`.
+Code shipped in two commits: `98fbe9e` (classifier + fallback +
+observability) and `c2536b6` (the actual root cause of the sink
+miss, caught from live Fly logs after the first commit — see
+"Root cause of the sink miss" below).
 
 ### Classifier — system-prompt-aware title-gen detection
 
@@ -70,6 +73,51 @@ Code half shipped in commit `98fbe9e`.
     regression protection)
   - `test_title_generation_system_field_string_form` (system field
     accepted as a plain string, not only block list)
+
+### Root cause of the sink miss (`slash_commands` JSONB binding)
+
+The fallback path in `98fbe9e` did not actually fix the 14:19:11
+miss — it would have hit the same exception. Pulled Fly logs
+via `fly logs --no-tail -a llm-tracker-server -i 9080d15ec93278`
+and found the exact `analytics_sink.insert_failed` warning at
+05:19:20Z (= 14:19:20 KST). The error:
+
+```
+asyncpg.exceptions.DataError: invalid input for query argument $15:
+['compact'] ('list' object has no attribute 'encode')
+```
+
+`$15` is `slash_commands`. The plugin's INSERT runs through
+`sa.text()` (raw SQL) + asyncpg, which has no column-type info at
+bind time — asyncpg tries to `.encode("utf-8")` the parameter,
+sees a `list`, and bails. The misleading inline comment ("sqlalchemy's
+JSONB binding accepts a Python list directly") was simply wrong for
+the raw-SQL path; ORM-bound INSERTs elsewhere in the codebase
+(`audit_log.detail_json`) all hand pre-serialized strings.
+
+The actual exchange shape: `turn_kind = user_input_turn_start`,
+`slash_commands = ['compact']`, response body starts with
+"반갑습니다! 지난 대화에서 Supabase RLS 설명을 드리고…" — the
+post-compact resume "반가워" turn the operator typed.
+
+**Fix**: encode `slash_commands` as `json.dumps(value)` before
+binding, and `CAST(:slash_commands AS jsonb)` in the SQL. Mirrors
+how `audit_log.detail_json` ships from `host.py` /
+`egress_guard/guard.py`. Misleading comment removed. Two
+regression tests added:
+
+- `test_slash_commands_bound_as_json_string_not_python_list` —
+  asserts the INSERT param dict carries a JSON string and that
+  it parses back to the expected list. Quotes the live
+  `exchange_id` so a future reader can correlate to the original
+  Fly log entry.
+- `test_slash_commands_none_passes_through_as_none` — null stays
+  null (so the JSONB column stores SQL NULL, not the string
+  `"null"`).
+
+The historic 14:19:11 row stays gone (`messages_json` was truncated
+in the Fly log at 221k chars, so it cannot be exactly reconstructed).
+Future runs after deploy of this fix will land it correctly.
 
 ### analytics_sink — fallback recovery + observability
 
@@ -144,13 +192,14 @@ gate.
 
 ```
 $ .venv/bin/python -m pytest packages/llm_tracker_plugin_analytics_sink/tests/ -v
-collected 28 items
-.........................27 passed in 0.13s
+collected 30 items
+..............................                30 passed in 0.15s
 ```
 
-Was 26 before this change; +4 classifier cases, +2 plugin cases,
-−2 reshape (one existing test refactored, one trimmed). Net 28
-passing.
+Was 26 before this track. Net +4 classifier (title-gen via array,
+title-gen via string system, `<session>` with CC system is a real
+user turn, step-away recap) and +4 plugin (fallback recovery, full
+skip, slash-commands JSON encoding, slash-commands NULL passthrough).
 
 ```
 $ .venv/bin/python -m pytest \
@@ -206,14 +255,10 @@ conversation call in this session (data-side issue, not classifier);
 - **`fly deploy`** is the operator step. Until that ships, new rows
   will keep using the old classifier path on production. The
   backfill above already handles the historic 67 rows.
-- **Sink-miss root cause** still unconfirmed without Fly logs. The
-  fallback path recovers transparently and the new warnings make
-  any future miss visible. If `fly logs … | grep analytics_sink`
-  shows `stash_skipped` paired with `persist_fallback_recovered`
-  consistently, the underlying timing is real and we leave it.
-  If it shows `persist_skipped reason=no_request_body`, the body is
-  never readable in either hook — a deeper bug that needs separate
-  investigation.
+- **Sink-miss root cause confirmed and fixed** — was the JSONB
+  binding bug (see "Root cause of the sink miss" above). The
+  fallback path added in `98fbe9e` is retained as defense-in-depth
+  observability but did not turn out to be the actual fix.
 - **RLS main-conversation call** at 14:11~14:14 KST is genuinely
   absent from `exchanges` (not just `plugin_analytics`). Either
   claude-manage didn't issue the call or it failed before the proxy

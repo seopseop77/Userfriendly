@@ -119,6 +119,45 @@ land — which is safe because the column still exists in the live DB.
 After migration apply + `fly deploy`, the new image's helpers stop
 writing the column and the dropped column has no readers.
 
+## Live apply timeline (same session continuation)
+
+Operator authorised the Supabase live apply ("supabase 적용은 너가
+해야지"). Migration 0017 applied via Supabase MCP `execute_sql`
+as one atomic `BEGIN ... COMMIT` block, matching the
+0013 / 0014 / 0015 / 0016 precedent.
+
+Pre-state (`alembic_version` + `information_schema.columns`):
+
+| field | value |
+|---|---|
+| alembic_at | `0016_drop_messages_json` |
+| session_id column present | `true` |
+| non-`"server"` rows | `0` (zero data to lose) |
+| total `exchanges` rows | 182 |
+
+Apply (one transaction):
+
+```sql
+BEGIN;
+ALTER TABLE exchanges DROP COLUMN session_id;
+UPDATE alembic_version SET version_num='0017_drop_exchanges_session_id'
+  WHERE version_num='0016_drop_messages_json';
+COMMIT;
+```
+
+Post-state:
+
+| field | value |
+|---|---|
+| alembic_at | `0017_drop_exchanges_session_id` |
+| session_id column present | `false` |
+| total `exchanges` rows | 182 (no row loss) |
+
+The 182-row count is preserved across the column drop — PostgreSQL
+`ALTER TABLE DROP COLUMN` is a metadata-only operation on a single
+NOT NULL column with no FK / index references, so no data is
+rewritten.
+
 ## Post-Candidate-1 absorption (prior-session work in context)
 
 Worklog rule §5.3 — checkpoint absorbs prior unrecorded work.
@@ -163,36 +202,21 @@ closed.
 
 ## Handoff
 
-**Next single step**: operator-driven live apply of migration 0017
-to Supabase via MCP `execute_sql`, then `fly deploy` from `main`.
-SQL preview (matches the alembic round-trip output above):
+**Next single step (operator-owned)**: `fly deploy` from `main`.
+Migration 0017 is now applied live — the running image's helpers
+(which still pass the dropped column via the prior compiled SQL
+shape from the `Exchange` ORM) will `UndefinedColumn`-fail every
+happy-path / blocked / failure helper invocation until redeploy.
+So the deploy is non-skippable and is the only remaining gate
+before the track is end-to-end closed.
 
-```sql
-BEGIN;
-ALTER TABLE exchanges DROP COLUMN session_id;
-UPDATE alembic_version SET version_num='0017_drop_exchanges_session_id'
-  WHERE version_num = '0016_drop_messages_json';
-COMMIT;
-```
+Post-deploy smoke is a single non-blocked proxy exchange — verify
+the helper write succeeds (a row lands in `exchanges` with
+`status_code=200`) and no `UndefinedColumn` error appears in Fly
+logs for `record_exchange_timing` / `record_exchange_blocked` /
+`record_exchange_failure`.
 
-Post-apply verification:
-
-```sql
-SELECT
-  (SELECT version_num FROM alembic_version)                            AS alembic_at,
-  (SELECT EXISTS (SELECT 1 FROM information_schema.columns
-       WHERE table_name='exchanges' AND column_name='session_id'))     AS session_id_col;
--- expected: alembic_at = 0017_drop_exchanges_session_id, session_id_col = false
-```
-
-`fly deploy` afterwards picks up the helper changes (no kwarg passed
-to the `Exchange` constructor anymore). Without redeploy the running
-image keeps writing `"server"` to a column that no longer exists —
-which would `UndefinedColumn`-fail every happy-path / blocked /
-failure helper invocation. So the deploy is non-skippable once the
-migration applies.
-
-After 0017 lands live, the §"Queued follow-ups" menu has two
+After `fly deploy` lands, the §"Queued follow-ups" menu has two
 remaining items (task hierarchy + i18n email scrubbing) — pick one
 or leave undecided per the existing posture precedent.
 

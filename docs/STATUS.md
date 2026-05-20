@@ -6,7 +6,11 @@
 
 ---
 
-**Last updated**: 2026-05-19 (Claude Code; **Candidate-1 (`conversation_messages` dedup) — track CLOSED. `fly deploy` confirmed, post-deploy smoke passed across all verification axes. End-to-end shipped: code + live DB + running image + smoke.** Operator ran the `[CANDIDATE1-SMOKE]` single-prompt smoke against a Read tool chain at 14:44 KST; the verification query returned 5 rows in the window — main chain `user_input_turn_start` + 2× `tool_continuation` + 2× `internal_subprompt` (one pre-chain title-gen probe, one post-turn full-history internal call). All five rows green on every axis: `n_messages_at_request` non-NULL everywhere; `cm_visible == pa_n == view_n` for every row (UPSERT + view filter + `msg_index < n_messages_at_request` boundary all working); `[CANDIDATE1-SMOKE]` tag visible in `messages[0]` of every row (Rule A/B normalisation preserves user content through wrapper stripping); main chain `conversation_id` stable across the four turns with cumulative `turn_seq` 1 → 2 → 3 over user/tool turns and NULL for the two internal subprompts (per the off-turn-axis design); `n` grew 1, 3, 5, 7 (+2 per turn — Anthropic API strict user/assistant alternation appends `[prev_assistant_response, new_user_message]` each turn, which is precisely the quadratic duplication pressure the dedup design targets); the final n=7 `internal_subprompt` sharing the main `conversation_id` added zero new `conversation_messages` rows because `ON CONFLICT (conversation_id, msg_index) DO NOTHING` correctly suppressed all 7 already-backfilled indices. **No further action on Candidate-1.** This is a docs-only closure checkpoint: worklog `docs/worklog/2026-05-19-candidate-1-implementation.md` "What's left" struck the fly-deploy bullet, "Post-deploy smoke" section added with the 5-row evidence table, "Handoff" rewritten to "Track closed (2026-05-19)". STATUS.md head rewritten to reflect closed posture. No code changes. Whole-dataset dedup savings already measured this session at **5.31x** (1242 pre-dedup writes → 234 distinct messages); STRESS conv at **6.48x**. Future considerations: the helper view re-aggregates per query — fine for current conv length distribution (max 43 messages observed), revisit if any conv exceeds 100; subagent (Task tool) conversations already confirmed earlier — they auto-fork via different `first_msg_hash` → separate `conversation_id`, no design change needed. **Next active track is intentionally undecided** — same posture as the 2026-05-18 schema-cleanup closure: §"Queued follow-ups" stays the open menu. `plugin_analytics` RLS ADR-level revisit remains the most-shovel-ready queued item.) Operator authorised continuation past the code-commit checkpoint ("내가 fly deploy하는 전 단계까지 진행해줘"). Live apply ran in five steps via Supabase MCP `execute_sql`: (1) migration 0015 applied as one atomic `BEGIN ... COMMIT` (CREATE TABLE + CREATE INDEX + ADD COLUMN + CREATE VIEW + alembic ledger bump), matching the 0013 / 0014 precedent; (2) backfill ran as `INSERT INTO conversation_messages ... SELECT DISTINCT ON (conversation_id) ... ORDER BY jsonb_array_length DESC ... ON CONFLICT DO NOTHING` — within a single `conversation_id` the (B) rule guarantees `messages[0..k-1]` are byte-equal across rows after Rule A+B per STRESS verification, so the longest row per conversation covers every distinct `(conv_id, msg_index)` (saves 141 → 43 row reads), then `UPDATE plugin_analytics SET n_messages_at_request = jsonb_array_length(...)`; (3) **drift verification against Python `canonical_message()`** — a shape-diverse sample (msg indexes 0, 2, 7, 12, 22 of the STRESS conv covering Rule A wrapper-stripping, Rule B collapse, thinking-signature preservation, mid-chain tool_use/tool_result shapes, late-chain user input) was fed through `/tmp/verify_backfill.py` which reuses the production `canonical_message()` and reported `checked=5 mismatches=0` — the SQL backfill produces byte-equal output to Python, single-source guarantee preserved (handoff §8 R3 mitigation satisfied); (4) §6 V1-V5 verification queries all green — V1 STRESS conv = **23 messages**, V2 msg_index 2 = `string` containing `"[STRESS-2]"` (Rule B), V3 msg_index 0 = `array` with `has_cache_control=false` (Rule A), V4 helper view reconstructs cumulative chain lengths `1, 3, 5, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23`, V5 **dedup ratio 6.48× on STRESS conv** (149 pre-dedup writes → 23 distinct messages) **and 5.31× across the whole dataset** (1242 → 234) — STRESS ratio beat the handoff §5 V5 "near 5×" expectation; (5) `messages_json` column drop — single `ALTER TABLE DROP COLUMN` failed with `cannot drop column ... because other objects depend on it` since the view's `SELECT pa.*` implicitly binds to every column, worked around with `DROP VIEW + DROP COLUMN + CREATE VIEW` (same view shape, smaller pa schema) in one atomic `BEGIN ... COMMIT`. **Migration `0016_drop_messages_json` added** to record the cleanup as a proper alembic file (split from 0015 because the drop sits after out-of-band backfill — bundling them would force `alembic upgrade head` on a fresh env to lose data). Live alembic ledger now at `0016_drop_messages_json`; tests 157 passed + 18 skipped; `ruff check` clean; alembic `upgrade --sql 0015:0016` and `downgrade --sql` round-trip cleanly. Post-state verification: `messages_json` column gone (`information_schema.columns` confirms `false`), `plugin_analytics_with_messages` view present, 234 rows in `conversation_messages`, 141 rows in `plugin_analytics` all with non-NULL `n_messages_at_request`. **Operator action required next, and ONLY remaining step**: `fly deploy` from `main` so the running image picks up the new write path (per-message UPSERT into `conversation_messages` before the analytics-row INSERT, `n_messages_at_request` replacing `messages_json`). Without redeploy the running image still tries to INSERT `messages_json` via the prior `_INSERT_SQL` and would `UndefinedColumn`-fail every new exchange. Post-deploy smoke is a single proxy exchange — verify one new `conversation_messages` row lands plus a new `plugin_analytics` row with non-NULL `n_messages_at_request`. Active worklog `docs/worklog/2026-05-19-candidate-1-implementation.md`. Code-half commit `54ca6fa`; live-apply commit landing now.) Implemented per the 2026-05-19 handoff doc §11 steps 1-3: ADR-0032 accepts Candidate 1 (UPSERT-by-`(conversation_id, msg_index)` is idempotent under stream retries; the two-rule normalization spec from the STRESS-1~6 study is already nailed); `normalize.py` ships `canonical_message()` applying Rule A (drop `cache_control` from every content block) + Rule B (collapse single bare-text-block array to bare string) with 8 unit tests covering the rules + the verified-stable fields (`tool_use.id`, `tool_result.tool_use_id`, extended-thinking `signature` — all carried verbatim); migration `0015_conversation_messages` creates the `conversation_messages` table keyed `(conversation_id, msg_index)` with `ON CONFLICT DO NOTHING` semantics, adds `plugin_analytics.n_messages_at_request`, and ships the `plugin_analytics_with_messages` view that reconstructs the original `messages` array by joining on `msg_index < n_messages_at_request`; **`messages_json` column drop is deliberately split out of the migration body** so an interrupted backfill cannot leave the row pointer without the source data — the drop runs as a follow-up step after live verification §6 V1-V5 passes; `ConversationMessage` ORM added to `storage/models.py` (the migration-only `plugin_analytics` table has no ORM class, so no further model change); plugin's `_INSERT_SQL` swaps `messages_json` → `n_messages_at_request`, new `_UPSERT_MESSAGE_SQL` runs once per `messages[idx]` before the analytics-row INSERT inside the existing `engine.begin()` transaction so the helper view never sees a row whose messages haven't landed; two new plugin tests (`test_messages_upserted_one_per_index`, `test_normalization_applied_at_upsert_boundary`) plus existing happy-path / null-response / fallback-recovery tests reshaped for the new write contract. Tests: 157 passed + 18 skipped across affected packages (was 147 + 18 at `748e62f`; +8 normalize, +2 plugin); `ruff check` clean; `alembic upgrade --sql` and `alembic downgrade --sql` both round-trip in a clean atomic `BEGIN ... COMMIT` block. **Out of scope this session** (deferred to next session per the handoff's explicit live-apply gating): apply migration 0015 to Supabase via MCP `execute_sql`; run the one-off backfill Python script (asyncpg + `canonical_message` — single-sourced through Python, per handoff §8 R3 mitigation, so the normalization rule never drifts between two implementations); run §6 V1-V5 verification queries against the STRESS conv `01KS084X32YARSRKGBY35ACRYM`; drop `plugin_analytics.messages_json` via MCP `execute_sql`; operator `fly deploy`; single-prompt post-deploy smoke. **Next single step (next session)**: get operator confirmation, then run handoff §11 step 3 — apply migration 0015 to Supabase via MCP `execute_sql` as one atomic `BEGIN; ... COMMIT;` block matching the 0013 / 0014 precedent. Active worklog `docs/worklog/2026-05-19-candidate-1-implementation.md`.)
+**Last updated**: 2026-05-21 (Claude Code; **Follow-up cleanup track — code committed across two scopes (`storage` + `docs`); migration 0017 + ADR-0033 + worklog ready for operator live-apply.** Two pickable items from the §"Queued follow-ups" menu landed in one session: (1) `exchanges.session_id` dropped as migration `0017_drop_exchanges_session_id` (commit `21c5552`) — column was hardcoded `"server"` at every call site and the analytics_sink plugin's `conversation_id` + `first_msg_hash` (live since Candidate-1 closure 2026-05-19) cover every use case the populator-follow-up was intended for; the column drop retires the long-queued "real `session_id` populator + deletion endpoint" item simultaneously. Removed from `Exchange` ORM, three `record_exchange_*` helpers (timing / blocked / failure), and three test files (`test_storage_smoke`, `test_rls_two_org_isolation`, `test_org_id_constraint`). Whole-repo grep confirms zero remaining references to the dropped Exchange column; surviving `session_id` matches are all `HookContext.session_id` (SDK-level request slot identifier — different concept). (2) `plugin_analytics` no-RLS ADR shipped as `0033-plugin-analytics-no-rls.md` (commit `257caee`) — elevates migration 0007's docstring choice to an ADR with the actual mechanical reason: the GUC binding `set_config('app.org_id', ...)` that `AuthMiddleware` issues is connection-scoped and does not propagate to the analytics plugin's separate `AsyncEngine`, so adding RLS would require every `engine.begin()` block to issue `SET LOCAL app.org_id = ...` repeated across the per-message UPSERT loop + the analytics-row INSERT — complexity for a table no end-user-facing path reads. Revisit trigger named: if `plugin_analytics` is ever exposed through a request-scoped session path. `conversation_messages` (migration 0015) inherits the same posture by association. Verified: tests 157 passed + 18 skipped (unchanged from Candidate-1 closure baseline); `ruff check` clean; alembic upgrade `--sql 0016:0017` and downgrade `--sql 0017:0016` round-trip cleanly through one atomic `BEGIN ... COMMIT`. Active worklog `docs/worklog/2026-05-21-followup-cleanup.md` ships next, plus this STATUS refresh under commit scope `docs`. **Operator action required next, and ONLY remaining step**: apply migration 0017 to Supabase via MCP `execute_sql` as one atomic `BEGIN; ... COMMIT;` block matching the 0013 / 0014 / 0015 / 0016 precedent, then `fly deploy` from `main` so the new image's helpers stop writing the dropped column. Without redeploy the running image would `UndefinedColumn`-fail every helper after the migration lands. **§"Queued follow-ups" menu after this session**: RLS item closed (ADR-0033); `session_id` populator item closed (column drop retires it); remaining items are task hierarchy (session/task/exchange) + i18n email scrubbing. Candidate-1 track remains closed at `7d3dad3`.)
+
+**Updated by**: Claude Code (follow-up cleanup — migration 0017 + ADR-0033 committed; awaiting operator live-apply + `fly deploy`)
+
+**Prior session marker** (2026-05-19, Claude Code; **Candidate-1 (`conversation_messages` dedup) — track CLOSED. `fly deploy` confirmed, post-deploy smoke passed across all verification axes. End-to-end shipped: code + live DB + running image + smoke.** Operator ran the `[CANDIDATE1-SMOKE]` single-prompt smoke against a Read tool chain at 14:44 KST; the verification query returned 5 rows in the window — main chain `user_input_turn_start` + 2× `tool_continuation` + 2× `internal_subprompt` (one pre-chain title-gen probe, one post-turn full-history internal call). All five rows green on every axis: `n_messages_at_request` non-NULL everywhere; `cm_visible == pa_n == view_n` for every row (UPSERT + view filter + `msg_index < n_messages_at_request` boundary all working); `[CANDIDATE1-SMOKE]` tag visible in `messages[0]` of every row (Rule A/B normalisation preserves user content through wrapper stripping); main chain `conversation_id` stable across the four turns with cumulative `turn_seq` 1 → 2 → 3 over user/tool turns and NULL for the two internal subprompts (per the off-turn-axis design); `n` grew 1, 3, 5, 7 (+2 per turn — Anthropic API strict user/assistant alternation appends `[prev_assistant_response, new_user_message]` each turn, which is precisely the quadratic duplication pressure the dedup design targets); the final n=7 `internal_subprompt` sharing the main `conversation_id` added zero new `conversation_messages` rows because `ON CONFLICT (conversation_id, msg_index) DO NOTHING` correctly suppressed all 7 already-backfilled indices. **No further action on Candidate-1.** This is a docs-only closure checkpoint: worklog `docs/worklog/2026-05-19-candidate-1-implementation.md` "What's left" struck the fly-deploy bullet, "Post-deploy smoke" section added with the 5-row evidence table, "Handoff" rewritten to "Track closed (2026-05-19)". STATUS.md head rewritten to reflect closed posture. No code changes. Whole-dataset dedup savings already measured this session at **5.31x** (1242 pre-dedup writes → 234 distinct messages); STRESS conv at **6.48x**. Future considerations: the helper view re-aggregates per query — fine for current conv length distribution (max 43 messages observed), revisit if any conv exceeds 100; subagent (Task tool) conversations already confirmed earlier — they auto-fork via different `first_msg_hash` → separate `conversation_id`, no design change needed. **Next active track is intentionally undecided** — same posture as the 2026-05-18 schema-cleanup closure: §"Queued follow-ups" stays the open menu. `plugin_analytics` RLS ADR-level revisit remains the most-shovel-ready queued item.) Operator authorised continuation past the code-commit checkpoint ("내가 fly deploy하는 전 단계까지 진행해줘"). Live apply ran in five steps via Supabase MCP `execute_sql`: (1) migration 0015 applied as one atomic `BEGIN ... COMMIT` (CREATE TABLE + CREATE INDEX + ADD COLUMN + CREATE VIEW + alembic ledger bump), matching the 0013 / 0014 precedent; (2) backfill ran as `INSERT INTO conversation_messages ... SELECT DISTINCT ON (conversation_id) ... ORDER BY jsonb_array_length DESC ... ON CONFLICT DO NOTHING` — within a single `conversation_id` the (B) rule guarantees `messages[0..k-1]` are byte-equal across rows after Rule A+B per STRESS verification, so the longest row per conversation covers every distinct `(conv_id, msg_index)` (saves 141 → 43 row reads), then `UPDATE plugin_analytics SET n_messages_at_request = jsonb_array_length(...)`; (3) **drift verification against Python `canonical_message()`** — a shape-diverse sample (msg indexes 0, 2, 7, 12, 22 of the STRESS conv covering Rule A wrapper-stripping, Rule B collapse, thinking-signature preservation, mid-chain tool_use/tool_result shapes, late-chain user input) was fed through `/tmp/verify_backfill.py` which reuses the production `canonical_message()` and reported `checked=5 mismatches=0` — the SQL backfill produces byte-equal output to Python, single-source guarantee preserved (handoff §8 R3 mitigation satisfied); (4) §6 V1-V5 verification queries all green — V1 STRESS conv = **23 messages**, V2 msg_index 2 = `string` containing `"[STRESS-2]"` (Rule B), V3 msg_index 0 = `array` with `has_cache_control=false` (Rule A), V4 helper view reconstructs cumulative chain lengths `1, 3, 5, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23`, V5 **dedup ratio 6.48× on STRESS conv** (149 pre-dedup writes → 23 distinct messages) **and 5.31× across the whole dataset** (1242 → 234) — STRESS ratio beat the handoff §5 V5 "near 5×" expectation; (5) `messages_json` column drop — single `ALTER TABLE DROP COLUMN` failed with `cannot drop column ... because other objects depend on it` since the view's `SELECT pa.*` implicitly binds to every column, worked around with `DROP VIEW + DROP COLUMN + CREATE VIEW` (same view shape, smaller pa schema) in one atomic `BEGIN ... COMMIT`. **Migration `0016_drop_messages_json` added** to record the cleanup as a proper alembic file (split from 0015 because the drop sits after out-of-band backfill — bundling them would force `alembic upgrade head` on a fresh env to lose data). Live alembic ledger now at `0016_drop_messages_json`; tests 157 passed + 18 skipped; `ruff check` clean; alembic `upgrade --sql 0015:0016` and `downgrade --sql` round-trip cleanly. Post-state verification: `messages_json` column gone (`information_schema.columns` confirms `false`), `plugin_analytics_with_messages` view present, 234 rows in `conversation_messages`, 141 rows in `plugin_analytics` all with non-NULL `n_messages_at_request`. **Operator action required next, and ONLY remaining step**: `fly deploy` from `main` so the running image picks up the new write path (per-message UPSERT into `conversation_messages` before the analytics-row INSERT, `n_messages_at_request` replacing `messages_json`). Without redeploy the running image still tries to INSERT `messages_json` via the prior `_INSERT_SQL` and would `UndefinedColumn`-fail every new exchange. Post-deploy smoke is a single proxy exchange — verify one new `conversation_messages` row lands plus a new `plugin_analytics` row with non-NULL `n_messages_at_request`. Active worklog `docs/worklog/2026-05-19-candidate-1-implementation.md`. Code-half commit `54ca6fa`; live-apply commit landing now.) Implemented per the 2026-05-19 handoff doc §11 steps 1-3: ADR-0032 accepts Candidate 1 (UPSERT-by-`(conversation_id, msg_index)` is idempotent under stream retries; the two-rule normalization spec from the STRESS-1~6 study is already nailed); `normalize.py` ships `canonical_message()` applying Rule A (drop `cache_control` from every content block) + Rule B (collapse single bare-text-block array to bare string) with 8 unit tests covering the rules + the verified-stable fields (`tool_use.id`, `tool_result.tool_use_id`, extended-thinking `signature` — all carried verbatim); migration `0015_conversation_messages` creates the `conversation_messages` table keyed `(conversation_id, msg_index)` with `ON CONFLICT DO NOTHING` semantics, adds `plugin_analytics.n_messages_at_request`, and ships the `plugin_analytics_with_messages` view that reconstructs the original `messages` array by joining on `msg_index < n_messages_at_request`; **`messages_json` column drop is deliberately split out of the migration body** so an interrupted backfill cannot leave the row pointer without the source data — the drop runs as a follow-up step after live verification §6 V1-V5 passes; `ConversationMessage` ORM added to `storage/models.py` (the migration-only `plugin_analytics` table has no ORM class, so no further model change); plugin's `_INSERT_SQL` swaps `messages_json` → `n_messages_at_request`, new `_UPSERT_MESSAGE_SQL` runs once per `messages[idx]` before the analytics-row INSERT inside the existing `engine.begin()` transaction so the helper view never sees a row whose messages haven't landed; two new plugin tests (`test_messages_upserted_one_per_index`, `test_normalization_applied_at_upsert_boundary`) plus existing happy-path / null-response / fallback-recovery tests reshaped for the new write contract. Tests: 157 passed + 18 skipped across affected packages (was 147 + 18 at `748e62f`; +8 normalize, +2 plugin); `ruff check` clean; `alembic upgrade --sql` and `alembic downgrade --sql` both round-trip in a clean atomic `BEGIN ... COMMIT` block. **Out of scope this session** (deferred to next session per the handoff's explicit live-apply gating): apply migration 0015 to Supabase via MCP `execute_sql`; run the one-off backfill Python script (asyncpg + `canonical_message` — single-sourced through Python, per handoff §8 R3 mitigation, so the normalization rule never drifts between two implementations); run §6 V1-V5 verification queries against the STRESS conv `01KS084X32YARSRKGBY35ACRYM`; drop `plugin_analytics.messages_json` via MCP `execute_sql`; operator `fly deploy`; single-prompt post-deploy smoke. **Next single step (next session)**: get operator confirmation, then run handoff §11 step 3 — apply migration 0015 to Supabase via MCP `execute_sql` as one atomic `BEGIN; ... COMMIT;` block matching the 0013 / 0014 precedent. Active worklog `docs/worklog/2026-05-19-candidate-1-implementation.md`.)
 
 **Updated by**: Claude Code (Candidate-1 — track CLOSED after operator `fly deploy` + smoke verification; next active track undecided per posture precedent)
 
@@ -127,19 +131,19 @@ to keep the plugin disabled at runtime while leaving the code in tree.
   `docs/worklog/2026-05-18-scope-guard-impl.md` §"Checkpoint
   plan".
 - **Queued follow-ups** (none gating; pick one to continue):
-  - **`plugin_analytics` RLS axis — ADR-level revisit.** 0007's
-    docstring chose "no RLS on this table" deliberately ("Analytics
-    is internal — the plugin queries this directly from operator
-    tooling"). Either elevate that choice to an ADR or reconsider
-    with an explicit policy on operator-tooling access shape.
   - **Task hierarchy (session/task/exchange).** Deferred track to
-    introduce a `task_id` layer between `session_id` and
-    `exchange_id` so multi-exchange Claude-Code sessions map to
-    operator-visible task units rather than only the per-turn
-    exchange row. Not gated on anything; design-first.
-  - **Real `session_id` populator + deletion endpoint** (ADR-0029
-    Axis 4 + Phase 3b agent identity).
+    introduce a `task_id` layer above `exchange_id` so
+    multi-exchange Claude-Code sessions map to operator-visible
+    task units rather than only the per-turn exchange row. Not
+    gated on anything; design-first.
   - **i18n email scrubbing** (ADR-0029 §"Open questions").
+  - ~~**`plugin_analytics` RLS axis — ADR-level revisit.**~~
+    **Closed 2026-05-21** by ADR-0033 (no RLS — GUC binding does
+    not propagate to the analytics plugin's separate `AsyncEngine`).
+  - ~~**Real `session_id` populator + deletion endpoint**~~
+    **Closed 2026-05-21** by migration 0017 — column dropped; the
+    analytics_sink plugin's `conversation_id` + `first_msg_hash`
+    cover the use cases the populator was meant to enable.
   - ~~**Block/Abort ctx-cleanup latent gap**~~ **Closed 2026-05-17**
     by commit `4fef915`.
   - ~~**DB-fixture integration tests for `record_exchange_failure`**~~
@@ -151,17 +155,42 @@ to keep the plugin disabled at runtime while leaving the code in tree.
 
 ## Active worklog
 
-`docs/worklog/2026-05-19-turn-classification-refinement.md` —
+`docs/worklog/2026-05-21-followup-cleanup.md` — follow-up cleanup
+track absorbing two §"Queued follow-ups" items in one session:
+(1) migration `0017_drop_exchanges_session_id` drops the long-stale
+column (commit `21c5552`), retiring the queued "real `session_id`
+populator + deletion endpoint" item simultaneously since the
+analytics_sink plugin's `conversation_id` + `first_msg_hash` already
+shipped that capability; (2) `0033-plugin-analytics-no-rls.md` ADR
+(commit `257caee`) elevates migration 0007's docstring choice with
+the actual mechanical reason — the GUC binding is connection-scoped
+and does not propagate to the analytics plugin's separate
+`AsyncEngine`. **Code complete, 157/18 tests + ruff clean, alembic
+upgrade/downgrade `--sql` round-trip clean; awaiting operator live
+apply (Supabase MCP `execute_sql` for migration 0017) + `fly deploy`
+from `main`.** Without redeploy the running image's helpers (which
+no longer pass `session_id="server"`) match the still-existing
+column shape — safe. After migration apply but before redeploy the
+helpers would `UndefinedColumn`-fail every exchange, so the two
+operator steps are sequenced: migrate first, deploy immediately
+after.
+
+**Prior worklog**: `docs/worklog/2026-05-19-candidate-1-implementation.md`
+— Candidate-1 (`conversation_messages` dedup). **Track fully closed
+2026-05-19** across all four axes: code (`54ca6fa`), live Supabase
+(migration 0015 + backfill + migration 0016 via MCP `execute_sql`;
+1242 → 234 dedup, 5.31× whole-dataset / 6.48× STRESS conv), running
+Fly image (`fly deploy` confirmed 2026-05-19), and post-deploy smoke
+(5 rows green across all axes — `pa_n` non-NULL, `cm_visible == pa_n
+== view_n`, smoke tag in `messages[0]`, `conversation_id` stable,
+`turn_seq` cumulative growth, `ON CONFLICT DO NOTHING` suppressing
+the post-turn full-history internal call's 7 already-backfilled
+indices).
+
+**Prior worklog**: `docs/worklog/2026-05-19-turn-classification-refinement.md` —
 title-gen mislabel fix + analytics_sink fallback recovery + 8 historic
-rows reclassified live. **Code complete, 142/18 tests + ruff clean,
-historic backfill applied; awaiting operator `fly deploy` from
-`main`.** Smoke path: run the same shape of session as the hand-test
-that uncovered these issues; verify (a) title-gen rows are
-`internal_subprompt`, (b) every typed input that reaches Claude
-Code's main conversation produces exactly one `user_input_turn_start`,
-(c) `analytics_sink.stash_skipped` warnings (if any) are paired with
-`analytics_sink.persist_fallback_recovered` rather than
-`persist_skipped reason=no_request_body`.
+rows reclassified live. Track closed by the subsequent `fly deploy`
+that landed alongside Candidate-1's pre-deploy preparation.
 
 **Prior worklog**: `docs/worklog/2026-05-19-turn-classification.md`
 — plugin_analytics turn classification (migration 0014). **Code,
@@ -331,39 +360,64 @@ CP14 proper).
 ## Recent commits
 
 ```
-94ef0fd   docs: STATUS + worklog — slash_commands JSONB bind fix
-c2536b6   analytics: JSON-encode slash_commands for asyncpg JSONB bind
-7179a72   docs: STATUS + worklog — turn-classification refinement
-98fbe9e   analytics: title-gen detection + sink fallback recovery
-164c6a6   docs: STATUS + worklog — turn classification (live apply + backfill)
-581acdd   docs: STATUS + worklog — turn classification (migration 0014)
+257caee   docs: ADR-0033 — plugin_analytics stays outside RLS
+21c5552   storage: drop exchanges.session_id (migration 0017)
+7d3dad3   docs: Candidate-1 track closed — fly deploy + smoke confirmed
+4c2babd   analytics: Candidate-1 live apply — backfill + messages_json drop (0016)
+a4727fc   docs: STATUS — Candidate-1 code half committed (54ca6fa)
+54ca6fa   analytics: Candidate-1 dedup — migration 0015 + plugin write path
 ```
 
 ## Where we paused
 
-**Turn classification — code + live schema + historic backfill
-all aligned (2026-05-19); only `fly deploy` remains.** Migration
-0014 applied via Supabase MCP `execute_sql` in one atomic
-`BEGIN; … COMMIT;` block (5 `ALTER TABLE ADD COLUMN` + 2
-`CREATE INDEX` + `alembic_version` advanced
-`0013_schema_cleanup` → `0014_analytics_turn_class`). The 56
-historic rows were backfilled in the same session via a single
-`DO $$ ... $$` plpgsql block that ports `classify_request` +
-`compute_first_msg_hash` + chain-lookup to SQL (`extensions.digest`
-+ `convert_to(..., 'UTF8')` to dodge the `text::bytea` failure
-on non-ASCII bodies; `regexp_replace(t, '^[[:space:]]+', '')`
-in place of `ltrim` to mirror Python `str.lstrip()`). Post-state
-verified: 18 conversations across 56 rows, 14 user-typed turn
-starts, slash command extraction confirmed on the three live
-`/compact` + `/clear` cases.
+**Follow-up cleanup — code committed across two scopes (`storage` +
+`docs`); migration 0017 + ADR-0033 ready for operator live apply +
+`fly deploy`.** This session retired two pickable items from the
+§"Queued follow-ups" menu in one pass:
 
-The remaining step is operator-owned per user direction
-("1, 2번까지만 해. fly deploy는 내가 따로 할게"):
+1. **`exchanges.session_id` dropped** as migration
+   `0017_drop_exchanges_session_id` (commit `21c5552`). Column was
+   hardcoded `"server"` at every call site (`record_exchange_timing`,
+   `record_exchange_blocked`, `record_exchange_failure`) and the
+   analytics_sink plugin's `conversation_id` + `first_msg_hash`
+   (live since Candidate-1 closure 2026-05-19) cover every use case
+   the long-queued "real `session_id` populator + deletion endpoint"
+   item was intended for — that follow-up is retired by the same
+   commit. Removed from `Exchange` ORM, the three storage helpers,
+   and three test files (`test_storage_smoke`,
+   `test_rls_two_org_isolation`, `test_org_id_constraint`).
+   Surviving `session_id` matches in the repo are all
+   `HookContext.session_id` (SDK request-slot identifier — different
+   concept; out of scope).
+2. **`plugin_analytics` no-RLS ADR** shipped as
+   `0033-plugin-analytics-no-rls.md` (commit `257caee`). Elevates
+   migration 0007's docstring choice to an ADR with the actual
+   mechanical reason: the GUC binding
+   `set_config('app.org_id', ...)` that `AuthMiddleware` issues is
+   connection-scoped and does not propagate to the analytics
+   plugin's separate `AsyncEngine`. Adding RLS would require every
+   `engine.begin()` block to issue `SET LOCAL app.org_id = ...`
+   repeated across the per-message UPSERT loop + the analytics-row
+   INSERT — complexity for a table no end-user-facing path reads.
+   Revisit trigger named: if `plugin_analytics` is ever exposed
+   through a request-scoped session path.
 
-3. `fly deploy` from `main` so the production plugin starts
-   populating the new columns on every new exchange via the
-   in-process plugin path (the SQL backfill handled the historic
-   rows; new rows take the plugin path).
+Verified: tests 157 passed + 18 skipped (matches the Candidate-1
+closure baseline — no test count drift); `ruff check` clean;
+alembic `upgrade --sql 0016:0017` and `downgrade --sql 0017:0016`
+round-trip cleanly through one atomic `BEGIN ... COMMIT` block.
+
+**Earlier — Candidate-1 (`conversation_messages` dedup) track
+fully closed 2026-05-19** across all four axes: code (`54ca6fa`),
+live Supabase schema + backfill + `messages_json` drop (`4c2babd`,
+migration 0015 + 0016 applied via Supabase MCP `execute_sql`; 1242
+pre-dedup writes → 234 distinct rows, 5.31× whole-dataset / 6.48×
+STRESS conv ratio), running Fly image (`fly deploy` confirmed
+2026-05-19), and post-deploy smoke (`7d3dad3`; 5 rows green across
+all verification axes). `messages_json` column gone; `n_messages_at_request`
+populated on every plugin_analytics row; `plugin_analytics_with_messages`
+view reconstructs the original `messages` array via JOIN. No further
+action on Candidate-1.
 
 **Earlier — storage schema cleanup track fully closed
 (2026-05-19).** Migration `0013_schema_cleanup` is aligned across
@@ -1976,35 +2030,53 @@ reframes them server-side**:
 
 ## Next single step
 
-**`fly deploy` from `main`** — operator-owned per user direction
-("1, 2번까지만 해. fly deploy는 내가 따로 할게"). The new image
-will run the updated `analytics_sink` plugin (commit `11a9e9b`)
-that populates `turn_kind` / `turn_seq` / `slash_commands` /
-`first_msg_hash` / `conversation_id` on every new INSERT via the
-in-process classifier + chain-lookup. Until that ships, new rows
-hitting the production plugin will leave the 5 new columns NULL
-(historic 56 rows are already populated by the 2026-05-19
-SQL backfill).
+**Operator-driven live apply of migration 0017 to Supabase via MCP
+`execute_sql`, then `fly deploy` from `main`.** Two sequential
+operator actions, the second non-skippable because after the
+column drops live the previous image's helpers would
+`UndefinedColumn`-fail every helper invocation (the new image's
+helpers no longer pass `session_id`). SQL preview (matches the
+alembic round-trip output):
 
-**Earlier — undecided after schema cleanup closure.** Per user
-direction the next active track was intentionally left unpicked
-after `253a941`; this session picked turn classification at user
-request. The §"Queued follow-ups" list under §"Current phase"
-keeps its other items (plugin_analytics RLS, task hierarchy,
-session_id populator + deletion endpoint, i18n email scrubbing).
+```sql
+BEGIN;
+ALTER TABLE exchanges DROP COLUMN session_id;
+UPDATE alembic_version SET version_num='0017_drop_exchanges_session_id'
+  WHERE version_num = '0016_drop_messages_json';
+COMMIT;
+```
 
-The §"Queued follow-ups" menu (none gating; pick one):
+Post-apply verification:
 
-1. **`plugin_analytics` RLS axis — ADR-level revisit.** Most
-   shovel-ready. Either elevate 0007's "no RLS on this table"
-   choice to an ADR or reconsider with an explicit policy on
-   operator-tooling access shape.
-2. **Task hierarchy (session/task/exchange).** Deferred design-first
-   track to introduce a `task_id` layer between `session_id` and
-   `exchange_id`.
-3. **Real `session_id` populator + deletion endpoint** (ADR-0029
-   Axis 4 + Phase 3b agent identity).
-4. **i18n email scrubbing** (ADR-0029 §"Open questions").
+```sql
+SELECT
+  (SELECT version_num FROM alembic_version)                                AS alembic_at,
+  (SELECT EXISTS (SELECT 1 FROM information_schema.columns
+       WHERE table_name='exchanges' AND column_name='session_id'))         AS session_id_col;
+-- expected: alembic_at = 0017_drop_exchanges_session_id, session_id_col = false
+```
+
+**After 0017 lands live**, the §"Queued follow-ups" menu has two
+remaining items (the other two were retired by this session):
+
+1. **Task hierarchy (session/task/exchange).** Deferred design-first
+   track to introduce a `task_id` layer above `exchange_id`. Not
+   gated on anything.
+2. **i18n email scrubbing** (ADR-0029 §"Open questions").
+
+Closed by this session:
+
+- ~~**`plugin_analytics` RLS axis — ADR-level revisit.**~~
+  **Closed 2026-05-21** by ADR-0033.
+- ~~**Real `session_id` populator + deletion endpoint.**~~
+  **Closed 2026-05-21** by migration 0017 — the column was the
+  premise, and the analytics_sink plugin's `conversation_id` +
+  `first_msg_hash` retired the use cases the populator was meant
+  to enable.
+
+scope_guard remains paused at commit `0c1ca9d` per its handoff
+worklog and is **not** a candidate for auto-resume from this
+STATUS. A separate owner picks that track up.
 
 scope_guard remains paused at commit `0c1ca9d` per its handoff
 worklog and is **not** a candidate for auto-resume from this

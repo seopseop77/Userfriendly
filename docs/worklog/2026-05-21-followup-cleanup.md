@@ -220,6 +220,106 @@ After `fly deploy` lands, the §"Queued follow-ups" menu has two
 remaining items (task hierarchy + i18n email scrubbing) — pick one
 or leave undecided per the existing posture precedent.
 
+## Continuation — `content_level` configurable via env (same day)
+
+User request: replace the hardcoded `content_level="L3"` at the three
+`Exchange(...)` constructor sites with a configurable env var
+(`LLMTRACK_CONTENT_LEVEL`, default `"L3"`). Per CLAUDE.md §9
+`content_level` is a public interface — the operator-knob shape
+needs to exist even if production keeps the default.
+
+### Step d check — design.md content level definitions
+
+`docs/design.md` defines L0/L1/L2/L3 cleanly (§7.1 table):
+
+| L0 | Metadata only — token counts, model name, latency, tool names, status code |
+| L1 | L0 + deterministic hashes (SHA-256) of bodies, lengths |
+| L2 | L0 + scrubbed body (secrets/PII/paths/emails/IPs removed) |
+| L3 | Raw (still scrubber-passed) |
+
+`packages/llm_tracker_sdk/src/llm_tracker_sdk/levels.py` already
+ships these as a `ContentLevel` IntEnum. No ambiguity, no "Decision
+needed" stop — proceeded to implementation.
+
+### What was done (commit `2a68c56`)
+
+- Modified `packages/llm_tracker_server/src/llm_tracker_server/config.py`
+  — added `content_level: Literal["L0", "L1", "L2", "L3"] = "L3"` to
+  `Settings`. `Literal` lets pydantic-settings reject typos at
+  instantiation so a bad env value fails the server boot rather
+  than silently mis-labelling rows.
+- Modified `packages/llm_tracker_server/src/llm_tracker_server/storage/exchanges.py`
+  — added `content_level: str` as a required keyword-only argument
+  to all three helpers (`record_exchange_timing`,
+  `record_exchange_blocked`, `record_exchange_failure`); the
+  hardcoded `"L3"` literal at each `Exchange(...)` constructor
+  call site now reads the kwarg. Module docstring updated to name
+  the env-var path.
+- Modified `packages/llm_tracker_server/src/llm_tracker_server/app.py`
+  — `app.state.content_level = resolved.content_level` plumbed onto
+  app state alongside `session_factory`.
+- Modified `packages/llm_tracker_server/src/llm_tracker_server/proxy/forwarder.py`
+  — reads `content_level` from `app.state` once at the top of
+  `forward_request` (with `"L3"` fallback for unit-test paths that
+  build a bare `Request` with no app in scope); threaded through
+  all six helper call sites (3× `record_exchange_blocked`, 2×
+  `record_exchange_failure`, 1× `record_exchange_timing`).
+- Modified `packages/llm_tracker_server/tests/test_record_exchange_failure_db.py`
+  — two direct-helper call sites now pass `content_level="L3"`
+  (required kwarg).
+
+### Decisions
+
+- **`content_level` is a required kwarg, not a defaulted one.**
+  Giving it a default would let a forgotten forwarder call site
+  silently regress to hardcoded `"L3"` — the very thing this track
+  is removing. Required kwarg means any future caller has to make
+  the choice explicit; tests pass `"L3"` because that's the
+  documented production default. The forwarder's `"L3"` fallback at
+  the `getattr(state, "content_level", "L3")` line is only for
+  tests that bypass `create_app` — production always reads through
+  `Settings`.
+- **Validation via `Literal[...]` in pydantic-settings, not a
+  field_validator.** Same outcome, less code; pydantic native
+  Literal handling rejects typos at `Settings()` instantiation
+  exactly when the server boots. The four-level enumeration is
+  closed (design.md §7.1), so `Literal` is the right primitive.
+- **`Settings.content_level` is a `str`, not the SDK `ContentLevel`
+  IntEnum.** The `exchanges.content_level` column is `TEXT`
+  (migration 0001); the storage helpers treat it as a string label.
+  Keeping the type as `str` at the config + helper boundary avoids
+  an unnecessary conversion at every call site. Validation that
+  the string is one of the four labels happens once, at Settings
+  instantiation.
+
+### Verification
+
+```
+$ .venv/bin/python3.12 -m pytest \
+    packages/llm_tracker_sdk \
+    packages/llm_tracker_plugin_analytics_sink \
+    packages/llm_tracker_server -q
+157 passed, 18 skipped in 5.57s
+
+$ .venv/bin/python3.12 -m ruff check packages/llm_tracker_server/
+All checks passed!
+```
+
+Test count unchanged from the prior commit (157 + 18 skipped) — no
+new tests added; existing call-shape tests already cover the kwarg
+plumbing since the forwarder hooks tests exercise the three
+short-circuit paths. The Literal validation gets implicit coverage
+the moment any operator sets a typo and the server fails to boot.
+
+### Live state
+
+`LLMTRACK_CONTENT_LEVEL` is **not yet set in Fly secrets** — the
+running image will default to `"L3"` (matching the previous
+hardcoded behaviour), so no behaviour change at deploy time. If
+the operator later wants L0/L1/L2 on production, set
+`fly secrets set LLMTRACK_CONTENT_LEVEL=L0` (or other) and
+redeploy; the next exchange writes the new label.
+
 ## Suggestions (untouched)
 
 - **`ruff format` drift across five files** unrelated to this track:

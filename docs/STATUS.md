@@ -6,7 +6,7 @@
 
 ---
 
-**Last updated**: 2026-05-21 (Claude Code; **Follow-up cleanup track — code + live Supabase schema aligned; only `fly deploy` remains.** Migration 0017 applied via Supabase MCP `execute_sql` in one atomic `BEGIN; ... COMMIT;` block matching the 0013/0014/0015/0016 precedent — pre-state confirmed 182 rows all carrying `session_id='server'` (zero non-`"server"` values to lose); `ALTER TABLE DROP COLUMN session_id` ran as a metadata-only operation followed by the `alembic_version` advance `0016_drop_messages_json` → `0017_drop_exchanges_session_id`; post-state confirms `information_schema.columns` no longer carries `session_id`, alembic ledger at `0017`, all 182 rows preserved. **Operator action required next, and ONLY remaining step**: `fly deploy` from `main` so the running image's helpers (which no longer pass `session_id` to the `Exchange` ORM constructor) match the live schema. Without redeploy, the running image's helpers still emit the prior compiled SQL shape with `session_id` and would `UndefinedColumn`-fail every happy-path / blocked / failure helper invocation. Post-deploy smoke is one non-blocked exchange — verify a clean `exchanges` row with `status_code=200` and no `record_exchange_*` `UndefinedColumn` error in Fly logs.
+**Last updated**: 2026-05-21 (Claude Code; **Follow-up cleanup track — extended with `content_level` env-var configurability; code + live Supabase schema aligned for 0017; `fly deploy` is the only remaining step.** User-requested continuation after the 0017/ADR-0033 closure: replaced the hardcoded `content_level="L3"` at the three `Exchange(...)` constructor sites with `LLMTRACK_CONTENT_LEVEL` (pydantic `Literal["L0", "L1", "L2", "L3"]`, default `"L3"`) per CLAUDE.md §9 (public-interface configurability) — `Settings.content_level` is plumbed onto `app.state.content_level` next to `session_factory`, the forwarder reads it once at the top of `forward_request` (with `"L3"` fallback for unit-test paths that bypass `create_app`), and threads it through all six storage-helper call sites (3× `record_exchange_blocked`, 2× `record_exchange_failure`, 1× `record_exchange_timing`). The three helpers now take `content_level: str` as a required keyword-only argument — giving it a default would let a forgotten forwarder site silently regress to hardcoded `"L3"`, defeating the purpose. design.md §7.1 + SDK `ContentLevel` IntEnum (L0/L1/L2/L3) confirm definitions; step d "Decision needed" stop not triggered. Verified: 157 passed + 18 skipped (unchanged), `ruff check` clean. Commit `2a68c56` (scope `server`). **Production default unchanged**: `LLMTRACK_CONTENT_LEVEL` not yet set in Fly secrets, so the running image after redeploy will still write `"L3"` — the new env knob is opt-in for operator overrides only. Earlier this session: Migration 0017 applied via Supabase MCP `execute_sql` in one atomic `BEGIN; ... COMMIT;` block matching the 0013/0014/0015/0016 precedent — pre-state confirmed 182 rows all carrying `session_id='server'` (zero non-`"server"` values to lose); `ALTER TABLE DROP COLUMN session_id` ran as a metadata-only operation followed by the `alembic_version` advance `0016_drop_messages_json` → `0017_drop_exchanges_session_id`; post-state confirms `information_schema.columns` no longer carries `session_id`, alembic ledger at `0017`, all 182 rows preserved. **Operator action required next, and ONLY remaining step**: `fly deploy` from `main` so the running image's helpers (which no longer pass `session_id` to the `Exchange` ORM constructor) match the live schema. Without redeploy, the running image's helpers still emit the prior compiled SQL shape with `session_id` and would `UndefinedColumn`-fail every happy-path / blocked / failure helper invocation. Post-deploy smoke is one non-blocked exchange — verify a clean `exchanges` row with `status_code=200` and no `record_exchange_*` `UndefinedColumn` error in Fly logs.
 
 Earlier this session — code half:** Two pickable items from the §"Queued follow-ups" menu landed in one session: (1) `exchanges.session_id` dropped as migration `0017_drop_exchanges_session_id` (commit `21c5552`) — column was hardcoded `"server"` at every call site and the analytics_sink plugin's `conversation_id` + `first_msg_hash` (live since Candidate-1 closure 2026-05-19) cover every use case the populator-follow-up was intended for; the column drop retires the long-queued "real `session_id` populator + deletion endpoint" item simultaneously. Removed from `Exchange` ORM, three `record_exchange_*` helpers (timing / blocked / failure), and three test files (`test_storage_smoke`, `test_rls_two_org_isolation`, `test_org_id_constraint`). Whole-repo grep confirms zero remaining references to the dropped Exchange column; surviving `session_id` matches are all `HookContext.session_id` (SDK-level request slot identifier — different concept). (2) `plugin_analytics` no-RLS ADR shipped as `0033-plugin-analytics-no-rls.md` (commit `257caee`) — elevates migration 0007's docstring choice to an ADR with the actual mechanical reason: the GUC binding `set_config('app.org_id', ...)` that `AuthMiddleware` issues is connection-scoped and does not propagate to the analytics plugin's separate `AsyncEngine`, so adding RLS would require every `engine.begin()` block to issue `SET LOCAL app.org_id = ...` repeated across the per-message UPSERT loop + the analytics-row INSERT — complexity for a table no end-user-facing path reads. Revisit trigger named: if `plugin_analytics` is ever exposed through a request-scoped session path. `conversation_messages` (migration 0015) inherits the same posture by association. Verified: tests 157 passed + 18 skipped (unchanged from Candidate-1 closure baseline); `ruff check` clean; alembic upgrade `--sql 0016:0017` and downgrade `--sql 0017:0016` round-trip cleanly through one atomic `BEGIN ... COMMIT`. Active worklog `docs/worklog/2026-05-21-followup-cleanup.md` ships next, plus this STATUS refresh under commit scope `docs`. **Operator action required next, and ONLY remaining step**: apply migration 0017 to Supabase via MCP `execute_sql` as one atomic `BEGIN; ... COMMIT;` block matching the 0013 / 0014 / 0015 / 0016 precedent, then `fly deploy` from `main` so the new image's helpers stop writing the dropped column. Without redeploy the running image would `UndefinedColumn`-fail every helper after the migration lands. **§"Queued follow-ups" menu after this session**: RLS item closed (ADR-0033); `session_id` populator item closed (column drop retires it); remaining items are task hierarchy (session/task/exchange) + i18n email scrubbing. Candidate-1 track remains closed at `7d3dad3`.)
 
@@ -158,19 +158,26 @@ to keep the plugin disabled at runtime while leaving the code in tree.
 ## Active worklog
 
 `docs/worklog/2026-05-21-followup-cleanup.md` — follow-up cleanup
-track absorbing two §"Queued follow-ups" items in one session:
+track absorbing three items in one session:
 (1) migration `0017_drop_exchanges_session_id` drops the long-stale
 column (commit `21c5552`, applied live via Supabase MCP
 `execute_sql` this same session — alembic ledger at `0017`, column
 gone, 182 rows preserved), retiring the queued "real `session_id`
 populator + deletion endpoint" item simultaneously since the
 analytics_sink plugin's `conversation_id` + `first_msg_hash` already
-shipped that capability; (2) `0033-plugin-analytics-no-rls.md` ADR
+shipped that capability;
+(2) `0033-plugin-analytics-no-rls.md` ADR
 (commit `257caee`) elevates migration 0007's docstring choice with
 the actual mechanical reason — the GUC binding is connection-scoped
 and does not propagate to the analytics plugin's separate
-`AsyncEngine`. **Code + live schema aligned; only `fly deploy`
-from `main` remains.** After the migration apply but before
+`AsyncEngine`;
+(3) `content_level` made env-configurable (commit `2a68c56`) via
+`LLMTRACK_CONTENT_LEVEL` (pydantic `Literal["L0", "L1", "L2", "L3"]`,
+default `"L3"`) — replaces the hardcoded `"L3"` at three
+`Exchange(...)` sites; required kwarg on the three helpers means a
+forgotten forwarder site can't silently regress.
+**Code + live schema aligned; only `fly deploy` from `main`
+remains.** After the migration apply but before
 redeploy, the running image's helpers still emit the prior compiled
 SQL shape with `session_id` and would `UndefinedColumn`-fail every
 exchange — so the deploy is non-skippable and is the single gate
@@ -361,12 +368,12 @@ CP14 proper).
 ## Recent commits
 
 ```
+2a68c56   server: content_level configurable via LLMTRACK_CONTENT_LEVEL
+0575821   docs: STATUS + worklog — migration 0017 applied live to Supabase
+7ac1c0e   docs: STATUS + worklog — follow-up cleanup (0017 + ADR-0033)
 257caee   docs: ADR-0033 — plugin_analytics stays outside RLS
 21c5552   storage: drop exchanges.session_id (migration 0017)
 7d3dad3   docs: Candidate-1 track closed — fly deploy + smoke confirmed
-4c2babd   analytics: Candidate-1 live apply — backfill + messages_json drop (0016)
-a4727fc   docs: STATUS — Candidate-1 code half committed (54ca6fa)
-54ca6fa   analytics: Candidate-1 dedup — migration 0015 + plugin write path
 ```
 
 ## Where we paused
@@ -377,9 +384,16 @@ Supabase MCP `execute_sql` in one atomic `BEGIN; ... COMMIT;` block;
 alembic ledger advanced `0016_drop_messages_json` →
 `0017_drop_exchanges_session_id`; pre-state confirmed zero
 non-`"server"` rows, post-state confirms `session_id` column gone
-and all 182 rows preserved (metadata-only column drop). This
-session retired two pickable items from the §"Queued follow-ups"
-menu in one pass:
+and all 182 rows preserved (metadata-only column drop). Same
+session also extended the track with `content_level` env-var
+configurability (commit `2a68c56`) — `LLMTRACK_CONTENT_LEVEL`
+plumbed from `Settings` → `app.state` → `forward_request` → all six
+helper call sites; the three helpers now take `content_level: str`
+as a required keyword-only argument so a forgotten site can't
+silently regress to the prior hardcoded `"L3"`. Production default
+unchanged (`LLMTRACK_CONTENT_LEVEL` not set in Fly secrets → still
+`"L3"` on every row after redeploy). This session retired two
+pickable items from the §"Queued follow-ups" menu in one pass:
 
 1. **`exchanges.session_id` dropped** as migration
    `0017_drop_exchanges_session_id` (commit `21c5552`). Column was

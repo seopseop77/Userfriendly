@@ -191,3 +191,55 @@ def test_scrub_falls_back_to_text_for_non_json_input() -> None:
     out = scrub("contact alice@example.com")
     assert "[REDACTED:email]" in out
     assert "alice@example" not in out
+
+
+# -- i18n emails (ADR-0029 §"Open questions" follow-up) -------------------
+
+
+def test_email_with_unicode_local_part_redacted() -> None:
+    """Unicode local part (umlauts, accents) is still an email -- redact.
+
+    The original ASCII-only local-part class missed these entirely, which
+    was a privacy hole on user-typed prompts mentioning non-English names.
+    """
+    out = scrub("Contact ünîcödé@example.com for details.")
+    assert "ünîcödé@example" not in out
+    assert "[REDACTED:email]" in out
+
+
+def test_email_with_idn_domain_raw_unicode_redacted() -> None:
+    """IDN domain in raw Unicode form (münchen.de etc.) -- redact.
+
+    The on-the-wire canonical form is punycode (xn--mnchen-3ya.de) but
+    user-typed prompts and quoted emails routinely carry the raw form.
+    """
+    out = scrub("alice@münchen.de wrote in.")
+    assert "alice@münchen" not in out
+    assert "[REDACTED:email]" in out
+
+
+def test_email_with_punycode_domain_redacted() -> None:
+    """IDN domain in punycode form is pure ASCII -- already handled, pin it."""
+    out = scrub("alice@xn--mnchen-3ya.de wrote in.")
+    assert "alice@xn--mnchen-3ya" not in out
+    assert "[REDACTED:email]" in out
+
+
+def test_scrub_unicode_email_in_json_body_round_trips() -> None:
+    """JSON body with Unicode email + Unicode local + Unicode domain
+    scrubs to valid JSON via ``ensure_ascii=False`` and round-trips."""
+    import json as _json
+
+    body = _json.dumps(
+        {"messages": [{"role": "user", "content": "From ünîcödé@münchen.de"}]},
+        ensure_ascii=False,
+    )
+    out = scrub(body)
+    parsed = _json.loads(out)
+    assert parsed["messages"][0]["content"] == "From [REDACTED:email]"
+
+
+def test_unicode_text_without_email_unchanged() -> None:
+    """Non-email Unicode text must not false-positive into a redaction."""
+    raw = "안녕하세요 世界 -- no email here"
+    assert scrub(raw) == raw

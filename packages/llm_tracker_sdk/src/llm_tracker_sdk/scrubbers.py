@@ -51,7 +51,13 @@ _REDACTED = "[REDACTED:{kind}]"
 _BEARER_VALUE_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-+/=]+")
 _SK_TOKEN_RE = re.compile(r"\bsk-[A-Za-z0-9_\-]{8,}\b")
 _LTS_TOKEN_RE = re.compile(r"\blts_[A-Za-z0-9_\-]{8,}\b")
-_EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
+# Local part + non-TLD domain use ``\w`` (Python 3 Unicode-aware) so
+# umlauted local parts (``ünîcödé@``) and raw IDN domains (``münchen.de``)
+# both redact. TLD stays ``[A-Za-z]{2,}`` -- the ASCII constraint blocks
+# a ``1.2``-style false positive and covers the punycode wire format
+# (``xn--mnchen-3ya.de``); raw Unicode-TLD shapes (``example.中国``) are
+# rare enough in user prompts to defer per the privacy-tilted scope.
+_EMAIL_RE = re.compile(r"\b[\w.%+\-]+@[\w.\-]+\.[A-Za-z]{2,}\b")
 
 
 def scrub(text: str) -> str:

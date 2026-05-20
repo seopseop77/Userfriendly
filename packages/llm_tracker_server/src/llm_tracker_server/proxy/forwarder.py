@@ -191,6 +191,12 @@ async def forward_request(
     # keep working under the CP7/CP8 transparent shape.
     state = getattr(request.scope.get("app"), "state", None)
     session_factory = getattr(state, "session_factory", None)
+    # `content_level` is the value every storage helper writes. The
+    # `"L3"` fallback covers tests that build a bare ``Request`` with
+    # no ``app`` in scope; the production path always reads the
+    # configured value (``Settings.content_level``) that ``create_app``
+    # plumbs onto ``app.state``.
+    content_level = getattr(state, "content_level", "L3")
     outer_bind = bind_request_context(session, org_id) if has_request_scope else nullcontext()
 
     with outer_bind:
@@ -210,6 +216,7 @@ async def forward_request(
                         exchange_id=exchange_id,
                         org_id=org_id,
                         endpoint=path,
+                        content_level=content_level,
                         blocked_by=result.plugin,
                         started_at_ms=t0_epoch_ms,
                         ended_at_ms=blocked_ended_ms,
@@ -241,6 +248,7 @@ async def forward_request(
                         exchange_id=exchange_id,
                         org_id=org_id,
                         endpoint=path,
+                        content_level=content_level,
                         blocked_by=result.plugin,
                         started_at_ms=t0_epoch_ms,
                         ended_at_ms=blocked_ended_ms,
@@ -283,6 +291,7 @@ async def forward_request(
                     exchange_id=exchange_id,
                     org_id=org_id,
                     endpoint=path,
+                    content_level=content_level,
                     started_at_ms=t0_epoch_ms,
                     ended_at_ms=ended_ms,
                     latency_ms=latency,
@@ -313,6 +322,7 @@ async def forward_request(
                     exchange_id=exchange_id,
                     org_id=org_id,
                     endpoint=path,
+                    content_level=content_level,
                     started_at_ms=t0_epoch_ms,
                     ended_at_ms=ended_ms,
                     latency_ms=latency,
@@ -343,6 +353,7 @@ async def forward_request(
                         exchange_id=exchange_id,
                         org_id=org_id,
                         endpoint=path,
+                        content_level=content_level,
                         blocked_by=result.plugin,
                         started_at_ms=t0_epoch_ms,
                         ended_at_ms=blocked_ended_ms,
@@ -439,6 +450,7 @@ async def forward_request(
                             exchange_id=exchange_id,
                             org_id=org_id,
                             endpoint=path,
+                            content_level=content_level,
                             t_request_received_ms=t0_epoch_ms,
                             t_upstream_first_byte_ms=t_up,
                             t_client_first_byte_ms=t_cli,

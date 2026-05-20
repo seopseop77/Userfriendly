@@ -88,6 +88,10 @@ def create_app(
                 # middleware's session is committed before the body
                 # streams under BaseHTTPMiddleware ordering).
                 app.state.session_factory = session_factory
+                # `content_level` is the per-row label every storage
+                # helper writes — public interface per CLAUDE.md §9,
+                # configurable via `LLMTRACK_CONTENT_LEVEL`.
+                app.state.content_level = resolved.content_level
 
             log.info(
                 "server.startup",

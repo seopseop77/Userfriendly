@@ -30,6 +30,12 @@ the per-request :class:`AsyncSession` opened by
 (``set_config('app.org_id', ...)``) is what makes CP5 RLS match this
 row. ``org_id`` is also set on the column explicitly — defense in depth.
 
+``content_level`` is keyword-only too, fed from ``Settings.content_level``
+(env ``LLMTRACK_CONTENT_LEVEL``, default ``"L3"``). Per CLAUDE.md §9
+the value is a public interface; the env-var path lets operators pick
+a lower level (L0/L1/L2) without redeploying. Validation lives in
+``Settings`` so this layer trusts whatever string lands here.
+
 The helpers ``flush`` rather than ``commit``: the middleware's terminal
 ``session.commit()`` remains the single transaction boundary.
 """
@@ -49,6 +55,7 @@ async def record_exchange_timing(
     exchange_id: str,
     org_id: uuid.UUID,
     endpoint: str,
+    content_level: str,
     t_request_received_ms: int,
     t_upstream_first_byte_ms: int,
     t_client_first_byte_ms: int,
@@ -81,7 +88,7 @@ async def record_exchange_timing(
             status_code=status_code,
             latency_ms=latency_ms,
             stop_reason=stop_reason,
-            content_level="L3",
+            content_level=content_level,
             t_request_received_ms=t_request_received_ms,
             t_upstream_first_byte_ms=t_upstream_first_byte_ms,
             t_client_first_byte_ms=t_client_first_byte_ms,
@@ -96,6 +103,7 @@ async def record_exchange_blocked(
     exchange_id: str,
     org_id: uuid.UUID,
     endpoint: str,
+    content_level: str,
     blocked_by: str,
     started_at_ms: int,
     ended_at_ms: int | None = None,
@@ -120,7 +128,7 @@ async def record_exchange_blocked(
             endpoint=endpoint,
             model_requested=model_requested,
             latency_ms=latency_ms,
-            content_level="L3",
+            content_level=content_level,
             t_request_received_ms=started_at_ms,
             blocked_by=blocked_by,
         )
@@ -134,6 +142,7 @@ async def record_exchange_failure(
     exchange_id: str,
     org_id: uuid.UUID,
     endpoint: str,
+    content_level: str,
     started_at_ms: int,
     ended_at_ms: int,
     latency_ms: int,
@@ -166,7 +175,7 @@ async def record_exchange_failure(
             model_requested=model_requested,
             status_code=status_code,
             latency_ms=latency_ms,
-            content_level="L3",
+            content_level=content_level,
             t_request_received_ms=started_at_ms,
         )
     )

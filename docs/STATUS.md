@@ -6,7 +6,7 @@
 
 ---
 
-**Last updated**: 2026-05-21 (Claude Code; **Follow-up cleanup track — extended with `content_level` env-var configurability; code + live Supabase schema aligned for 0017; `fly deploy` is the only remaining step.** User-requested continuation after the 0017/ADR-0033 closure: replaced the hardcoded `content_level="L3"` at the three `Exchange(...)` constructor sites with `LLMTRACK_CONTENT_LEVEL` (pydantic `Literal["L0", "L1", "L2", "L3"]`, default `"L3"`) per CLAUDE.md §9 (public-interface configurability) — `Settings.content_level` is plumbed onto `app.state.content_level` next to `session_factory`, the forwarder reads it once at the top of `forward_request` (with `"L3"` fallback for unit-test paths that bypass `create_app`), and threads it through all six storage-helper call sites (3× `record_exchange_blocked`, 2× `record_exchange_failure`, 1× `record_exchange_timing`). The three helpers now take `content_level: str` as a required keyword-only argument — giving it a default would let a forgotten forwarder site silently regress to hardcoded `"L3"`, defeating the purpose. design.md §7.1 + SDK `ContentLevel` IntEnum (L0/L1/L2/L3) confirm definitions; step d "Decision needed" stop not triggered. Verified: 157 passed + 18 skipped (unchanged), `ruff check` clean. Commit `2a68c56` (scope `server`). **Production default unchanged**: `LLMTRACK_CONTENT_LEVEL` not yet set in Fly secrets, so the running image after redeploy will still write `"L3"` — the new env knob is opt-in for operator overrides only. Earlier this session: Migration 0017 applied via Supabase MCP `execute_sql` in one atomic `BEGIN; ... COMMIT;` block matching the 0013/0014/0015/0016 precedent — pre-state confirmed 182 rows all carrying `session_id='server'` (zero non-`"server"` values to lose); `ALTER TABLE DROP COLUMN session_id` ran as a metadata-only operation followed by the `alembic_version` advance `0016_drop_messages_json` → `0017_drop_exchanges_session_id`; post-state confirms `information_schema.columns` no longer carries `session_id`, alembic ledger at `0017`, all 182 rows preserved. **Operator action required next, and ONLY remaining step**: `fly deploy` from `main` so the running image's helpers (which no longer pass `session_id` to the `Exchange` ORM constructor) match the live schema. Without redeploy, the running image's helpers still emit the prior compiled SQL shape with `session_id` and would `UndefinedColumn`-fail every happy-path / blocked / failure helper invocation. Post-deploy smoke is one non-blocked exchange — verify a clean `exchanges` row with `status_code=200` and no `record_exchange_*` `UndefinedColumn` error in Fly logs.
+**Last updated**: 2026-05-21 (Claude Code; **Follow-up cleanup track — i18n email scrubbing closed (the last `§"Queued follow-ups"` item from this track's pre-session menu); `fly deploy` is still the only remaining step for the whole track.** User-requested continuation after the `content_level` extension: extend the PII scrubber's `_EMAIL_RE` so internationalised emails redact correctly. Pre-change diagnosis: case 1 (unicode local part `ünîcödé@…`) and case 2 (raw IDN domain `user@münchen.de`) were privacy holes — both char classes (`[A-Za-z0-9._%+\-]` + `[A-Za-z0-9.\-]`) were ASCII-only so neither match could reach the `@`; case 3 (punycode `user@xn--mnchen-3ya.de`) was already handled because the wire format is pure ASCII; JSON-structure preservation was already handled via the 2026-05-19 `ensure_ascii=False` fast path; no-false-positive on non-email Unicode (e.g. `안녕하세요 世界`) was already handled because TLD `[A-Za-z]{2,}` blocks numeric/short matches. Five new tests landed first (test-first per step c) — three failed against the pre-fix regex (cases 1, 2, and the JSON variant combining both), two passed (case 3 sanity + non-email Unicode no-false-positive). Then the regex local-part class swapped to `[\w.%+\-]` and non-TLD-domain class swapped to `[\w.\-]` — `\w` is Python 3 Unicode-aware by default so umlauted local parts + raw IDN domains both redact via the same char-class extension. TLD stayed `[A-Za-z]{2,}` deliberately — real Unicode TLDs exist (`.한국`, `.中国`, `.рф`) but the canonical wire form is punycode (ASCII), and loosening the TLD to `\w` would risk matching `1.23`-style false positives. Single-pattern fix preferred over a second regex pass since `\w` is the right primitive and avoids the two-rules-to-coordinate problem. Commit `8b59887` (scope `scrubbers`). Verified: 24/24 scrubber tests pass (was 21; +5 new), full suite 162 passed + 18 skipped (was 157; +5 i18n cases), `ruff check` clean. No live data backfill — historic rows were already scrubbed via the prior regex; the broader behaviour applies to new exchanges after the next `fly deploy`. Earlier this session: User-requested continuation after the 0017/ADR-0033 closure: replaced the hardcoded `content_level="L3"` at the three `Exchange(...)` constructor sites with `LLMTRACK_CONTENT_LEVEL` (pydantic `Literal["L0", "L1", "L2", "L3"]`, default `"L3"`) per CLAUDE.md §9 (public-interface configurability) — `Settings.content_level` is plumbed onto `app.state.content_level` next to `session_factory`, the forwarder reads it once at the top of `forward_request` (with `"L3"` fallback for unit-test paths that bypass `create_app`), and threads it through all six storage-helper call sites (3× `record_exchange_blocked`, 2× `record_exchange_failure`, 1× `record_exchange_timing`). The three helpers now take `content_level: str` as a required keyword-only argument — giving it a default would let a forgotten forwarder site silently regress to hardcoded `"L3"`, defeating the purpose. design.md §7.1 + SDK `ContentLevel` IntEnum (L0/L1/L2/L3) confirm definitions; step d "Decision needed" stop not triggered. Verified: 157 passed + 18 skipped (unchanged), `ruff check` clean. Commit `2a68c56` (scope `server`). **Production default unchanged**: `LLMTRACK_CONTENT_LEVEL` not yet set in Fly secrets, so the running image after redeploy will still write `"L3"` — the new env knob is opt-in for operator overrides only. Earlier this session: Migration 0017 applied via Supabase MCP `execute_sql` in one atomic `BEGIN; ... COMMIT;` block matching the 0013/0014/0015/0016 precedent — pre-state confirmed 182 rows all carrying `session_id='server'` (zero non-`"server"` values to lose); `ALTER TABLE DROP COLUMN session_id` ran as a metadata-only operation followed by the `alembic_version` advance `0016_drop_messages_json` → `0017_drop_exchanges_session_id`; post-state confirms `information_schema.columns` no longer carries `session_id`, alembic ledger at `0017`, all 182 rows preserved. **Operator action required next, and ONLY remaining step**: `fly deploy` from `main` so the running image's helpers (which no longer pass `session_id` to the `Exchange` ORM constructor) match the live schema. Without redeploy, the running image's helpers still emit the prior compiled SQL shape with `session_id` and would `UndefinedColumn`-fail every happy-path / blocked / failure helper invocation. Post-deploy smoke is one non-blocked exchange — verify a clean `exchanges` row with `status_code=200` and no `record_exchange_*` `UndefinedColumn` error in Fly logs.
 
 Earlier this session — code half:** Two pickable items from the §"Queued follow-ups" menu landed in one session: (1) `exchanges.session_id` dropped as migration `0017_drop_exchanges_session_id` (commit `21c5552`) — column was hardcoded `"server"` at every call site and the analytics_sink plugin's `conversation_id` + `first_msg_hash` (live since Candidate-1 closure 2026-05-19) cover every use case the populator-follow-up was intended for; the column drop retires the long-queued "real `session_id` populator + deletion endpoint" item simultaneously. Removed from `Exchange` ORM, three `record_exchange_*` helpers (timing / blocked / failure), and three test files (`test_storage_smoke`, `test_rls_two_org_isolation`, `test_org_id_constraint`). Whole-repo grep confirms zero remaining references to the dropped Exchange column; surviving `session_id` matches are all `HookContext.session_id` (SDK-level request slot identifier — different concept). (2) `plugin_analytics` no-RLS ADR shipped as `0033-plugin-analytics-no-rls.md` (commit `257caee`) — elevates migration 0007's docstring choice to an ADR with the actual mechanical reason: the GUC binding `set_config('app.org_id', ...)` that `AuthMiddleware` issues is connection-scoped and does not propagate to the analytics plugin's separate `AsyncEngine`, so adding RLS would require every `engine.begin()` block to issue `SET LOCAL app.org_id = ...` repeated across the per-message UPSERT loop + the analytics-row INSERT — complexity for a table no end-user-facing path reads. Revisit trigger named: if `plugin_analytics` is ever exposed through a request-scoped session path. `conversation_messages` (migration 0015) inherits the same posture by association. Verified: tests 157 passed + 18 skipped (unchanged from Candidate-1 closure baseline); `ruff check` clean; alembic upgrade `--sql 0016:0017` and downgrade `--sql 0017:0016` round-trip cleanly through one atomic `BEGIN ... COMMIT`. Active worklog `docs/worklog/2026-05-21-followup-cleanup.md` ships next, plus this STATUS refresh under commit scope `docs`. **Operator action required next, and ONLY remaining step**: apply migration 0017 to Supabase via MCP `execute_sql` as one atomic `BEGIN; ... COMMIT;` block matching the 0013 / 0014 / 0015 / 0016 precedent, then `fly deploy` from `main` so the new image's helpers stop writing the dropped column. Without redeploy the running image would `UndefinedColumn`-fail every helper after the migration lands. **§"Queued follow-ups" menu after this session**: RLS item closed (ADR-0033); `session_id` populator item closed (column drop retires it); remaining items are task hierarchy (session/task/exchange) + i18n email scrubbing. Candidate-1 track remains closed at `7d3dad3`.)
 
@@ -137,8 +137,7 @@ to keep the plugin disabled at runtime while leaving the code in tree.
     introduce a `task_id` layer above `exchange_id` so
     multi-exchange Claude-Code sessions map to operator-visible
     task units rather than only the per-turn exchange row. Not
-    gated on anything; design-first.
-  - **i18n email scrubbing** (ADR-0029 §"Open questions").
+    gated on anything; design-first. **Last remaining menu item.**
   - ~~**`plugin_analytics` RLS axis — ADR-level revisit.**~~
     **Closed 2026-05-21** by ADR-0033 (no RLS — GUC binding does
     not propagate to the analytics plugin's separate `AsyncEngine`).
@@ -146,6 +145,9 @@ to keep the plugin disabled at runtime while leaving the code in tree.
     **Closed 2026-05-21** by migration 0017 — column dropped; the
     analytics_sink plugin's `conversation_id` + `first_msg_hash`
     cover the use cases the populator was meant to enable.
+  - ~~**i18n email scrubbing**~~ **Closed 2026-05-21** by commit
+    `8b59887` — `_EMAIL_RE` extended to Unicode word class for
+    local part + non-TLD domain.
   - ~~**Block/Abort ctx-cleanup latent gap**~~ **Closed 2026-05-17**
     by commit `4fef915`.
   - ~~**DB-fixture integration tests for `record_exchange_failure`**~~
@@ -158,7 +160,7 @@ to keep the plugin disabled at runtime while leaving the code in tree.
 ## Active worklog
 
 `docs/worklog/2026-05-21-followup-cleanup.md` — follow-up cleanup
-track absorbing three items in one session:
+track absorbing four items in one session:
 (1) migration `0017_drop_exchanges_session_id` drops the long-stale
 column (commit `21c5552`, applied live via Supabase MCP
 `execute_sql` this same session — alembic ledger at `0017`, column
@@ -175,7 +177,14 @@ and does not propagate to the analytics plugin's separate
 `LLMTRACK_CONTENT_LEVEL` (pydantic `Literal["L0", "L1", "L2", "L3"]`,
 default `"L3"`) — replaces the hardcoded `"L3"` at three
 `Exchange(...)` sites; required kwarg on the three helpers means a
-forgotten forwarder site can't silently regress.
+forgotten forwarder site can't silently regress;
+(4) i18n email scrubbing (commit `8b59887`) — `_EMAIL_RE` local-part
++ non-TLD-domain char classes swapped to `\w` (Python 3
+Unicode-aware) so umlauted local parts (`ünîcödé@…`) and raw IDN
+domains (`user@münchen.de`) both redact alongside the already-handled
+punycode form (`xn--mnchen-3ya.de`); TLD stays ASCII to block
+numeric false positives. Closes the last `i18n email scrubbing` item
+from the §"Queued follow-ups" menu.
 **Code + live schema aligned; only `fly deploy` from `main`
 remains.** After the migration apply but before
 redeploy, the running image's helpers still emit the prior compiled
@@ -368,12 +377,12 @@ CP14 proper).
 ## Recent commits
 
 ```
+8b59887   scrubbers: i18n email — unicode local parts + raw IDN domains
+68e0939   docs: STATUS + worklog — content_level env-var configurability
 2a68c56   server: content_level configurable via LLMTRACK_CONTENT_LEVEL
 0575821   docs: STATUS + worklog — migration 0017 applied live to Supabase
 7ac1c0e   docs: STATUS + worklog — follow-up cleanup (0017 + ADR-0033)
 257caee   docs: ADR-0033 — plugin_analytics stays outside RLS
-21c5552   storage: drop exchanges.session_id (migration 0017)
-7d3dad3   docs: Candidate-1 track closed — fly deploy + smoke confirmed
 ```
 
 ## Where we paused
@@ -392,8 +401,15 @@ helper call sites; the three helpers now take `content_level: str`
 as a required keyword-only argument so a forgotten site can't
 silently regress to the prior hardcoded `"L3"`. Production default
 unchanged (`LLMTRACK_CONTENT_LEVEL` not set in Fly secrets → still
-`"L3"` on every row after redeploy). This session retired two
-pickable items from the §"Queued follow-ups" menu in one pass:
+`"L3"` on every row after redeploy). Same session also closed
+i18n email scrubbing (commit `8b59887`) — `_EMAIL_RE` extended to
+match Unicode local parts and raw IDN domains via Python 3's
+Unicode-aware `\w`; TLD stays ASCII to keep the false-positive
+guard intact; five new tests pin the cases (three failed pre-fix,
+two were sanity). Test count now 162 passed + 18 skipped (was 157
+at the start of this session). This session retired three pickable
+items from the §"Queued follow-ups" menu (RLS revisit, `session_id`
+populator, i18n email):
 
 1. **`exchanges.session_id` dropped** as migration
    `0017_drop_exchanges_session_id` (commit `21c5552`). Column was
@@ -2061,13 +2077,12 @@ smoke is one non-blocked proxy exchange — verify a clean `exchanges`
 row with `status_code=200` and no `record_exchange_*`
 `UndefinedColumn` error in Fly logs.
 
-**After `fly deploy` lands**, the §"Queued follow-ups" menu has two
-remaining items (the other two were retired by this session):
+**After `fly deploy` lands**, the §"Queued follow-ups" menu has only
+one item remaining (the other three were retired by this session):
 
 1. **Task hierarchy (session/task/exchange).** Deferred design-first
    track to introduce a `task_id` layer above `exchange_id`. Not
    gated on anything.
-2. **i18n email scrubbing** (ADR-0029 §"Open questions").
 
 Closed by this session:
 
@@ -2078,6 +2093,10 @@ Closed by this session:
   premise, and the analytics_sink plugin's `conversation_id` +
   `first_msg_hash` retired the use cases the populator was meant
   to enable.
+- ~~**i18n email scrubbing.**~~ **Closed 2026-05-21** by commit
+  `8b59887` — `_EMAIL_RE` extended to Python 3 Unicode `\w` for
+  local part + non-TLD domain; TLD stays ASCII to keep the
+  false-positive guard intact.
 
 scope_guard remains paused at commit `0c1ca9d` per its handoff
 worklog and is **not** a candidate for auto-resume from this

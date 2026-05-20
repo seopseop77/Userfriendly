@@ -320,6 +320,100 @@ the operator later wants L0/L1/L2 on production, set
 `fly secrets set LLMTRACK_CONTENT_LEVEL=L0` (or other) and
 redeploy; the next exchange writes the new label.
 
+## Continuation — i18n email scrubbing (same day)
+
+User request: extend the email scrubber so internationalized addresses
+(Unicode local parts, raw IDN domains, punycode IDN domains) are
+correctly redacted without corrupting JSON structure or producing
+false positives. This was the last `i18n email scrubbing` follow-up on
+the §"Queued follow-ups" menu (ADR-0029 §"Open questions").
+
+### Step b — case-by-case status (before changes)
+
+Current regex:
+``\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b``
+
+| Case | Status | Why |
+|---|---|---|
+| 1. Unicode local part (``ünîcödé@…``) | NOT handled | Local-part class is ASCII-only; ``ü`` never matches, no run reaches ``@``. Privacy hole. |
+| 2. Raw IDN domain (``user@münchen.de``) | NOT handled | Domain class is ASCII-only; ``ü`` breaks the run before ``.de``. Privacy hole. |
+| 3. Punycode IDN (``user@xn--mnchen-3ya.de``) | Already handled | Punycode wire format is pure ASCII; matches the existing class. |
+| JSON structure preservation | Already handled | JSON-aware fast path with ``ensure_ascii=False`` (added 2026-05-19). |
+| No false positives on non-email | Already handled | TLD ``[A-Za-z]{2,}`` constraint blocks ``1.2``-style matches. |
+
+### What was done (commit `8b59887`)
+
+- Modified ``packages/llm_tracker_sdk/tests/test_scrubbers.py``
+  — added five tests under a new ``i18n emails`` section:
+  ``test_email_with_unicode_local_part_redacted``,
+  ``test_email_with_idn_domain_raw_unicode_redacted``,
+  ``test_email_with_punycode_domain_redacted``,
+  ``test_scrub_unicode_email_in_json_body_round_trips``,
+  ``test_unicode_text_without_email_unchanged``. Confirmed three failed
+  before the regex fix (cases 1, 2, plus the JSON-Unicode round-trip);
+  the punycode + no-false-positive cases passed already.
+- Modified ``packages/llm_tracker_sdk/src/llm_tracker_sdk/scrubbers.py``
+  — ``_EMAIL_RE`` local-part class swapped from
+  ``[A-Za-z0-9._%+\-]`` to ``[\w.%+\-]``, non-TLD-domain class swapped
+  from ``[A-Za-z0-9.\-]`` to ``[\w.\-]``; TLD stayed ``[A-Za-z]{2,}``.
+  Added an inline comment explaining the ``\w``/Unicode rationale and
+  why the raw Unicode-TLD case (e.g. ``example.中国``) is deferred.
+
+### Decisions
+
+- **Extend the existing pattern, do not add a second pass.** A second
+  pattern would have to coordinate with the first to avoid
+  double-tagging; extending the char classes keeps the rule single-
+  sourced. ``\w`` is Python 3 Unicode-aware by default — no new
+  regex engine, no new dep.
+- **TLD stays ASCII (`[A-Za-z]{2,}`).** The TLD constraint is the
+  scrubber's main false-positive guard. Real Unicode TLDs exist
+  (``.한국``, ``.中国``, ``.рф``) but the canonical wire form is
+  punycode (which is ASCII), and the user-prompt cases the task names
+  all carry ASCII TLDs (``.com``, ``.de``). Loosening the TLD to
+  ``\w`` would over-match numeric pairs like ``1.23`` — privacy-tilted
+  but bad for log noise. Defer raw Unicode-TLD until there's evidence
+  it appears in real prompts.
+- **Test-first per step c.** Wrote the five new tests before the regex
+  change; confirmed three failed cleanly (the two privacy holes plus
+  the JSON variant which combines both). Then applied the regex fix.
+  All 24 scrubber tests pass after the fix.
+
+### Verification
+
+```
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker_sdk/tests/test_scrubbers.py -q
+24 passed in 0.05s
+
+$ .venv/bin/python3.12 -m pytest \
+    packages/llm_tracker_sdk \
+    packages/llm_tracker_plugin_analytics_sink \
+    packages/llm_tracker_server -q
+162 passed, 18 skipped in 5.57s
+
+$ .venv/bin/python3.12 -m ruff check packages/llm_tracker_sdk/
+All checks passed!
+```
+
+Test count went 157 → 162 (+5 from this track). The +5 are:
+``test_email_with_unicode_local_part_redacted``,
+``test_email_with_idn_domain_raw_unicode_redacted``,
+``test_email_with_punycode_domain_redacted``,
+``test_scrub_unicode_email_in_json_body_round_trips``,
+``test_unicode_text_without_email_unchanged``.
+
+### Live state
+
+The scrubber is exercised every time
+``HookContext.request_text`` / ``HookContext.response_content_json``
+fires under any plugin — analytics_sink, scope_guard (when re-enabled),
+future plugins. After the next ``fly deploy`` the running image picks
+up the broader pattern automatically. No live data backfill is needed
+because the historic rows were already scrubbed via the prior regex;
+the new behaviour applies to new exchanges only. The §"Queued
+follow-ups" menu's last `i18n email scrubbing` item is now closed by
+this commit.
+
 ## Suggestions (untouched)
 
 - **`ruff format` drift across five files** unrelated to this track:

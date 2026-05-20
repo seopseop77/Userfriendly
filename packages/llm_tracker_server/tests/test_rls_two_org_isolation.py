@@ -48,11 +48,10 @@ async def _bind_org(session, org_id) -> None:
     )
 
 
-def _make_exchange(row_id: str, org_id, *, session_id: str, now_ms: int) -> Exchange:
+def _make_exchange(row_id: str, org_id, *, now_ms: int) -> Exchange:
     return Exchange(
         id=row_id,
         org_id=org_id,
-        session_id=session_id,
         started_at=now_ms,
         provider="anthropic",
         endpoint="/v1/messages",
@@ -82,7 +81,7 @@ async def test_two_org_isolation(session_factory) -> None:
     async with session_factory() as session:
         await _bind_org(session, org_a_id)
         for row_id in a_row_ids:
-            session.add(_make_exchange(row_id, org_a_id, session_id="iso-a", now_ms=now_ms))
+            session.add(_make_exchange(row_id, org_a_id, now_ms=now_ms))
         await session.commit()
 
     # As org B: SELECT must return zero rows from `exchanges`, even
@@ -134,7 +133,6 @@ async def test_cross_org_write_rejected(session_factory) -> None:
             _make_exchange(
                 uuid.uuid4().hex,
                 org_b_id,  # claim org B while bound to org A
-                session_id="cross-write",
                 now_ms=int(time.time() * 1000),
             )
         )

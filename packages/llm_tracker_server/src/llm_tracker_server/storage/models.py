@@ -43,7 +43,6 @@ class Exchange(Base):
         ForeignKey("orgs.id"),
         nullable=False,
     )
-    session_id: Mapped[str] = mapped_column(String, nullable=False)
     started_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     ended_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     provider: Mapped[str] = mapped_column(String, nullable=False)

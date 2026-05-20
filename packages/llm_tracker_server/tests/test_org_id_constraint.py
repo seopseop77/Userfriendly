@@ -49,7 +49,6 @@ async def test_exchange_without_org_id_rejected(session_factory) -> None:
         session.add(
             Exchange(
                 id=row_id,
-                session_id="orgless",
                 started_at=now_ms,
                 provider="anthropic",
                 endpoint="/v1/messages",
@@ -73,7 +72,6 @@ async def test_exchange_with_unknown_org_id_rejected(session_factory) -> None:
             Exchange(
                 id=row_id,
                 org_id=bogus_org_id,
-                session_id="ghost-org",
                 started_at=now_ms,
                 provider="anthropic",
                 endpoint="/v1/messages",

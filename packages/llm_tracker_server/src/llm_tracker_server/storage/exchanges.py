@@ -72,7 +72,6 @@ async def record_exchange_timing(
         Exchange(
             id=exchange_id,
             org_id=org_id,
-            session_id="server",
             started_at=t_request_received_ms,
             ended_at=ended_at_ms,
             provider="anthropic",
@@ -115,7 +114,6 @@ async def record_exchange_blocked(
         Exchange(
             id=exchange_id,
             org_id=org_id,
-            session_id="server",
             started_at=started_at_ms,
             ended_at=ended_at_ms,
             provider="anthropic",
@@ -161,7 +159,6 @@ async def record_exchange_failure(
         Exchange(
             id=exchange_id,
             org_id=org_id,
-            session_id="server",
             started_at=started_at_ms,
             ended_at=ended_at_ms,
             provider="anthropic",

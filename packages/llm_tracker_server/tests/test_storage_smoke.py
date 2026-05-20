@@ -59,7 +59,6 @@ async def test_exchange_round_trip(session_factory) -> None:
             Exchange(
                 id=row_id,
                 org_id=org_id,
-                session_id="smoke-session",
                 started_at=now_ms,
                 provider="anthropic",
                 endpoint="/v1/messages",
@@ -72,7 +71,6 @@ async def test_exchange_round_trip(session_factory) -> None:
         await _bind_org(session, org_id)
         result = await session.execute(sa.select(Exchange).where(Exchange.id == row_id))
         row = result.scalar_one()
-        assert row.session_id == "smoke-session"
         assert row.started_at == now_ms
         assert row.provider == "anthropic"
         assert row.content_level == "L3"

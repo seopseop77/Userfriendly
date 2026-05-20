@@ -86,7 +86,11 @@ invocations show up in the audit log.
       §Context cites exactly this.*
 - [ ] Stage-2 LLM judge — *server-side egress to the judge model, not
       a per-plugin allowlist.*
-- [ ] LRU cache keyed on `(task_id, message_hash)`.
+- [ ] LRU cache keyed on `(conversation_id, message_hash)`.
+      (Original draft used `task_id`; superseded 2026-05-21 — the
+      deferred `task_id` layer was closed as won't-do, and
+      `conversation_id` from ADR-0032 / Candidate-1 dedup
+      provides the same per-chain scope.)
 - [ ] Synthetic SSE response on `out_of_scope`.
 - [ ] Eval set 50/50, false-positive rate ≤ 5%.
 

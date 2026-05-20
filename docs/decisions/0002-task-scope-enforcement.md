@@ -61,7 +61,11 @@ under signature/checksum verification. Local edits are ignored.
   centroids. If confident, decide here.
 - Stage 2: only on low confidence, call a cheap LLM (provisionally Claude
   Haiku) with a prompt that demands `{verdict, reason}` JSON.
-- Cache: LRU keyed on `(task_id, sha256(normalized user message))`.
+- Cache: LRU keyed on `(conversation_id, sha256(normalized user message))`.
+  (Original draft used `task_id`; the deferred `task_id` layer was
+  closed 2026-05-21 as won't-do. `conversation_id`, added by
+  ADR-0032 / Candidate-1 dedup, provides the per-chain scope this
+  cache key needs.)
 - Subject of judging: only the `text` content of the **last `role: user`**
   in the `messages` array. Tool results and prior turns are ignored.
 

@@ -414,6 +414,88 @@ the new behaviour applies to new exchanges only. The §"Queued
 follow-ups" menu's last `i18n email scrubbing` item is now closed by
 this commit.
 
+## Continuation — task hierarchy won't-do closure (same day)
+
+User question: "task hierarchy는 뭐야?" After explaining the
+`task_id` layer's role (operator-side aggregation above `exchange_id`,
+queued from 2026-05-17, referenced by ADR-0002 §"Cache key",
+ADR-0030 §Deferred 5, and `roadmap.md` Phase 1c LRU cache), user
+followed up: "난 conversation id로 왠만한 분석 목적은 전부 달성할 수
+있다고 생각이 되어서, 굳이 task id가 필요할 것 같지는 않아." Agreed
+to close as won't-do via docs-only patch.
+
+### Rationale for closure
+
+- `plugin_analytics.conversation_id` (added by ADR-0032 /
+  Candidate-1 dedup, 2026-05-19) groups every exchange by the
+  hash of `messages[0]` (with normalisation Rules A + B), so
+  per-chain rollups (cost, turn count, message dedup ratio) are
+  already available without a new schema axis.
+- `first_msg_hash` is the stable retry-collapsing identifier; same
+  prompt across retries lands under the same conversation.
+- Task-level aggregation (e.g., "all conversations about feature
+  X") can be expressed as operator SQL grouping on `conversation_id`
+  plus an external label (git branch name, date range, conv-list
+  union). No first-class column needed for the queries we have.
+- ADR-0002's original "user must specify a task ID at startup" was
+  a Phase-0-era hard constraint already softened by ADR-0005 (the
+  reframing-as-plugin note in its status line); the `task_id` cache
+  key was the last living dependency.
+
+### What was done (docs-only — no commit hash on this entry yet)
+
+- Modified ``docs/STATUS.md`` — §"Current phase" §"Queued
+  follow-ups" reorganised: task hierarchy moved to the closed
+  list with the won't-do reason; §"Next single step" rewritten
+  to note the menu is empty.
+- Modified ``docs/decisions/0030-scope-guard-plugin.md`` §Deferred 5
+  — renamed to "Conversation-level alert aggregation" and pointed
+  at `plugin_analytics.conversation_id` instead of the never-built
+  `task_id` layer.
+- Modified ``docs/decisions/0002-task-scope-enforcement.md``
+  §"Cache key" — LRU cache key now reads
+  `(conversation_id, sha256(...))` with a one-paragraph closure
+  note explaining the supersede. ADR-0002's status line already
+  says "reframed by ADR-0005" so the §"Consequences" bullets
+  ("user must specify a task ID at startup") stay as historical
+  context, not active contract.
+- Modified ``docs/roadmap.md`` Phase 1c LRU cache line — same
+  swap, with the closure note inline.
+
+### Decisions
+
+- **Won't-do, not a future ADR.** The task-hierarchy axis was
+  always design-first deferred, never had an accepted ADR of its
+  own. Closing it inside the existing `Followup cleanup` worklog
+  + the three ADR/roadmap one-line patches is sufficient — no
+  separate `0034-task-hierarchy-wont-do.md` ADR is warranted.
+- **Don't touch ADR-0002's "user must specify a task ID at
+  startup" Consequences bullets.** That ADR was already marked
+  `reframed by ADR-0005`, so the bullets are historical. Adding
+  closure noise to them would risk overwriting the original
+  acceptance shape.
+- **Cache key swap is one-paragraph in-line.** Both ADR-0002 and
+  roadmap.md were edited in place rather than via a separate
+  supersede ADR — the change is mechanical (rename the cache key
+  field), not a re-decision of the cache itself.
+
+### Verification
+
+- ``grep -rn "task_id" docs/`` after the edits — every remaining
+  match is either historical (sub-issue lists, prior worklogs, the
+  ADR-0002 status line itself) or this worklog's closure-section
+  references. No live "queued" or "deferred" pointers remain.
+- No code touched; no tests run. Docs-only patch.
+
+### Live state
+
+§"Queued follow-ups" menu under §"Current phase" + §"Next single
+step" both show the same empty state. Next active track is
+intentionally undecided per the existing posture precedent (same
+shape as the 2026-05-18 schema-cleanup closure). Operator can
+either pick a fresh ad-hoc track or leave the queue empty
+indefinitely; nothing is gating.
+
 ## Suggestions (untouched)
 
 - **`ruff format` drift across five files** unrelated to this track:

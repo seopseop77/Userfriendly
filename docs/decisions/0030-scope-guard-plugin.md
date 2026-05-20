@@ -509,9 +509,12 @@ or follow-up checkpoint when prioritised:
 4. **Prompt-injection defense.** Mitigates the tool-result bypass
    noted under Known limitations §1. Requires a dedicated layer
    outside scope_guard's purview.
-5. **Session / task hierarchy.** Aggregate scope_alerts above
-   `exchange_id` once the deferred `task_id` layer lands (queued in
-   STATUS.md).
+5. **Conversation-level alert aggregation.** Aggregate scope_alerts
+   above `exchange_id` by grouping on `plugin_analytics.conversation_id`
+   (added by ADR-0032 / Candidate-1 dedup, 2026-05-19). The earlier
+   plan referenced a deferred `task_id` layer; that layer was closed
+   2026-05-21 as won't-do — `conversation_id` covers the aggregation
+   need without a new schema axis.
 6. **Embedding cache for repeated user messages.** Dedup identical
    inputs at the embedding-API boundary; saves API calls on
    keyboard-bashing or replay traffic.

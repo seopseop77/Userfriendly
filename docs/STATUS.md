@@ -17,36 +17,43 @@
 
 ## Recent commits (last 5)
 
-- `<pending>` agent: bump version to 0.1.0 + ADR-0034 (GitHub Releases wheel)
+- `<pending>` infra: GitHub Actions release-agent.yml (wheel on agent/v* tag)
+- `04eaa98` agent: bump version 0.1.0 + ADR-0034
 - `dabbf3e` docs: trim STATUS.md to essential current state
 - `f6f64ab` infra: fix signup deploy build context (cd into the package)
 - `36174ca` infra: GitHub Actions — auto-deploy both fly apps on main push
-- `c3c08ab` signup: Dockerfile + fly.toml build wiring
 
 ## Where we paused
 
-**Thin-agent release pipeline — ADR + version bump landed; CI workflow next.**
+**Thin-agent release pipeline — CI workflow landed, local build verified.**
 
 - ADR-0034 locked: GitHub Releases wheel is the sole distribution channel
-  for `claude-manage` (no PyPI, no binary, no Homebrew). Review trigger
-  documented (>200 participants / non-Python audience / private repo flip).
+  for `claude-manage` (no PyPI, no binary, no Homebrew).
 - `packages/llm_tracker_agent/pyproject.toml` version `0.0.1` → `0.1.0`.
+- `.github/workflows/release-agent.yml` — `push` of tag `agent/v*` runs
+  `uv build --out-dir dist` and attaches the wheel + sdist to the
+  GitHub Release via `softprops/action-gh-release@v2`. **No PyPI publish.**
+- Local verification: wheel
+  `llm_tracker_agent-0.1.0-py3-none-any.whl` built clean; `pip --dry-run`
+  reports `Would install llm-tracker-agent-0.1.0`; entry point
+  `claude-manage` present.
 - Worklog: `docs/worklog/2026-05-21-agent-release-pipeline.md`.
 
-**Signup deploy + proxy redeploy remain operator-owned** (see prior STATUS
-in worklog `2026-05-21-signup-app.md` for the exact commands; nothing
-changes about that track).
+**Signup deploy + proxy redeploy remain operator-owned** (see worklog
+`2026-05-21-signup-app.md` for commands; unchanged).
 
 ## Next single step
 
-Add `.github/workflows/release-agent.yml` — tag `agent/v*` triggers
-`uv build` in `packages/llm_tracker_agent` and attaches `dist/*.whl`
-(plus sdist) to the GitHub Release via `softprops/action-gh-release@v2`.
-**No PyPI publish.** Verify locally with `uv build` and capture the wheel
-filename in the worklog before committing.
+Add a `## Participant Installation` section to `docs/deploy.md` with
+requirements (Python 3.11+), `pip install <WHEEL_URL>` /
+`pipx install <WHEEL_URL>`, `claude-manage setup <YOUR_TOKEN>`, and the
+`claude-manage` / `claude-manage --help` run lines. Use `<WHEEL_URL>` as
+a placeholder — fill in for real after the operator pushes the first
+`agent/v0.1.0` tag.
 
-After CI lands: add a `## Participant Installation` section to
-`docs/deploy.md` (`<WHEEL_URL>` placeholder until the first tag is pushed).
+After that: swap `[GITHUB_RELEASE_URL]` in the signup app's
+`templates/success.html` for the real release-asset URL, then redeploy
+the signup app.
 
 ---
 

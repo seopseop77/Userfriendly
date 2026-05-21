@@ -1,0 +1,53 @@
+name: Release llm-tracker-agent
+
+# Tag-driven release for the thin local agent. Pushing a tag matching
+# `agent/v*` (e.g. `agent/v0.1.0`) builds the wheel + sdist for
+# `packages/llm_tracker_agent` and attaches them to the GitHub Release
+# that the tag push creates. No PyPI publish — see ADR-0034.
+#
+# Per-package tag prefix lets server / signup get their own workflows
+# later without sharing a tag namespace.
+on:
+  push:
+    tags:
+      - 'agent/v*'
+  workflow_dispatch:
+
+concurrency:
+  group: release-llm-tracker-agent
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    name: Build wheel and attach to release
+    runs-on: ubuntu-latest
+    permissions:
+      # softprops/action-gh-release@v2 needs `contents: write` to upload
+      # assets to the release the tag push created.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: '0.11.8'
+
+      - name: Build wheel + sdist
+        # `--out-dir dist` keeps artefacts inside the package directory.
+        # Without it, uv workspaces drop the build into `<repo-root>/dist`.
+        working-directory: packages/llm_tracker_agent
+        run: uv build --out-dir dist
+
+      - name: List built artefacts
+        working-directory: packages/llm_tracker_agent
+        run: ls -la dist/
+
+      - name: Attach artefacts to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            packages/llm_tracker_agent/dist/*.whl
+            packages/llm_tracker_agent/dist/*.tar.gz
+          fail_on_unmatched_files: true
+          generate_release_notes: true

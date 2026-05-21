@@ -37,12 +37,19 @@ Tag pushing and signup-template URL swap are not in scope.
   `claude-manage`, with explicit alternatives (PyPI, private index,
   Homebrew tap, pre-built binary, `curl|sh`) and an explicit review
   trigger (>200 participants, non-Python audience, or repo flip to
-  private).
+  private). (commit `04eaa98`)
 - Modified `packages/llm_tracker_agent/pyproject.toml` — version
   `0.0.1` → `0.1.0`. License (`Proprietary (internal research use)`),
   `[project.scripts] claude-manage`, and
   `[tool.hatch.build.targets.wheel] packages = ["src/llm_tracker_agent"]`
-  were already correct and left untouched.
+  were already correct and left untouched. (commit `04eaa98`)
+- Created `.github/workflows/release-agent.yml` — push of any tag matching
+  `agent/v*` (or manual `workflow_dispatch`) installs `uv` (pinned to
+  `0.11.8` to match local), runs `uv build --out-dir dist` inside
+  `packages/llm_tracker_agent`, and attaches `dist/*.whl` + `dist/*.tar.gz`
+  to the release the tag push created via
+  `softprops/action-gh-release@v2`. `permissions: contents: write` is set
+  at the job level. No PyPI publish.
 
 ## Decisions
 
@@ -58,21 +65,63 @@ Tag pushing and signup-template URL swap are not in scope.
 - **Tag prefix `agent/v*`, not bare `v*`.** Future per-package tags
   (`server/v*`, `signup/v*`) live alongside without colliding, and the
   workflow trigger filter stays straightforward.
+- **`uv build --out-dir dist` (not bare `uv build`).** Inside a `uv`
+  workspace, bare `uv build` from within a member package still drops the
+  artefacts at `<workspace-root>/dist`, not the member's own `dist/`. The
+  workflow used to need a brittle `working-directory` + cross-directory
+  path. With `--out-dir dist` the build lands at
+  `packages/llm_tracker_agent/dist/*` and the
+  `softprops/action-gh-release@v2` `files:` glob is the obvious one.
+  Confirmed locally — see Verification below.
+- **`fail_on_unmatched_files: true`** in the release step. If a future
+  refactor changes where artefacts land, the workflow should fail loudly
+  instead of cutting an empty release.
+- **uv pinned to `0.11.8`** in the workflow. Same version as the local
+  build that produced the verified wheel; bumping is a one-line workflow
+  edit when needed.
 
 ## Verification
 
+### Checkpoint A — ADR + version bump
+
 ```
 $ git log -1 --oneline
-<pending — first checkpoint commit below>
+04eaa98 agent: bump version 0.1.0 + ADR-0034
 ```
 
-(Filled in at each checkpoint.)
+### Checkpoint B — local build + workflow
+
+```
+$ cd packages/llm_tracker_agent && uv build --out-dir dist
+Building source distribution...
+Building wheel from source distribution...
+Successfully built dist/llm_tracker_agent-0.1.0.tar.gz
+Successfully built dist/llm_tracker_agent-0.1.0-py3-none-any.whl
+
+$ ls packages/llm_tracker_agent/dist/
+llm_tracker_agent-0.1.0-py3-none-any.whl  (6087 bytes)
+llm_tracker_agent-0.1.0.tar.gz            (6157 bytes)
+
+$ .venv/bin/python3.12 -m pip install \
+    packages/llm_tracker_agent/dist/llm_tracker_agent-0.1.0-py3-none-any.whl \
+    --dry-run
+Would install llm-tracker-agent-0.1.0
+```
+
+Wheel METADATA confirmed: `Name: llm-tracker-agent`, `Version: 0.1.0`,
+`License: Proprietary (internal research use)`,
+`Requires-Python: >=3.11`, runtime deps `fastapi`, `httpx[http2]`,
+`tomli-w`, `typer`, `uvicorn[standard]`. `entry_points.txt` exposes
+`claude-manage = llm_tracker_agent.cli:app`.
+
+Workflow YAML parsed clean via `python -c "import yaml;
+yaml.safe_load(open('.github/workflows/release-agent.yml'))"`.
 
 ## What's left / known limits
 
-- GitHub Actions workflow file — pending (next step).
-- Local `uv build` verification + wheel filename capture — pending.
-- `docs/deploy.md` participant install section — pending.
+- `docs/deploy.md` — add `## Participant Installation` section with
+  `<WHEEL_URL>` placeholder. Pending.
+- First tag push (`agent/v0.1.0`) — operator action, not in this session.
 - Signup template `[GITHUB_RELEASE_URL]` placeholder swap — **out of
   scope this session**; requires the first real release URL.
 

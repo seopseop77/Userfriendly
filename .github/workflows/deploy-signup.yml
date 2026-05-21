@@ -22,6 +22,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: flyctl deploy --remote-only -c packages/llm_tracker_signup/fly.toml
+      # `working-directory` matches the Dockerfile's COPY paths
+      # (`pyproject.toml` + `src/`) which are relative to this
+      # package's root. Running flyctl from the repo root with `-c`
+      # would keep cwd at the repo root, making the build context
+      # the repo root — there is no top-level `src/`, so the build
+      # fails on `COPY src /build/src`.
+      - run: flyctl deploy --remote-only
+        working-directory: packages/llm_tracker_signup
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

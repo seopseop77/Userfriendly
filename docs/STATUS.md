@@ -13,49 +13,40 @@
 
 ## Active worklog
 
-`docs/worklog/2026-05-21-signup-app.md`
+`docs/worklog/2026-05-21-agent-release-pipeline.md`
 
 ## Recent commits (last 5)
 
-- `a77358b` signup: fly.toml for llm-tracker-signup app
-- `ab2924f` signup: FastAPI app + Tailwind HTML templates + route tests
-- `070361f` signup: config + registration core (PDF extract, token issuance, tests)
-- `5f52873` signup: package skeleton + root testpaths
-- `b35b524` server: migration 0018 participant_registrations
+- `<pending>` agent: bump version to 0.1.0 + ADR-0034 (GitHub Releases wheel)
+- `dabbf3e` docs: trim STATUS.md to essential current state
+- `f6f64ab` infra: fix signup deploy build context (cd into the package)
+- `36174ca` infra: GitHub Actions — auto-deploy both fly apps on main push
+- `c3c08ab` signup: Dockerfile + fly.toml build wiring
 
 ## Where we paused
 
-**Signup app (llm_tracker_signup) — code-complete, live DB aligned.**
+**Thin-agent release pipeline — ADR + version bump landed; CI workflow next.**
 
-- Migration 0018 applied to Supabase (alembic ledger at `0018_participant_registrations`).
-- Code: `packages/llm_tracker_signup/` — FastAPI app, HTML form, PDF extraction,
-  token issuance, `fly.toml`. Tests: 168 passed + 23 skipped (full regression clean).
+- ADR-0034 locked: GitHub Releases wheel is the sole distribution channel
+  for `claude-manage` (no PyPI, no binary, no Homebrew). Review trigger
+  documented (>200 participants / non-Python audience / private repo flip).
+- `packages/llm_tracker_agent/pyproject.toml` version `0.0.1` → `0.1.0`.
+- Worklog: `docs/worklog/2026-05-21-agent-release-pipeline.md`.
 
-**Two operator-owned deploys still pending:**
-
-1. **Proxy server** (`llm-tracker-server`): `fly deploy` from `main`.
-   Migration 0017 (`exchanges.session_id` drop) was applied live but the
-   running image still emits the old SQL shape — will `UndefinedColumn`-fail
-   every exchange until redeployed.
-
-2. **Signup app** (`llm-tracker-signup`): first-ever deploy.
-   ```
-   fly apps create llm-tracker-signup
-   fly secrets set LLMTRACK_DATABASE_URL=… LLMTRACK_PROXY_SERVER_URL=… \
-     -a llm-tracker-signup
-   fly deploy -c packages/llm_tracker_signup/fly.toml
-   ```
-   Then smoke a test registration end-to-end.
+**Signup deploy + proxy redeploy remain operator-owned** (see prior STATUS
+in worklog `2026-05-21-signup-app.md` for the exact commands; nothing
+changes about that track).
 
 ## Next single step
 
-**Thin-agent distribution** — write ADR + GitHub Actions release workflow
-for `llm_tracker_agent` wheel distribution via GitHub Releases.
-Cowork prompt already written (2026-05-21 session); hand to Claude Code.
+Add `.github/workflows/release-agent.yml` — tag `agent/v*` triggers
+`uv build` in `packages/llm_tracker_agent` and attaches `dist/*.whl`
+(plus sdist) to the GitHub Release via `softprops/action-gh-release@v2`.
+**No PyPI publish.** Verify locally with `uv build` and capture the wheel
+filename in the worklog before committing.
 
-After that, update the `[GITHUB_RELEASE_URL]` placeholder in
-`packages/llm_tracker_signup/src/llm_tracker_signup/templates/success.html`
-with the real wheel URL from the first release tag.
+After CI lands: add a `## Participant Installation` section to
+`docs/deploy.md` (`<WHEEL_URL>` placeholder until the first tag is pushed).
 
 ---
 

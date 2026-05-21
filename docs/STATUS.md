@@ -6,9 +6,9 @@
 
 ---
 
-**Last updated**: 2026-05-21 (Claude Code; **Signup app track — standalone Fly service for participant registration. Step 1/8 done: migration `0018_participant_registrations` (commit `b35b524`).** New `packages/llm_tracker_signup/` will let research participants register via a public HTML form and receive an API token immediately — separate Fly app keeps the proxy server URL private; participants only interact with the signup app. User pre-decided architecture (separate package, shared Supabase DB, new table `participant_registrations`, immediate token issuance, PDF text extracted then discarded, no email sending, no per-org auth on the signup app) so this Claude Code session is implementation-only. ADR was considered but user judged not hard-to-reverse enough — rationale lives in worklog §Decisions. 8-step plan stated up-front (migration → package skeleton → config → registration.py → app.py → templates → fly.toml → tests + worklog) with per-step checkpoints. **Step 1 (migration 0018) done**: table `participant_registrations` with `id UUID PK gen_random_uuid()`, `org_id` FK to `orgs(id)`, `token_hash` FK to `api_tokens(token_hash)`, `email TEXT NOT NULL UNIQUE` as authoritative duplicate guard (column-level UNIQUE creates both constraint + backing index; the separately-requested `idx_participant_registrations_email` btree sits on top so operator `WHERE email = …` queries can use either), `proposal_text TEXT` nullable (PDF upload is optional), `created_at` server-default `now()`. **No RLS on `participant_registrations`** — same posture as `plugin_analytics` (ADR-0033): signup app uses its own `AsyncEngine` from a separate Fly service, so the GUC binding the proxy server's `AuthMiddleware` issues does not apply. **No GRANT to `llm_tracker_app`** — that role exists for the proxy server's per-request session binding; the signup app connects with its own role (whatever `LLMTRACK_DATABASE_URL` resolves to on the new Fly app, likely the Supabase admin/owner role used by alembic). Verified: alembic `upgrade --sql 0017:0018` + `downgrade --sql 0018:0017` round-trip cleanly through one atomic `BEGIN ... COMMIT`. Active worklog `docs/worklog/2026-05-21-signup-app.md`. **Next single step**: Step 2 — create the `packages/llm_tracker_signup/` package skeleton (`pyproject.toml` with FastAPI + uvicorn + jinja2 + python-multipart + pdfplumber + sqlalchemy + asyncpg + pydantic-settings deps, src layout, empty `__init__.py`) so step 4 has a place to land. Verify by `uv sync` + `python -c "import llm_tracker_signup"`.
+**Last updated**: 2026-05-21 (Claude Code; **Signup app track — code-complete (Steps 1–8). Operator-owned next: apply migration 0018 to live Supabase, then `fly apps create llm-tracker-signup` + secrets + first `fly deploy`.** New `packages/llm_tracker_signup/` lets research participants register via a public HTML form and receive an API token immediately — separate Fly app keeps the proxy server URL private; participants only interact with the signup app. User pre-decided architecture (separate package, shared Supabase DB, new table `participant_registrations`, immediate token issuance, PDF text extracted then discarded, no email sending, no per-org auth) so this session was implementation-only — no ADR (user judged not hard-to-reverse enough), rationale in worklog §Decisions. 8-step plan executed sequentially with per-step commits: (1) migration `0018_participant_registrations` shipped as commit `b35b524` — table with `email TEXT NOT NULL UNIQUE` duplicate guard + explicit btree, FK to `orgs(id)` and `api_tokens(token_hash)`, no RLS (same posture as `plugin_analytics` per ADR-0033 since the signup app uses its own `AsyncEngine` from a separate Fly service), no GRANT to `llm_tracker_app` (that role exists for the proxy server's per-request session binding; signup app connects with its own role). (2) Package skeleton `5f52873` — `pyproject.toml` deps (FastAPI + uvicorn + jinja2 + python-multipart + pdfplumber + sqlalchemy + asyncpg + pydantic-settings + httpx runtime; pytest + pytest-asyncio + httpx + fpdf2 dev), root pyproject `testpaths` updated. (3)+(4) Config + registration core `070361f` — `Settings(database_url, proxy_server_url)` with `LLMTRACK_` env prefix; `extract_pdf_text(bytes) -> str` returning empty string on parse failure / image-only PDFs (a malformed upload should not block registration); `DuplicateEmailError`; `register_participant(engine, *, name, email, institution, research_description, proposal_text) -> str` issuing the three INSERTs (orgs, api_tokens, participant_registrations) in one `engine.begin()` transaction after a duplicate pre-check, token shape `lts_ + secrets.token_urlsafe(32)` matching `llm_tracker_server.auth.tokens.issue` (duplicated, not imported, per brief constraint — the ~10-line surface is small enough that drift is unlikely). conftest gates DB tests on `LLMTRACK_TEST_DATABASE_URL` matching the server's convention; alembic runs via subprocess against the server package's `alembic.ini` (subprocess call, NOT a Python import). (5)+(6) FastAPI app + HTML templates `ab2924f` — `GET /healthz`, `GET /` (form), `POST /register` (multipart → PDF extract → issue token → 303 to `/success`, duplicate email re-renders the form with the user's input + 400 status), `GET /success` (token monospace box + copy-to-clipboard + 3 install-step cards). `Annotated[…, Form()]` over `= Form(...)` to satisfy ruff B008. `templates.TemplateResponse(request, "name.html", {...})` request-first signature — the deprecated `(name, {"request": request, …})` form breaks against Jinja2's LRU cache (`unhashable type: 'dict'`) on current Starlette, caught by the first integration-test run and migrated across all three call sites. Tailwind via CDN, no build step. `[GITHUB_RELEASE_URL]` placeholder in `success.html` for the agent wheel (real URL lands after the next prompt's release). (7) `fly.toml` `a77358b` — `app = "llm-tracker-signup"`, `nrt` region, port 8000, `auto_stop_machines="stop"` + `min_machines_running=0` (signup is bursty), required secrets `LLMTRACK_DATABASE_URL` + `LLMTRACK_PROXY_SERVER_URL` documented in the file header but never inlined. (8) Final docs — this STATUS refresh + worklog absorption of Steps 2–7. Verified: signup tests **6 passed + 5 skipped** (11 total — 3 PDF unit + 3 template/healthz rendering pass; 2 token-issuance + 3 register-route DB tests skip cleanly without `LLMTRACK_TEST_DATABASE_URL`); full regression across `llm_tracker_sdk + llm_tracker_plugin_analytics_sink + llm_tracker_server + llm_tracker_signup` is **168 passed + 23 skipped** (was 162 + 18 at the start of this session — +6 new passes, +5 new skips, zero regressions); ruff clean across the new package; alembic `upgrade`/`downgrade` `--sql 0017:0018` round-trips through one atomic `BEGIN ... COMMIT`. Active worklog `docs/worklog/2026-05-21-signup-app.md`. **Operator-owned next, in order**: (1) apply migration 0018 to Supabase via MCP `execute_sql` in one atomic `BEGIN; ... COMMIT;` block matching the 0013–0017 precedent — pre-state alembic at `0017_drop_exchanges_session_id`, post-state at `0018_participant_registrations` with the table + email btree present; (2) `fly apps create llm-tracker-signup` + `fly secrets set LLMTRACK_DATABASE_URL=… LLMTRACK_PROXY_SERVER_URL=…` + `fly deploy -c packages/llm_tracker_signup/fly.toml`; (3) smoke a test registration end-to-end and verify the row lands in `participant_registrations`. Migration 0017's earlier-this-day `fly deploy` from the prior cleanup track is still pending — that deploy gates the proxy server only; the signup app's deploy is independent.
 
-**Updated by**: Claude Code (signup app — step 1/8 done; package skeleton next)
+**Updated by**: Claude Code (signup app — code-complete; awaiting operator live migration apply + first `fly deploy` of the new app)
 
 **Prior session marker** (2026-05-21, Claude Code; **Follow-up cleanup track — §"Queued follow-ups" menu now empty after task-hierarchy item closed as won't-do; `fly deploy` is the only remaining step for the whole track.** User confirmed the deferred `task_id` layer adds no value beyond what `conversation_id` (Candidate-1, 2026-05-19) already delivers — per-chain cost / turn / dedup analytics are already grouped on `conversation_id`, and task-level rollups can be expressed as operator SQL grouping on the same axis without a new schema column. Docs-only cleanup: STATUS.md §"Queued follow-ups" + §"Next single step" mark the item ~~closed 2026-05-21 as won't-do~~; ADR-0030 §Deferred 5 rewritten to point scope_alerts aggregation at `plugin_analytics.conversation_id` instead of the never-built `task_id`; ADR-0002 §"Cache key" updated to use `(conversation_id, message_hash)` (the Phase-0-era `task_id` premise predated the chain-identifier work); `roadmap.md` Phase 1c LRU cache line follows the same pattern. ADR-0002 was already "reframed by ADR-0005" in its status line so the `task_id`-startup-requirement consequence bullets are historical context, not active contract; left untouched. Active worklog `docs/worklog/2026-05-21-followup-cleanup.md` "Continuation — task hierarchy won't-do closure" section added. Earlier this session: User-requested continuation after the `content_level` extension: extend the PII scrubber's `_EMAIL_RE` so internationalised emails redact correctly. Pre-change diagnosis: case 1 (unicode local part `ünîcödé@…`) and case 2 (raw IDN domain `user@münchen.de`) were privacy holes — both char classes (`[A-Za-z0-9._%+\-]` + `[A-Za-z0-9.\-]`) were ASCII-only so neither match could reach the `@`; case 3 (punycode `user@xn--mnchen-3ya.de`) was already handled because the wire format is pure ASCII; JSON-structure preservation was already handled via the 2026-05-19 `ensure_ascii=False` fast path; no-false-positive on non-email Unicode (e.g. `안녕하세요 世界`) was already handled because TLD `[A-Za-z]{2,}` blocks numeric/short matches. Five new tests landed first (test-first per step c) — three failed against the pre-fix regex (cases 1, 2, and the JSON variant combining both), two passed (case 3 sanity + non-email Unicode no-false-positive). Then the regex local-part class swapped to `[\w.%+\-]` and non-TLD-domain class swapped to `[\w.\-]` — `\w` is Python 3 Unicode-aware by default so umlauted local parts + raw IDN domains both redact via the same char-class extension. TLD stayed `[A-Za-z]{2,}` deliberately — real Unicode TLDs exist (`.한국`, `.中国`, `.рф`) but the canonical wire form is punycode (ASCII), and loosening the TLD to `\w` would risk matching `1.23`-style false positives. Single-pattern fix preferred over a second regex pass since `\w` is the right primitive and avoids the two-rules-to-coordinate problem. Commit `8b59887` (scope `scrubbers`). Verified: 24/24 scrubber tests pass (was 21; +5 new), full suite 162 passed + 18 skipped (was 157; +5 i18n cases), `ruff check` clean. No live data backfill — historic rows were already scrubbed via the prior regex; the broader behaviour applies to new exchanges after the next `fly deploy`. Earlier this session: User-requested continuation after the 0017/ADR-0033 closure: replaced the hardcoded `content_level="L3"` at the three `Exchange(...)` constructor sites with `LLMTRACK_CONTENT_LEVEL` (pydantic `Literal["L0", "L1", "L2", "L3"]`, default `"L3"`) per CLAUDE.md §9 (public-interface configurability) — `Settings.content_level` is plumbed onto `app.state.content_level` next to `session_factory`, the forwarder reads it once at the top of `forward_request` (with `"L3"` fallback for unit-test paths that bypass `create_app`), and threads it through all six storage-helper call sites (3× `record_exchange_blocked`, 2× `record_exchange_failure`, 1× `record_exchange_timing`). The three helpers now take `content_level: str` as a required keyword-only argument — giving it a default would let a forgotten forwarder site silently regress to hardcoded `"L3"`, defeating the purpose. design.md §7.1 + SDK `ContentLevel` IntEnum (L0/L1/L2/L3) confirm definitions; step d "Decision needed" stop not triggered. Verified: 157 passed + 18 skipped (unchanged), `ruff check` clean. Commit `2a68c56` (scope `server`). **Production default unchanged**: `LLMTRACK_CONTENT_LEVEL` not yet set in Fly secrets, so the running image after redeploy will still write `"L3"` — the new env knob is opt-in for operator overrides only. Earlier this session: Migration 0017 applied via Supabase MCP `execute_sql` in one atomic `BEGIN; ... COMMIT;` block matching the 0013/0014/0015/0016 precedent — pre-state confirmed 182 rows all carrying `session_id='server'` (zero non-`"server"` values to lose); `ALTER TABLE DROP COLUMN session_id` ran as a metadata-only operation followed by the `alembic_version` advance `0016_drop_messages_json` → `0017_drop_exchanges_session_id`; post-state confirms `information_schema.columns` no longer carries `session_id`, alembic ledger at `0017`, all 182 rows preserved. **Operator action required next, and ONLY remaining step**: `fly deploy` from `main` so the running image's helpers (which no longer pass `session_id` to the `Exchange` ORM constructor) match the live schema. Without redeploy, the running image's helpers still emit the prior compiled SQL shape with `session_id` and would `UndefinedColumn`-fail every happy-path / blocked / failure helper invocation. Post-deploy smoke is one non-blocked exchange — verify a clean `exchanges` row with `status_code=200` and no `record_exchange_*` `UndefinedColumn` error in Fly logs.
 
@@ -167,25 +167,31 @@ to keep the plugin disabled at runtime while leaving the code in tree.
 ## Active worklog
 
 `docs/worklog/2026-05-21-signup-app.md` — new standalone Fly service
-for participant registration. Separate package
-`packages/llm_tracker_signup/` will host a FastAPI app serving a
-public HTML form; on submit it issues an API token immediately and
-writes one row into `orgs` + `api_tokens` + the new
+for participant registration. **All 8 implementation steps done in
+one session**; track is code-complete. Separate package
+`packages/llm_tracker_signup/` hosts a FastAPI app serving a public
+HTML form; on submit it issues an API token immediately and writes
+one row into `orgs` + `api_tokens` + the new
 `participant_registrations` table in one transaction. The proxy
 server URL stays private; only the signup app is participant-facing.
 PDF research-proposal upload is optional — text is extracted via
 `pdfplumber` and stored, the file itself is never persisted to disk
-or object storage. **Step 1/8 done** (commit `b35b524`): migration
-`0018_participant_registrations` creates the table with `email TEXT
-NOT NULL UNIQUE` as the authoritative duplicate guard plus a
-separate btree on `email` for operator queries, FK to `orgs(id)` and
-`api_tokens(token_hash)`, no RLS (same posture as `plugin_analytics`
-per ADR-0033 — the signup app uses its own `AsyncEngine` from a
-separate Fly service). Alembic `upgrade`/`downgrade` `--sql`
-round-trip cleanly through one atomic `BEGIN ... COMMIT`. **Next
-single step**: Step 2 — package skeleton (`pyproject.toml` + src
-layout + empty `__init__.py`) so step 4 has a place to land. Verify
-by `uv sync` + `python -c "import llm_tracker_signup"`.
+or object storage. Commits in order: `b35b524` (migration 0018 —
+`participant_registrations` table), `4d23a4f` (docs/STATUS for the
+step 1 checkpoint), `5f52873` (package skeleton + root testpaths),
+`070361f` (config + registration core + 5 tests, 3 pass + 2 DB-skip),
+`ab2924f` (FastAPI app + Tailwind templates + 6 route tests, 3 pass
++ 3 DB-skip), `a77358b` (`fly.toml` for the new `llm-tracker-signup`
+app). Verified: signup package 6 passed + 5 skipped (11 total); full
+regression 168 passed + 23 skipped (was 162 + 18 — +6 / +5, zero
+regressions); ruff clean. **Operator-owned next, in order**: (1)
+apply migration 0018 to Supabase via MCP `execute_sql` in one atomic
+`BEGIN; ... COMMIT;` block; (2) `fly apps create llm-tracker-signup`
++ `fly secrets set LLMTRACK_DATABASE_URL=… LLMTRACK_PROXY_SERVER_URL=…`
++ `fly deploy -c packages/llm_tracker_signup/fly.toml`; (3) smoke a
+test registration end-to-end. The `[GITHUB_RELEASE_URL]` placeholder
+in `success.html` is a separate follow-up (after the agent wheel is
+published).
 
 **Prior worklog**: `docs/worklog/2026-05-21-followup-cleanup.md` —
 follow-up cleanup track absorbing five items in one session:
@@ -409,33 +415,49 @@ CP14 proper).
 ## Recent commits
 
 ```
+a77358b   signup: fly.toml for the new llm-tracker-signup app
+ab2924f   signup: FastAPI app + HTML templates (register / success)
+070361f   signup: config + registration core (PDF + token issuance)
+5f52873   signup: package skeleton (llm_tracker_signup)
+4d23a4f   docs: STATUS + worklog — signup app track started (step 1/8)
 b35b524   storage: migration 0018 — participant_registrations table
-8b59887   scrubbers: i18n email — unicode local parts + raw IDN domains
-68e0939   docs: STATUS + worklog — content_level env-var configurability
-2a68c56   server: content_level configurable via LLMTRACK_CONTENT_LEVEL
-0575821   docs: STATUS + worklog — migration 0017 applied live to Supabase
-7ac1c0e   docs: STATUS + worklog — follow-up cleanup (0017 + ADR-0033)
 ```
 
 ## Where we paused
 
-**Signup app track — step 1/8 (migration 0018) committed; package
-skeleton next.** The 8-step plan covers: (1) migration ✅ → (2)
-package skeleton → (3) config → (4) `registration.py` (PDF text
-extraction + token issuance with `DuplicateEmailError`) → (5)
-`app.py` (`/`, `/register`, `/success`, `/healthz`) → (6) HTML
-templates (Tailwind CDN + token-display success page) → (7) `fly.toml`
-for the new app → (8) tests + worklog. Migration 0018 introduces
-`participant_registrations` with `email TEXT NOT NULL UNIQUE` as the
-authoritative duplicate guard plus an explicit btree on `email`, FK
-to `orgs(id)` and `api_tokens(token_hash)`, no RLS (signup app uses
-its own `AsyncEngine` from a separate Fly service — same posture as
-`plugin_analytics` per ADR-0033). Alembic upgrade/downgrade `--sql`
-both round-trip cleanly. **Next single step**: Step 2 — create
-`packages/llm_tracker_signup/{pyproject.toml, src/llm_tracker_signup/__init__.py}`
-with FastAPI + uvicorn + jinja2 + python-multipart + pdfplumber +
-sqlalchemy + asyncpg + pydantic-settings deps; verify by `uv sync`
-+ `python -c "import llm_tracker_signup"`.
+**Signup app track — code-complete (Steps 1–8 done in one session);
+operator-owned migration apply + first `fly deploy` of the new
+`llm-tracker-signup` app are the only remaining steps.** The full
+package shipped across six commits: migration 0018 (`b35b524`) +
+package skeleton + root testpaths (`5f52873`) + config + registration
+core with 5 tests (`070361f`) + FastAPI app + Tailwind templates + 6
+route tests (`ab2924f`) + `fly.toml` (`a77358b`), plus the step-1
+docs checkpoint (`4d23a4f`). Verified: signup package 6 passed + 5
+skipped (the 5 DB-touching tests skip cleanly without
+`LLMTRACK_TEST_DATABASE_URL` — same convention as the proxy server's
+PG-smoke tests); full regression 168 passed + 23 skipped (was 162 +
+18 at session start; +6 new passes, +5 new skips, zero regressions);
+ruff clean; alembic `--sql` round-trip clean. Token issuance
+duplicates the minimal ~10-line surface from
+`llm_tracker_server.auth.tokens.issue` (no Python import — keeps the
+signup deploy unit independent of the proxy server's tree). PDF
+extraction is failure-tolerant (empty string on parse failure or
+image-only PDFs); the route layer maps that to `proposal_text = NULL`
+so "no PDF" and "PDF with no text" land identically downstream.
+Duplicate-email path re-renders the form with the user's input and a
+400 status (better browser UX than a JSON 400; status pinned by test).
+**Operator-owned next, in order**: (1) apply migration 0018 to
+Supabase via MCP `execute_sql` in one atomic `BEGIN; ... COMMIT;`
+block matching the 0013–0017 precedent — pre-state alembic at
+`0017_drop_exchanges_session_id`, post-state at
+`0018_participant_registrations` with the table + email btree present;
+(2) `fly apps create llm-tracker-signup` + `fly secrets set
+LLMTRACK_DATABASE_URL=… LLMTRACK_PROXY_SERVER_URL=…` + `fly deploy
+-c packages/llm_tracker_signup/fly.toml`; (3) smoke a test
+registration end-to-end and verify the row lands in
+`participant_registrations`. The `[GITHUB_RELEASE_URL]` placeholder
+in `success.html` is a separate follow-up after the agent wheel is
+published to GitHub releases (Prompt 2 in the broader rollout).
 
 **Prior pause** — Follow-up cleanup — code + live Supabase schema
 aligned; `fly deploy` is the only remaining step. Migration 0017

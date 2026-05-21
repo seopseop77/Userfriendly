@@ -1,0 +1,27 @@
+name: Deploy llm-tracker-signup
+
+# Triggers on pushes to main that touch the signup package or this
+# workflow file. The signup app has no cross-package imports, so
+# changes outside its directory cannot affect its build.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/llm_tracker_signup/**'
+      - '.github/workflows/deploy-signup.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-llm-tracker-signup
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: fly deploy llm-tracker-signup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: flyctl deploy --remote-only -c packages/llm_tracker_signup/fly.toml
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

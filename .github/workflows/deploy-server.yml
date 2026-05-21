@@ -1,0 +1,34 @@
+name: Deploy llm-tracker-server
+
+# Triggers on pushes to main that touch the proxy server's code,
+# its plugins, the root Dockerfile, the root fly.toml, or this
+# workflow file itself. Pure-signup pushes skip this job.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - 'fly.toml'
+      - 'packages/llm_tracker_sdk/**'
+      - 'packages/llm_tracker_server/**'
+      - 'packages/llm_tracker_plugin_analytics_sink/**'
+      - 'packages/llm_tracker_plugin_keyword_block/**'
+      - '.github/workflows/deploy-server.yml'
+  workflow_dispatch:
+
+# Prevent overlapping deploys to the same Fly app — newer pushes
+# cancel an in-flight deploy rather than queue up behind it.
+concurrency:
+  group: deploy-llm-tracker-server
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: fly deploy llm-tracker-server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: flyctl deploy --remote-only -c fly.toml
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

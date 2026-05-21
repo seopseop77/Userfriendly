@@ -17,11 +17,11 @@
 
 ## Recent commits (last 5)
 
-- `<pending>` signup: per-step Copy buttons on success page
+- `<pending>` signup: fix Copy button overlap on long commands
+- `428860f` signup: per-step Copy buttons on success page
 - `ffb476a` signup: success page — concrete v0.1.0 wheel URL
 - `bcb7d50` docs: backfill cc2874e hash in STATUS + worklog
 - `cc2874e` docs: participant install section for claude-manage
-- `70972c5` infra: GitHub Actions wheel release for agent
 
 ## Where we paused
 

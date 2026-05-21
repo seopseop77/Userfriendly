@@ -209,6 +209,30 @@ selection-fallback pair the existing token-box button uses, which is
 already known to work on the deployed site. Live verification waits
 for the next signup deploy.
 
+### Checkpoint F — fix Copy button overlap on long commands
+
+First iteration positioned the Copy button absolutely at the pre's
+top-right with `pr-20` padding inside the pre. Long commands (the
+Step 1 pip URL and the Step 2 `claude-manage setup ... --server-url
+...` line) still passed under the opaque button as the pre scrolled,
+making the right edge of the text unreadable.
+
+Fix: dropped `absolute` positioning. Each pre is now a `flex-1
+min-w-0` sibling of the Copy button inside a `flex items-stretch
+gap-2` container — mirrors the existing token-box layout. The pre
+gets the full available width and scrolls horizontally inside its
+own clipping box; the button lives outside that clipping box on the
+right and never visually intersects the code.
+
+Test untouched — `id="step-N-code"` / `data-copy-target="step-N-code"`
+pairs survived the layout change.
+
+```
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker_signup/tests/test_app.py -q
+...sss
+3 passed, 3 skipped in 1.58s
+```
+
 ## Handoff
 
 In-repo work is closed out. The remaining step is operator-owned:

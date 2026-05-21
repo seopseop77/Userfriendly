@@ -73,7 +73,10 @@ async def test_get_success_renders_token() -> None:
     body = resp.text
     assert "lts_demo123" in body
     assert "https://proxy.example.com" in body
-    assert "[GITHUB_RELEASE_URL]" in body
+    assert (
+        "https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.0/"
+        "llm_tracker_agent-0.1.0-py3-none-any.whl"
+    ) in body
 
 
 async def test_register_route_creates_registration(app_with_engine) -> None:

@@ -55,6 +55,22 @@ Tag pushing and signup-template URL swap are not in scope.
   setup / run / upgrade / uninstall commands. Uses `<WHEEL_URL>` as the
   placeholder participants will copy from the signup app's success page.
   (commit `cc2874e`)
+- Operator pushed `agent/v0.1.0` after the workflow landed; GitHub
+  Actions built and attached
+  `llm_tracker_agent-0.1.0-py3-none-any.whl` (5.94 KB) and
+  `llm_tracker_agent-0.1.0.tar.gz` to the auto-created Release. Repo
+  was renamed `Userfreiendly` → `Userfriendly` in the same window
+  (typo fix); release survived the rename via GitHub's auto-redirect.
+- Modified
+  `packages/llm_tracker_signup/src/llm_tracker_signup/templates/success.html`
+  — replaced `[GITHUB_RELEASE_URL]` with the concrete wheel asset URL
+  `https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.0/llm_tracker_agent-0.1.0-py3-none-any.whl`.
+- Modified `packages/llm_tracker_signup/tests/test_app.py` —
+  `test_get_success_renders_token` previously asserted the placeholder
+  literal `[GITHUB_RELEASE_URL]` was rendered; now asserts the
+  full wheel URL is rendered. Failing on a stale URL is desirable: the
+  next time the version bumps, this test prompts the success-page
+  update.
 
 ## Decisions
 
@@ -124,9 +140,9 @@ yaml.safe_load(open('.github/workflows/release-agent.yml'))"`.
 
 ## What's left / known limits
 
-- First tag push (`agent/v0.1.0`) — operator action, not in this session.
-- Signup template `[GITHUB_RELEASE_URL]` placeholder swap — **out of
-  scope this session**; requires the first real release URL.
+- Signup app redeploy — required to surface the new success page to
+  participants (operator: `fly deploy -c packages/llm_tracker_signup/fly.toml`
+  or push to main and let GitHub Actions handle it).
 
 ### Checkpoint C — participant install section
 
@@ -145,15 +161,34 @@ $ grep -n "^## Participant Installation\|^### " docs/deploy.md \
 `<WHEEL_URL>` is left as the placeholder participants will copy from the
 signup app's success page once the first `agent/v0.1.0` tag is pushed.
 
+### Checkpoint D — success.html URL swap + test fix
+
+```
+$ grep -n "llm_tracker_agent-0.1.0-py3-none-any.whl" \
+    packages/llm_tracker_signup/src/llm_tracker_signup/templates/success.html
+39:        ...pip install https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.0/llm_tracker_agent-0.1.0-py3-none-any.whl...
+
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker_signup/tests/test_app.py -q
+...sss
+3 passed, 3 skipped in 0.74s
+```
+
+No leftover `GITHUB_RELEASE_URL` placeholders anywhere in the signup
+package after the swap.
+
 ## Handoff
 
-After this worklog finishes:
+In-repo work is closed out. The remaining step is operator-owned:
 
-1. Human pushes the first `agent/v0.1.0` git tag. CI builds and attaches
-   the wheel.
-2. Copy the resulting asset URL into
-   `packages/llm_tracker_signup/src/llm_tracker_signup/templates/success.html`
-   replacing `[GITHUB_RELEASE_URL]`, then commit + redeploy signup.
+- **Redeploy the signup app** so the new success page (with the concrete
+  wheel URL) reaches participants:
+  ```
+  fly deploy -c packages/llm_tracker_signup/fly.toml
+  # or just push to main and let .github/workflows/deploy-signup.yml run.
+  ```
+- After redeploy, sanity-check by hitting the live `/success?token=lts_demo`
+  and confirming the rendered `pip install ...` line points at the
+  v0.1.0 wheel asset URL.
 
 ## Suggestions (untouched)
 

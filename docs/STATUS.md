@@ -17,50 +17,45 @@
 
 ## Recent commits (last 5)
 
+- `<pending>` signup: success page — concrete agent v0.1.0 wheel URL
+- `bcb7d50` docs: backfill cc2874e hash in STATUS + worklog
 - `cc2874e` docs: participant install section for claude-manage
 - `70972c5` infra: GitHub Actions wheel release for agent
 - `04eaa98` agent: bump version 0.1.0 + ADR-0034
-- `dabbf3e` docs: trim STATUS.md to essential current state
-- `f6f64ab` infra: fix signup deploy build context (cd into the package)
 
 ## Where we paused
 
-**Thin-agent release pipeline — code-complete in this repo.**
+**Thin-agent v0.1.0 release published; signup success page wired up.**
 
-- ADR-0034: GitHub Releases wheel is the sole distribution channel for
-  `claude-manage` (no PyPI, no binary, no Homebrew).
-- `packages/llm_tracker_agent/pyproject.toml` version → `0.1.0`.
-- `.github/workflows/release-agent.yml` — `push` of `agent/v*` builds and
-  attaches the wheel + sdist to the GitHub Release. **No PyPI publish.**
-- Local verification: `llm_tracker_agent-0.1.0-py3-none-any.whl` built
-  clean; `pip --dry-run` says `Would install llm-tracker-agent-0.1.0`.
-- `docs/deploy.md` — `## Participant Installation` section added with
-  `<WHEEL_URL>` placeholder.
+- Release `agent/v0.1.0` is live on GitHub with wheel
+  `llm_tracker_agent-0.1.0-py3-none-any.whl` (5.94 KB) attached.
+- Repo renamed `Userfreiendly` → `Userfriendly` (typo fix). Release
+  survived the rename; canonical wheel URL is now
+  `https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.0/llm_tracker_agent-0.1.0-py3-none-any.whl`.
+- `success.html` of the signup app has the concrete URL baked in (no
+  more `[GITHUB_RELEASE_URL]` placeholder). Route tests updated; 3
+  passed / 3 skipped on `pytest packages/llm_tracker_signup/tests/test_app.py`.
+- `docs/deploy.md` `## Participant Installation` left with `<WHEEL_URL>`
+  placeholder by design — deploy.md is a generic guide, not a per-
+  release artefact.
 - Worklog: `docs/worklog/2026-05-21-agent-release-pipeline.md`.
 
-**Signup deploy + proxy redeploy remain operator-owned** (see worklog
+**Proxy redeploy still operator-owned** (see worklog
 `2026-05-21-signup-app.md` for commands; unchanged).
 
 ## Next single step
 
-**Operator-owned**: push the first `agent/v0.1.0` git tag. Then copy
-the resulting wheel asset URL into:
-
-1. `packages/llm_tracker_signup/src/llm_tracker_signup/templates/success.html`
-   (swap `[GITHUB_RELEASE_URL]`), then redeploy the signup app.
-2. `docs/deploy.md` `## Participant Installation` (replace each `<WHEEL_URL>`
-   placeholder with the real URL).
-
-Tag push:
+**Operator-owned: redeploy the signup app** so participants see the new
+success page with the live wheel URL:
 
 ```
-git tag agent/v0.1.0
-git push origin agent/v0.1.0
+fly deploy -c packages/llm_tracker_signup/fly.toml
+# or push to main and let .github/workflows/deploy-signup.yml run
 ```
 
-Then watch the run at GitHub → Actions → "Release llm-tracker-agent" and
-confirm `llm_tracker_agent-0.1.0-py3-none-any.whl` is attached to the
-auto-created release.
+Sanity-check after deploy: hit `https://llm-tracker-signup.fly.dev/success?token=lts_demo`
+and confirm the rendered Step 1 `pip install ...` line carries the
+v0.1.0 wheel URL.
 
 ---
 

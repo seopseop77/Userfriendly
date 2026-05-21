@@ -17,26 +17,25 @@
 
 ## Recent commits (last 5)
 
-- `<pending>` infra: GitHub Actions release-agent.yml (wheel on agent/v* tag)
+- `<pending>` docs: deploy.md — participant install section for claude-manage
+- `70972c5` infra: GitHub Actions wheel release for agent
 - `04eaa98` agent: bump version 0.1.0 + ADR-0034
 - `dabbf3e` docs: trim STATUS.md to essential current state
 - `f6f64ab` infra: fix signup deploy build context (cd into the package)
-- `36174ca` infra: GitHub Actions — auto-deploy both fly apps on main push
 
 ## Where we paused
 
-**Thin-agent release pipeline — CI workflow landed, local build verified.**
+**Thin-agent release pipeline — code-complete in this repo.**
 
-- ADR-0034 locked: GitHub Releases wheel is the sole distribution channel
-  for `claude-manage` (no PyPI, no binary, no Homebrew).
-- `packages/llm_tracker_agent/pyproject.toml` version `0.0.1` → `0.1.0`.
-- `.github/workflows/release-agent.yml` — `push` of tag `agent/v*` runs
-  `uv build --out-dir dist` and attaches the wheel + sdist to the
-  GitHub Release via `softprops/action-gh-release@v2`. **No PyPI publish.**
-- Local verification: wheel
-  `llm_tracker_agent-0.1.0-py3-none-any.whl` built clean; `pip --dry-run`
-  reports `Would install llm-tracker-agent-0.1.0`; entry point
-  `claude-manage` present.
+- ADR-0034: GitHub Releases wheel is the sole distribution channel for
+  `claude-manage` (no PyPI, no binary, no Homebrew).
+- `packages/llm_tracker_agent/pyproject.toml` version → `0.1.0`.
+- `.github/workflows/release-agent.yml` — `push` of `agent/v*` builds and
+  attaches the wheel + sdist to the GitHub Release. **No PyPI publish.**
+- Local verification: `llm_tracker_agent-0.1.0-py3-none-any.whl` built
+  clean; `pip --dry-run` says `Would install llm-tracker-agent-0.1.0`.
+- `docs/deploy.md` — `## Participant Installation` section added with
+  `<WHEEL_URL>` placeholder.
 - Worklog: `docs/worklog/2026-05-21-agent-release-pipeline.md`.
 
 **Signup deploy + proxy redeploy remain operator-owned** (see worklog
@@ -44,16 +43,24 @@
 
 ## Next single step
 
-Add a `## Participant Installation` section to `docs/deploy.md` with
-requirements (Python 3.11+), `pip install <WHEEL_URL>` /
-`pipx install <WHEEL_URL>`, `claude-manage setup <YOUR_TOKEN>`, and the
-`claude-manage` / `claude-manage --help` run lines. Use `<WHEEL_URL>` as
-a placeholder — fill in for real after the operator pushes the first
-`agent/v0.1.0` tag.
+**Operator-owned**: push the first `agent/v0.1.0` git tag. Then copy
+the resulting wheel asset URL into:
 
-After that: swap `[GITHUB_RELEASE_URL]` in the signup app's
-`templates/success.html` for the real release-asset URL, then redeploy
-the signup app.
+1. `packages/llm_tracker_signup/src/llm_tracker_signup/templates/success.html`
+   (swap `[GITHUB_RELEASE_URL]`), then redeploy the signup app.
+2. `docs/deploy.md` `## Participant Installation` (replace each `<WHEEL_URL>`
+   placeholder with the real URL).
+
+Tag push:
+
+```
+git tag agent/v0.1.0
+git push origin agent/v0.1.0
+```
+
+Then watch the run at GitHub → Actions → "Release llm-tracker-agent" and
+confirm `llm_tracker_agent-0.1.0-py3-none-any.whl` is attached to the
+auto-created release.
 
 ---
 

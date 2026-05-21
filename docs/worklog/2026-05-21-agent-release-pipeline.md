@@ -49,7 +49,11 @@ Tag pushing and signup-template URL swap are not in scope.
   `packages/llm_tracker_agent`, and attaches `dist/*.whl` + `dist/*.tar.gz`
   to the release the tag push created via
   `softprops/action-gh-release@v2`. `permissions: contents: write` is set
-  at the job level. No PyPI publish.
+  at the job level. No PyPI publish. (commit `70972c5`)
+- Modified `docs/deploy.md` — appended a `## Participant Installation`
+  section covering requirements (Python 3.11+, `pip`/`pipx`), install /
+  setup / run / upgrade / uninstall commands. Uses `<WHEEL_URL>` as the
+  placeholder participants will copy from the signup app's success page.
 
 ## Decisions
 
@@ -119,11 +123,26 @@ yaml.safe_load(open('.github/workflows/release-agent.yml'))"`.
 
 ## What's left / known limits
 
-- `docs/deploy.md` — add `## Participant Installation` section with
-  `<WHEEL_URL>` placeholder. Pending.
 - First tag push (`agent/v0.1.0`) — operator action, not in this session.
 - Signup template `[GITHUB_RELEASE_URL]` placeholder swap — **out of
   scope this session**; requires the first real release URL.
+
+### Checkpoint C — participant install section
+
+```
+$ grep -n "^## Participant Installation\|^### " docs/deploy.md \
+    | tail -8
+425:## Participant Installation
+436:### Requirements
+444:### Install
+457:### Setup
+469:### Run
+482:### Upgrading
+495:### Uninstall
+```
+
+`<WHEEL_URL>` is left as the placeholder participants will copy from the
+signup app's success page once the first `agent/v0.1.0` tag is pushed.
 
 ## Handoff
 

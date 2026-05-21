@@ -419,3 +419,86 @@ in `public.exchanges` scoped to the demo org, and (c) Fly logs show
 no traceback. The operator-only flavour of CP14 has **no Phase-3a
 dependency**; external-tester flavours of CP14 require ADR-#2 (consent
 + data handling) to be settled first.
+
+---
+
+## Participant Installation
+
+The audience for this section is a **participant** — an end-user of
+`claude-manage`, not an operator of the central server. The signup flow
+hands each participant a one-time bearer token plus the install URL for
+the current `claude-manage` release.
+
+Distribution channel: **GitHub Releases wheel** (ADR-0034). No PyPI; no
+binary. Each release tag (`agent/vX.Y.Z`) auto-publishes a wheel asset
+via `.github/workflows/release-agent.yml`.
+
+### Requirements
+
+- **Python 3.11+** — `python --version` (or `python3 --version`) reports
+  `3.11.x` or newer. Already present on any machine running Claude Code.
+- **`pip`** (ships with Python) or **`pipx`** (`brew install pipx` /
+  `python -m pip install --user pipx`). `pipx` is recommended — it gives
+  `claude-manage` its own isolated environment.
+
+### Install
+
+Replace `<WHEEL_URL>` with the URL of the wheel asset on the relevant
+GitHub Release page (e.g.
+`https://github.com/<owner>/Userfriendly/releases/download/agent/v0.1.0/llm_tracker_agent-0.1.0-py3-none-any.whl`).
+The signup app's success page hands this URL to the participant.
+
+```
+pipx install <WHEEL_URL>
+# or, into the current Python environment:
+pip install <WHEEL_URL>
+```
+
+### Setup
+
+Write the central-server URL and the issued bearer token to
+`~/.llm-tracker/config.toml`:
+
+```
+claude-manage setup <YOUR_TOKEN>
+```
+
+Pass `--server-url <URL>` if the central server is not the default
+`https://llm-tracker-server.fly.dev` (e.g. for a staging deploy).
+
+### Run
+
+```
+claude-manage            # starts the local proxy and launches Claude Code
+                         # through it (ANTHROPIC_BASE_URL points at 127.0.0.1)
+claude-manage --help     # see all options
+```
+
+The local proxy lives for the duration of the Claude Code session and
+exits together with it. Multiple `claude-manage` instances can run
+side by side — the second instance picks a free ephemeral port if the
+preferred one is taken.
+
+### Upgrading
+
+Each new release publishes a wheel at a new versioned URL. To upgrade:
+
+```
+pipx install --force <NEW_WHEEL_URL>     # pipx replaces the env
+# or
+pip install --upgrade <NEW_WHEEL_URL>    # plain pip
+```
+
+There is no auto-update channel; the signup app (or operator
+announcement) re-distributes the new URL.
+
+### Uninstall
+
+```
+pipx uninstall llm-tracker-agent
+# or
+pip uninstall llm-tracker-agent
+```
+
+The local config at `~/.llm-tracker/config.toml` is left in place; delete
+it manually if you want to wipe the bearer token from disk.

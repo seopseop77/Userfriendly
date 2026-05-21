@@ -1,0 +1,30 @@
+# fly.toml — Public-facing signup app for research participants.
+#
+# Separate Fly app from `llm-tracker-server` so the proxy server URL
+# stays private — participants only interact with this app's domain.
+#
+# Required secrets (set via the Fly CLI, never in this file):
+#
+#   fly secrets set LLMTRACK_DATABASE_URL="postgresql+asyncpg://<user>:<password>@<host>:5432/<db>?ssl=require"
+#   fly secrets set LLMTRACK_PROXY_SERVER_URL="https://llm-tracker-server.fly.dev"
+#
+# The database URL points at the same Supabase project as
+# `llm-tracker-server`; alembic migrations are owned by the server
+# package, so apply migration 0018 there before deploying this app.
+#
+# Reference: https://fly.io/docs/reference/configuration/
+
+app = "llm-tracker-signup"
+primary_region = "nrt"
+
+[build]
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[env]
+  PORT = "8000"

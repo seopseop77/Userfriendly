@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Registration Complete</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-50 min-h-screen">
+  <div class="max-w-2xl mx-auto px-6 py-12">
+    <header class="mb-8">
+      <h1 class="text-3xl font-semibold text-slate-900">You're in &mdash; here is your API token</h1>
+      <p class="mt-2 text-slate-600">
+        Follow the three steps below to start using the tracked
+        Claude Code workflow.
+      </p>
+    </header>
+
+    <div class="mb-6 rounded border border-amber-300 bg-amber-50 px-4 py-3 text-amber-900">
+      <p class="font-medium">This token will not be shown again. Save it now.</p>
+      <p class="mt-1 text-sm">Anyone with the token can use your study quota — keep it private.</p>
+    </div>
+
+    <div class="mb-8 bg-white shadow-sm rounded-lg p-6 border border-slate-200">
+      <label class="block text-sm font-medium text-slate-700">Your token</label>
+      <div class="mt-2 flex items-center gap-2">
+        <code id="token-box" class="flex-1 font-mono text-sm bg-slate-100 border border-slate-200 rounded px-3 py-2 break-all">{{ token }}</code>
+        <button type="button" id="copy-btn"
+                class="shrink-0 px-3 py-2 bg-slate-900 text-white text-sm font-medium rounded hover:bg-slate-800">
+          Copy
+        </button>
+      </div>
+      <p id="copy-status" class="mt-2 text-xs text-emerald-600 hidden">Copied!</p>
+    </div>
+
+    <ol class="space-y-6">
+      <li class="bg-white shadow-sm rounded-lg p-5 border border-slate-200">
+        <div class="text-sm font-semibold text-slate-500 uppercase tracking-wide">Step 1 &mdash; Install</div>
+        <pre class="mt-2 bg-slate-900 text-slate-100 rounded px-4 py-3 overflow-x-auto text-sm"><code>pip install [GITHUB_RELEASE_URL]</code></pre>
+      </li>
+
+      <li class="bg-white shadow-sm rounded-lg p-5 border border-slate-200">
+        <div class="text-sm font-semibold text-slate-500 uppercase tracking-wide">Step 2 &mdash; Configure</div>
+        <pre class="mt-2 bg-slate-900 text-slate-100 rounded px-4 py-3 overflow-x-auto text-sm"><code>claude-manage setup {{ token }}{% if proxy_server_url %} --server-url {{ proxy_server_url }}{% endif %}</code></pre>
+      </li>
+
+      <li class="bg-white shadow-sm rounded-lg p-5 border border-slate-200">
+        <div class="text-sm font-semibold text-slate-500 uppercase tracking-wide">Step 3 &mdash; Run (instead of <code class="font-mono">claude</code>)</div>
+        <pre class="mt-2 bg-slate-900 text-slate-100 rounded px-4 py-3 overflow-x-auto text-sm"><code>claude-manage</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <script>
+    (function () {
+      const btn = document.getElementById('copy-btn');
+      const box = document.getElementById('token-box');
+      const status = document.getElementById('copy-status');
+      btn.addEventListener('click', async function () {
+        try {
+          await navigator.clipboard.writeText(box.textContent.trim());
+          status.classList.remove('hidden');
+          btn.textContent = 'Copied';
+          setTimeout(function () {
+            status.classList.add('hidden');
+            btn.textContent = 'Copy';
+          }, 2000);
+        } catch (_) {
+          // fallback for older browsers
+          const range = document.createRange();
+          range.selectNodeContents(box);
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

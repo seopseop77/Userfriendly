@@ -36,17 +36,35 @@
     <ol class="space-y-6">
       <li class="bg-white shadow-sm rounded-lg p-5 border border-slate-200">
         <div class="text-sm font-semibold text-slate-500 uppercase tracking-wide">Step 1 &mdash; Install</div>
-        <pre class="mt-2 bg-slate-900 text-slate-100 rounded px-4 py-3 overflow-x-auto text-sm"><code>pip install https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.0/llm_tracker_agent-0.1.0-py3-none-any.whl</code></pre>
+        <div class="relative mt-2">
+          <pre class="bg-slate-900 text-slate-100 rounded px-4 py-3 pr-20 overflow-x-auto text-sm"><code id="step-1-code">pip install https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.0/llm_tracker_agent-0.1.0-py3-none-any.whl</code></pre>
+          <button type="button" data-copy-target="step-1-code"
+                  class="absolute top-2 right-2 px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-100 text-xs font-medium rounded">
+            Copy
+          </button>
+        </div>
       </li>
 
       <li class="bg-white shadow-sm rounded-lg p-5 border border-slate-200">
         <div class="text-sm font-semibold text-slate-500 uppercase tracking-wide">Step 2 &mdash; Configure</div>
-        <pre class="mt-2 bg-slate-900 text-slate-100 rounded px-4 py-3 overflow-x-auto text-sm"><code>claude-manage setup {{ token }}{% if proxy_server_url %} --server-url {{ proxy_server_url }}{% endif %}</code></pre>
+        <div class="relative mt-2">
+          <pre class="bg-slate-900 text-slate-100 rounded px-4 py-3 pr-20 overflow-x-auto text-sm"><code id="step-2-code">claude-manage setup {{ token }}{% if proxy_server_url %} --server-url {{ proxy_server_url }}{% endif %}</code></pre>
+          <button type="button" data-copy-target="step-2-code"
+                  class="absolute top-2 right-2 px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-100 text-xs font-medium rounded">
+            Copy
+          </button>
+        </div>
       </li>
 
       <li class="bg-white shadow-sm rounded-lg p-5 border border-slate-200">
         <div class="text-sm font-semibold text-slate-500 uppercase tracking-wide">Step 3 &mdash; Run (instead of <code class="font-mono">claude</code>)</div>
-        <pre class="mt-2 bg-slate-900 text-slate-100 rounded px-4 py-3 overflow-x-auto text-sm"><code>claude-manage</code></pre>
+        <div class="relative mt-2">
+          <pre class="bg-slate-900 text-slate-100 rounded px-4 py-3 pr-20 overflow-x-auto text-sm"><code id="step-3-code">claude-manage</code></pre>
+          <button type="button" data-copy-target="step-3-code"
+                  class="absolute top-2 right-2 px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-100 text-xs font-medium rounded">
+            Copy
+          </button>
+        </div>
       </li>
     </ol>
   </div>
@@ -73,6 +91,30 @@
           sel.removeAllRanges();
           sel.addRange(range);
         }
+      });
+    })();
+
+    (function () {
+      document.querySelectorAll('[data-copy-target]').forEach(function (btn) {
+        btn.addEventListener('click', async function () {
+          const target = document.getElementById(btn.getAttribute('data-copy-target'));
+          if (!target) return;
+          const text = target.textContent.trim();
+          try {
+            await navigator.clipboard.writeText(text);
+          } catch (_) {
+            // fallback for older browsers — select the code so the user can Cmd/Ctrl-C
+            const range = document.createRange();
+            range.selectNodeContents(target);
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+            return;
+          }
+          const original = btn.textContent;
+          btn.textContent = 'Copied';
+          setTimeout(function () { btn.textContent = original; }, 2000);
+        });
       });
     })();
   </script>

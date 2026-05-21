@@ -77,6 +77,11 @@ async def test_get_success_renders_token() -> None:
         "https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.0/"
         "llm_tracker_agent-0.1.0-py3-none-any.whl"
     ) in body
+    # Each of the three step blocks must have a copy button wired to its
+    # code element via the data-copy-target pattern.
+    for step in ("step-1-code", "step-2-code", "step-3-code"):
+        assert f'id="{step}"' in body
+        assert f'data-copy-target="{step}"' in body
 
 
 async def test_register_route_creates_registration(app_with_engine) -> None:

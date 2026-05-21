@@ -71,6 +71,16 @@ Tag pushing and signup-template URL swap are not in scope.
   full wheel URL is rendered. Failing on a stale URL is desirable: the
   next time the version bumps, this test prompts the success-page
   update.
+- Added per-step Copy buttons in
+  `packages/llm_tracker_signup/.../templates/success.html` — each of the
+  three `<pre>` code blocks (Install / Configure / Run) now has an
+  absolute-positioned Copy button in its top-right corner. Buttons
+  share one JS handler driven by `data-copy-target` → `<code id="…">`,
+  with a clipboard-API path and a selection-fallback for older browsers.
+  The existing token-box copy logic is left untouched.
+- Test `test_get_success_renders_token` now also asserts each step's
+  `id="step-N-code"` + matching `data-copy-target="step-N-code"` pair
+  is rendered.
 
 ## Decisions
 
@@ -175,6 +185,29 @@ $ .venv/bin/python3.12 -m pytest packages/llm_tracker_signup/tests/test_app.py -
 
 No leftover `GITHUB_RELEASE_URL` placeholders anywhere in the signup
 package after the swap.
+
+### Checkpoint E — per-step Copy buttons
+
+```
+$ grep -n 'data-copy-target\|id="step-' \
+    packages/llm_tracker_signup/src/llm_tracker_signup/templates/success.html
+40:          <pre ...><code id="step-1-code">...
+41:          <button type="button" data-copy-target="step-1-code"
+49:          <pre ...><code id="step-2-code">...
+50:          <button type="button" data-copy-target="step-2-code"
+58:          <pre ...><code id="step-3-code">...
+59:          <button type="button" data-copy-target="step-3-code"
+
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker_signup/tests/test_app.py -q
+...sss
+3 passed, 3 skipped in 0.68s
+```
+
+Browser-side behaviour (clipboard write + "Copied" feedback) cannot be
+exercised in unit tests; it relies on the same `navigator.clipboard` /
+selection-fallback pair the existing token-box button uses, which is
+already known to work on the deployed site. Live verification waits
+for the next signup deploy.
 
 ## Handoff
 

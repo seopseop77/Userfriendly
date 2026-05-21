@@ -17,11 +17,11 @@
 
 ## Recent commits (last 5)
 
-- `<pending>` signup: success page — concrete agent v0.1.0 wheel URL
+- `<pending>` signup: per-step Copy buttons on success page
+- `ffb476a` signup: success page — concrete v0.1.0 wheel URL
 - `bcb7d50` docs: backfill cc2874e hash in STATUS + worklog
 - `cc2874e` docs: participant install section for claude-manage
 - `70972c5` infra: GitHub Actions wheel release for agent
-- `04eaa98` agent: bump version 0.1.0 + ADR-0034
 
 ## Where we paused
 

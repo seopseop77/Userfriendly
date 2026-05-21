@@ -54,6 +54,7 @@ Tag pushing and signup-template URL swap are not in scope.
   section covering requirements (Python 3.11+, `pip`/`pipx`), install /
   setup / run / upgrade / uninstall commands. Uses `<WHEEL_URL>` as the
   placeholder participants will copy from the signup app's success page.
+  (commit `cc2874e`)
 
 ## Decisions
 

@@ -17,7 +17,7 @@
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: deploy.md — participant install section for claude-manage
+- `cc2874e` docs: participant install section for claude-manage
 - `70972c5` infra: GitHub Actions wheel release for agent
 - `04eaa98` agent: bump version 0.1.0 + ADR-0034
 - `dabbf3e` docs: trim STATUS.md to essential current state

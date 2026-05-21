@@ -283,17 +283,68 @@ skipped at the start of this track):
   "parser failed" from "PDF had no text", `extract_pdf_text` would
   need to grow a richer return shape (e.g. `tuple[str, bool]`).
 
+## Live apply timeline (same session continuation)
+
+Operator requested live apply ("마이그레이션부터 적용해줘"). Migration
+0018 applied via Supabase MCP `execute_sql` as one atomic `BEGIN ...
+COMMIT` block, matching the 0013 / 0014 / 0015 / 0016 / 0017
+precedent.
+
+Pre-state:
+
+| field | value |
+|---|---|
+| alembic_at | `0017_drop_exchanges_session_id` |
+| `participant_registrations` table | absent (`information_schema.tables` query → `false`) |
+
+Apply (one transaction):
+
+```sql
+BEGIN;
+CREATE TABLE participant_registrations (
+    id UUID DEFAULT gen_random_uuid() NOT NULL,
+    org_id UUID NOT NULL,
+    token_hash TEXT NOT NULL,
+    name TEXT NOT NULL,
+    email TEXT NOT NULL,
+    institution TEXT NOT NULL,
+    research_description TEXT NOT NULL,
+    proposal_text TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    PRIMARY KEY (id),
+    FOREIGN KEY (org_id) REFERENCES orgs (id),
+    FOREIGN KEY (token_hash) REFERENCES api_tokens (token_hash),
+    CONSTRAINT uq_participant_registrations_email UNIQUE (email)
+);
+CREATE INDEX idx_participant_registrations_email
+    ON participant_registrations (email);
+UPDATE alembic_version SET version_num='0018_participant_registrations'
+    WHERE version_num='0017_drop_exchanges_session_id';
+COMMIT;
+```
+
+Post-state:
+
+| axis | value |
+|---|---|
+| alembic_at | `0018_participant_registrations` |
+| columns (9) | `id uuid NOT NULL DEFAULT gen_random_uuid()`, `org_id uuid NOT NULL`, `token_hash text NOT NULL`, `name text NOT NULL`, `email text NOT NULL`, `institution text NOT NULL`, `research_description text NOT NULL`, `proposal_text text NULL`, `created_at timestamptz NOT NULL DEFAULT now()` |
+| constraints (4) | PK `participant_registrations_pkey (id)`; FK `participant_registrations_org_id_fkey (org_id) → orgs(id)`; FK `participant_registrations_token_hash_fkey (token_hash) → api_tokens(token_hash)`; UNIQUE `uq_participant_registrations_email (email)` |
+| indexes (3) | `idx_participant_registrations_email` btree (explicit), `participant_registrations_pkey` btree (implicit PK), `uq_participant_registrations_email` btree (implicit UNIQUE) |
+
+Every axis matches the migration file's intent exactly. The two
+`email` indexes (explicit btree + the UNIQUE-constraint backing
+btree) are both kept per the §Decisions "redundancy is fine"
+rationale — Postgres' planner picks whichever it prefers and the
+duplicate-check path is hot enough that either way it stays
+sub-millisecond.
+
 ## Handoff
 
-**Track is code-complete** through Steps 1–7 plus this docs
-checkpoint (Step 8). Operator-owned next steps in order:
+**Migration 0018 applied live**; the only remaining track gate is
+the operator-owned Fly provisioning. Steps in order:
 
-1. Apply migration 0018 to Supabase via MCP `execute_sql` in one
-   atomic `BEGIN; ... COMMIT;` block. Pre-state should show alembic
-   at `0017_drop_exchanges_session_id` and no `participant_registrations`
-   table; post-state should show alembic at
-   `0018_participant_registrations`, the table present, and the
-   `email` btree index.
+1. ✅ Apply migration 0018 to Supabase (DONE — this session).
 2. Provision the new Fly app — `fly apps create llm-tracker-signup`,
    then `fly secrets set LLMTRACK_DATABASE_URL=… LLMTRACK_PROXY_SERVER_URL=…`,
    then `fly deploy -c packages/llm_tracker_signup/fly.toml`.

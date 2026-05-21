@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llm-tracker-signup"
+version = "0.0.1"
+description = "Public-facing signup app for research participants. Issues an API token immediately on registration; the proxy server URL stays private."
+requires-python = ">=3.11"
+authors = [{ name = "Userfriendly Team" }]
+license = { text = "Proprietary (internal research use)" }
+
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "jinja2",
+    "python-multipart",
+    "pdfplumber",
+    "sqlalchemy>=2",
+    "asyncpg",
+    "pydantic",
+    "pydantic-settings",
+    "httpx",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+    "fpdf2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/llm_tracker_signup"]

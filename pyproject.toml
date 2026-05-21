@@ -18,6 +18,7 @@ asyncio_mode = "auto"
 testpaths = [
     "packages/llm_tracker_sdk/tests",
     "packages/llm_tracker_server/tests",
+    "packages/llm_tracker_signup/tests",
     "packages/llm_tracker_agent/tests",
     "packages/llm_tracker_plugin_token_counter/tests",
     "packages/llm_tracker_plugin_keyword_block/tests",

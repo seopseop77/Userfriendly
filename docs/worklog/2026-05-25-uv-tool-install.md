@@ -184,7 +184,7 @@ small UX issues that landed before the redeploy:
    note in Step 1 wasn't enough to prevent the muscle-memory copy-paste.
    Fix: wrap the bootstrap line in a POSIX guard
    (`command -v uv >/dev/null || curl …`) so an already-installed uv
-   short-circuits the install. (commit pending)
+   short-circuits the install. (commit 2b4f573)
 2. **Step 2 command visually wrapped onto two lines** in the operator's
    browser when `proxy_server_url` is set to the live Fly URL — the
    combined `claude-manage setup <token> --server-url …` exceeds the
@@ -194,7 +194,7 @@ small UX issues that landed before the redeploy:
    defaults; `overflow-x-auto` then yields a horizontal scrollbar
    instead of a visual wrap. Copy still produces a clean single-line
    string because the DOM never had a newline in the first place — the
-   visual wrap was CSS-only. (commit pending)
+   visual wrap was CSS-only. (commit 2b4f573)
 
 ### What was done (follow-up)
 
@@ -203,13 +203,13 @@ small UX issues that landed before the redeploy:
   Step 1a `<code id="step-1-uv-code">` now reads
   `command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh`.
   Added `whitespace-pre` to all five step `<pre>` blocks
-  (step-1-uv, step-1-uv-win, step-1, step-2, step-3). (commit pending)
+  (step-1-uv, step-1-uv-win, step-1, step-2, step-3). (commit 2b4f573)
 - Modified `packages/llm_tracker_signup/tests/test_app.py` — the
   uv-bootstrap assertion now requires the full guarded line including
   `command -v uv >/dev/null ||` prefix so a regression to the bare
   `curl … | sh` form fails fast. The literal `>` is verbatim in the
   rendered body — Jinja autoescape only touches `{{ variable }}`
-  outputs, not static template text. (commit pending)
+  outputs, not static template text. (commit 2b4f573)
 
 ### Verification (follow-up)
 

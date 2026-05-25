@@ -17,11 +17,11 @@
 
 ## Recent commits (last 5)
 
-- `<pending>` signup: idempotent uv bootstrap + no-wrap code blocks
+- `<pending>` docs: backfill 2b4f573 hash in STATUS + worklog
+- `2b4f573` signup: idempotent uv bootstrap + no-wrap code blocks
 - `a1c5af7` docs: backfill ff5fac0 hash in STATUS + worklog
 - `ff5fac0` docs: ADR-0035 - switch agent install to uv tool
 - `d0b8502` signup: fix Copy button overlap on long commands
-- `428860f` signup: per-step Copy buttons on success page
 
 ## Where we paused
 

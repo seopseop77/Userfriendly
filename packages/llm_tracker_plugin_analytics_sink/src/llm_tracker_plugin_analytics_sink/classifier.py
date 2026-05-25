@@ -1,13 +1,24 @@
 """Turn classification for `plugin_analytics` rows.
 
-Pure functions — no I/O, no DB. The plugin's `on_persisted` calls
-`classify_request(...)` to derive the four content-derived fields
-(`turn_kind`, `slash_commands`, `first_msg_hash`, plus `n_messages`
-which the caller uses for the chain-lookup that resolves
-`conversation_id`). All rules are documented in
-`docs/worklog/2026-05-19-turn-classification.md`.
+Pure functions — no I/O, no DB. Two public entry points:
 
-Rule summary (see worklog for derivation):
+* `classify_request(...)` — per-exchange classifier. Derives
+  `turn_kind`, `slash_commands`, `first_msg_hash`, `n_messages` from
+  the parsed Anthropic Messages API request body. The plugin uses
+  the result for the analytics row and the chain-lookup that
+  resolves `conversation_id`.
+* `classify_message(msg) -> str` — per-message classifier. Returns
+  the *origin* of an individual message in the array so the
+  `conversation_messages.role` column distinguishes user-typed input
+  from framework-synthesised continuations (tool_result, SUGGESTION
+  MODE, `/compact`, title-gen sidecar, `<session>` probe). The
+  vocabulary is a superset of `TurnKind` plus `"assistant"` so
+  `cm.role = pa.turn_kind` joins on the last message of an exchange.
+
+`classify_request` rule summary (see worklog
+`2026-05-19-turn-classification.md` for derivation; per-message
+classifier mirrors rules 3, 4, and 6 since system_text is not
+available at the per-message scope):
 
 1. `messages[-1].role` is always `"user"` per Anthropic Messages API.
 2. If the `system` field contains Claude Code's title-generation
@@ -38,10 +49,14 @@ Slash command extraction scans the content array for
 `<command-name>/foo</command-name>` markers. /clear, /compact, and
 custom skills all surface this way.
 
-`first_msg_hash` is SHA-256[:16] of the canonical text of
-`messages[0]`. `cache_control` and other metadata fields are
-deliberately excluded so prompt-caching toggles do not invalidate
-identity.
+`first_msg_hash` is SHA-256[:16] of the **canonical user-typed text**
+extracted from `messages[0]` (ADR-0036). Two same-text first
+messages collapse to the same hash regardless of containment shape:
+the `<session>`-wrapped sidecar (string content), the main-flow
+exchange (list content with leading `<system-reminder>` wrappers),
+and subsequent turns (which resend the same `messages[0]`) all hash
+identically. Wrapper stripping reuses the same
+`_SYNTHETIC_WRAPPER_PREFIXES` set the classifier uses for rule 6.
 """
 
 from __future__ import annotations
@@ -57,6 +72,29 @@ TurnKind = Literal[
     "internal_subprompt",
     "claude_manage_probe",
 ]
+
+# Per-message origin vocabulary (ADR-0036). Superset of TurnKind plus
+# "assistant" for `role=assistant` messages. Stored in
+# `conversation_messages.role` so a downstream consumer can tell typed
+# input apart from framework continuations without joining
+# `plugin_analytics`. `claude_manage_probe` is reserved for parity with
+# TurnKind but `classify_message` currently never emits it — see the
+# docstring note in `classify_message` below.
+MessageOrigin = Literal[
+    "user_input_turn_start",
+    "tool_continuation",
+    "internal_subprompt",
+    "claude_manage_probe",
+    "assistant",
+]
+
+# Roles a stored `conversation_messages` row can be overwritten *from*
+# by the priority UPSERT in `plugin.py`. Mirrors the same set used in
+# the `WHERE` clause; centralised here so the ADR-0036 rule lives next
+# to the vocabulary it references. New real-content roles arrive and
+# displace sidecar placeholders; sidecar arrivals never displace real
+# content.
+OVERWRITABLE_ROLES: frozenset[str] = frozenset({"internal_subprompt", "claude_manage_probe"})
 
 # Block text prefixes Claude Code uses for synthesised content that wraps
 # (but is not) user input. Order matters only for documentation.
@@ -86,6 +124,13 @@ _TITLE_GEN_SIGNATURE = "Generate a concise, sentence-case title"
 # Substring that marks a Claude Code-originated request, distinguishing
 # it from a raw claude-manage probe. Used to gate the `<session>` rule.
 _CC_SYSTEM_SIGNATURE = "You are Claude Code, Anthropic's official CLI"
+
+# Strips a `<session>\n…\n</session>` wrapper to recover the user-typed
+# text inside. ADR-0036: the session-classify sidecar Claude Code fires
+# at session start carries the same user input as the main flow, just
+# wrapped — stripping the wrapper lets both hash to the same canonical
+# string so they share a `conversation_id`.
+_SESSION_WRAP_RE = re.compile(r"^\s*<session>\s*(.*?)\s*</session>\s*$", re.DOTALL)
 
 
 @dataclass(frozen=True)
@@ -167,13 +212,9 @@ def _classify_kind(content: Any, system_text: str) -> TurnKind:
         return "claude_manage_probe"
 
     # Rule 6: walk blocks from end, skip synthesised wrappers; first
-    # remaining text block = real user input.
-    for b in reversed(content):
-        if _block_type(b) != "text":
-            continue
-        text = (b.get("text") or "").lstrip()
-        if text.startswith(_SYNTHETIC_WRAPPER_PREFIXES):
-            continue
+    # remaining text block = real user input. Shared helper keeps the
+    # definition aligned with `_canonical_user_text` (ADR-0036).
+    if _last_real_user_text(content) is not None:
         return "user_input_turn_start"
 
     # Only synthesised wrappers — no real user text. Treat as
@@ -215,15 +256,114 @@ def _extract_slash_commands(content: list[Any]) -> list[str] | None:
 
 
 def _hash_first_message(first: dict[str, Any]) -> str:
-    """SHA-256[:16] of `messages[0]`'s canonical text."""
-    content = first.get("content")
-    if isinstance(content, str):
-        canonical = content
-    elif isinstance(content, list):
-        canonical = "\n".join((b.get("text") or "") for b in content if _block_type(b) == "text")
-    else:
-        canonical = ""
+    """SHA-256[:16] of `messages[0]`'s canonical user-typed text.
+
+    ADR-0036: hashing the *user-typed* text (rather than the raw
+    container) means the session-classify sidecar (string content
+    wrapped in `<session>...</session>`), the main-flow exchange
+    (list content with leading `<system-reminder>` wrappers), and
+    every subsequent turn (which resends the same `messages[0]`) all
+    produce the same hash and share a `conversation_id` via the
+    chain-lookup (B) rule.
+    """
+    canonical = _canonical_user_text(first.get("content"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def _canonical_user_text(content: Any) -> str:
+    """Extract the user-typed text from a message's `content` field.
+
+    String content: strip a surrounding `<session>...</session>`
+    wrapper if present, then return the inner text. Otherwise return
+    the string as-is.
+
+    List content: walk blocks in reverse, skip blocks whose `text`
+    starts with any synthetic wrapper prefix
+    (`_SYNTHETIC_WRAPPER_PREFIXES`), and return the first remaining
+    text block. If no such block exists (only wrappers, or only
+    non-text blocks), return the empty string.
+
+    Other shapes (None, dict, etc.): return the empty string.
+    """
+    if isinstance(content, str):
+        m = _SESSION_WRAP_RE.match(content)
+        return m.group(1) if m else content
+    if isinstance(content, list):
+        text = _last_real_user_text(content)
+        return text if text is not None else ""
+    return ""
+
+
+def _last_real_user_text(content: list[Any]) -> str | None:
+    """Return the last text block whose text is not a synthetic wrapper.
+
+    Walks `content` in reverse and skips blocks whose text starts
+    with any prefix in `_SYNTHETIC_WRAPPER_PREFIXES`. Returns the
+    raw (left-stripped) text of the first remaining text block, or
+    `None` if every text block is a synthetic wrapper.
+
+    Shared between rule 6 in `_classify_kind` and
+    `_canonical_user_text` so both definitions of "the user's typed
+    text in this message" remain in sync.
+    """
+    for b in reversed(content):
+        if _block_type(b) != "text":
+            continue
+        text = (b.get("text") or "").lstrip()
+        if text.startswith(_SYNTHETIC_WRAPPER_PREFIXES):
+            continue
+        return text
+    return None
+
+
+def classify_message(msg: dict[str, Any]) -> MessageOrigin:
+    """Classify a single Anthropic Messages API message by its origin.
+
+    Mirrors `classify_request` at the per-message scope: distinguishes
+    user-typed input from framework-synthesised continuations
+    (tool_result, SUGGESTION MODE, `/compact`, step-away recap,
+    title-gen sidecar) that the Anthropic API also serialises with
+    `role=user`.
+
+    Returns one of:
+
+    * ``"assistant"`` — `role=assistant`.
+    * ``"tool_continuation"`` — list content with any `tool_result`
+      block.
+    * ``"internal_subprompt"`` — string content (Claude Code internal
+      sub-prompt: `/compact`, `[SUGGESTION MODE: ...]`, step-away
+      recap), or list content where every text block is a synthetic
+      wrapper (no real user-typed text was found).
+    * ``"user_input_turn_start"`` — list content with at least one
+      non-wrapper text block (the user's typed text).
+
+    `claude_manage_probe` is **never emitted** at per-message scope:
+    distinguishing it from the title-gen sidecar requires inspecting
+    the request's `system` field, which is not available here. The
+    rare offline claude-manage probe (whose last text starts with
+    `<session>` but where `<session>` is the user-typed input)
+    classifies as `user_input_turn_start`; an analyst can join
+    `plugin_analytics.turn_kind` to recover the per-exchange
+    distinction when needed.
+    """
+    if msg.get("role") == "assistant":
+        return "assistant"
+
+    content = msg.get("content")
+
+    if isinstance(content, list) and any(_block_type(b) == "tool_result" for b in content):
+        return "tool_continuation"
+
+    if isinstance(content, str):
+        return "internal_subprompt"
+
+    if not isinstance(content, list) or not content:
+        return "internal_subprompt"
+
+    if _last_real_user_text(content) is not None:
+        return "user_input_turn_start"
+
+    return "internal_subprompt"
 
 
 def _block_type(block: Any) -> str | None:

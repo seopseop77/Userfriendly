@@ -61,9 +61,7 @@ def test_keeps_array_when_single_text_has_extra_keys() -> None:
     """
     msg = {
         "role": "user",
-        "content": [
-            {"type": "text", "text": "x", "cache_control": {"type": "ephemeral"}}
-        ],
+        "content": [{"type": "text", "text": "x", "cache_control": {"type": "ephemeral"}}],
     }
     out = canonical_message(msg)
     assert out == {"role": "user", "content": "x"}

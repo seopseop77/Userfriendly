@@ -13,73 +13,62 @@
 
 ## Active worklog
 
-`docs/worklog/2026-05-25-uv-tool-install.md`
+`docs/worklog/2026-05-25-conversation-grouping-fix.md`
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: backfill 2b73b4c hash in STATUS + worklog
+- `<pending>` analytics_sink: ADR-0036 canonical grouping + role vocab + priority UPSERT
+- `a96d095` docs: backfill 2b73b4c hash in STATUS + worklog
 - `2b73b4c` signup: inline style for pre no-wrap (CDN class insufficient)
 - `f55d18b` docs: backfill 2b4f573 hash in STATUS + worklog
 - `2b4f573` signup: idempotent uv bootstrap + no-wrap code blocks
-- `a1c5af7` docs: backfill ff5fac0 hash in STATUS + worklog
 
 ## Where we paused
 
-**Participant install recommendation switched from `pip install <wheel>` to
-`uv tool install <wheel>` (ADR-0035, amends ADR-0034).**
+**Three coupled defects in `conversation_messages` / `plugin_analytics`
+fixed in code (ADR-0036). Backfill of historic rows pending operator
+review.**
 
-- Trigger: operator hit PEP 668 (`error: externally-managed-environment`)
-  on Homebrew Python 3.12 when copying the success-page Step 1. Same
-  failure reproduces on Debian/Ubuntu apt, recent Fedora, Arch, and WSL.
-- ADR-0035 picks `uv tool install <wheel-url>` because uv ships its own
-  Python interpreter — PEP 668 becomes structurally irrelevant, and the
-  participant's machine no longer needs Python pre-installed.
-- Distribution channel (GitHub Releases wheel, ADR-0034) unchanged. CI
-  workflow `.github/workflows/release-agent.yml` unchanged. Only the
-  install command in `success.html` and `docs/deploy.md` changed.
-- ADR-0034's status carries an "Amendment note" pointing to ADR-0035;
-  its distribution-channel decision stands.
-- Follow-up: operator hit two UX issues on first-run (brew uv shadowed
-  by astral uv from copy-paste; long Step 2 command visually wrapped).
-  Fixed by wrapping the uv bootstrap in a `command -v uv` POSIX guard
-  and adding `whitespace-pre` to every step `<pre>` block.
-- Follow-up 2: after redeploy operator confirmed `command -v` shows
-  but Step 2 *still wrapped* — same Tailwind class worked on Step 1.
-  Rendered HTML inspection ruled out hidden chars / class diffs.
-  Likely a Tailwind CDN JIT quirk we can't reproduce server-side.
-  Switched to inline `style="white-space:pre;word-break:keep-all;overflow-wrap:normal"`
-  on every step `<pre>` — specificity 1000 wins regardless of CDN
-  state. Tests updated assert inline style renders on all 5 pre
-  blocks.
-- Test: `pytest packages/llm_tracker_signup/tests/test_app.py -q` →
-  3 passed / 3 skipped (DB-touching skips unchanged from prior session).
-- Worklog: `docs/worklog/2026-05-25-uv-tool-install.md` (incl. follow-up
-  section).
+- Trigger: operator inspected conv `01KSEVH1XVKBCH6GX1Y00P4WS9`
+  (2026-05-25 06:00–06:03 UTC) and surfaced three issues that share
+  one root cause (sidecars and real turns sharing the
+  `(conversation_id, msg_index)` keyspace with no priority):
+  1. `<session>` session-classify sidecar split into a separate
+     `conversation_id` from the main flow even though they shared
+     the same user-typed text.
+  2. The user's real "현재 mcp 리스트?" turn was silently dropped by
+     `ON CONFLICT DO NOTHING` because an earlier SUGGESTION sidecar
+     had already filled `msg_index=4`.
+  3. `role=user` did not distinguish typed input from
+     framework-synthesised continuations.
+- Fix (ADR-0036, three parts shipped together):
+  - **(E)** `first_msg_hash` now hashes the canonical user-typed
+    text (strips `<session>...</session>` wrap, skips
+    `<system-reminder>` / `<local-command-*>` / `<command-*>`
+    wrappers). The `<session>` sidecar and the main flow share a
+    hash → share a `conversation_id` via the (B) chain-lookup.
+  - **(P)** `conversation_messages` UPSERT changed from
+    `DO NOTHING` to `DO UPDATE ... WHERE`: stored
+    `internal_subprompt`/`claude_manage_probe` placeholders can be
+    overwritten by `user_input_turn_start`/`tool_continuation`/
+    `assistant` arrivals. Real content never displaced by sidecars.
+  - **(V)** `conversation_messages.role` now carries the
+    per-message *origin* (`turn_kind` vocab + `assistant`) via the
+    new `classify_message` classifier instead of the raw API role.
+- Tests: 53 in `analytics_sink/tests/` and 275 in the full project,
+  all green. `ruff format && ruff check` clean.
 
 ## Next single step
 
-**Operator-owned: redeploy the signup app + re-do the participant-#1
-install with the new two-line flow.**
+**Write the ADR-0036 backfill script and run its dry-run report
+against the live Supabase DB, then review with operator before apply.**
 
-```
-fly deploy -c packages/llm_tracker_signup/fly.toml
-# or push to main and let .github/workflows/deploy-signup.yml run
-```
-
-Then, on the operator's own laptop:
-
-```
-curl -LsSf https://astral.sh/uv/install.sh | sh
-exec $SHELL -l
-uv tool install https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.0/llm_tracker_agent-0.1.0-py3-none-any.whl
-claude-manage --help
-```
-
-Sanity-check the deployed success page: visit
-`https://llm-tracker-signup.fly.dev/success?token=lts_demo` and confirm
-Step 1 renders the `uv tool install …` line (not the old `pip install …`
-line). If the old line is still visible, the deploy did not pick up the
-template — investigate before re-litigating the ADR.
+Path: `packages/llm_tracker_plugin_analytics_sink/scripts/backfill_canonical_grouping.py`
+(to be created). Dry-run by default; reports: hash changes,
+conversation_id remap diffs (especially the
+`01KSEVGY...` ↔ `01KSEVH1...` collapse), role reclassification
+counts, PK-collision merge cases under the priority rule. Apply
+only after operator OK.
 
 ---
 

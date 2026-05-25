@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from llm_tracker_plugin_analytics_sink.classifier import (
     Classification,
+    classify_message,
     classify_request,
 )
 
@@ -208,9 +209,7 @@ def test_title_generation_system_field_string_form() -> None:
             "You are Claude Code, Anthropic's official CLI for Claude.\n"
             "Generate a concise, sentence-case title (3-7 words)."
         ),
-        "messages": [
-            _user([{"type": "text", "text": "<session>\nSTATUS.md 읽어봐\n</session>"}])
-        ],
+        "messages": [_user([{"type": "text", "text": "<session>\nSTATUS.md 읽어봐\n</session>"}])],
     }
     result = classify_request(req)
     assert result.turn_kind == "internal_subprompt"
@@ -353,3 +352,148 @@ def test_classification_is_frozen_dataclass() -> None:
     except dataclasses.FrozenInstanceError:
         return
     raise AssertionError("Classification should be a frozen dataclass")
+
+
+# ---------------------------------------------------------------------
+# ADR-0036: canonical user-text hash + per-message classifier.
+# ---------------------------------------------------------------------
+
+
+def test_first_msg_hash_session_sidecar_matches_main_flow() -> None:
+    """The `<session>`-wrapped sidecar (string content) and the main
+    flow (list content with leading wrappers) share the same hash
+    when their underlying user-typed text matches. ADR-0036 (E).
+    """
+    session_sidecar = classify_request(
+        {"messages": [_user("<session>\n너무 반가워! 잘 지냈어?\n</session>")]}
+    )
+    main_flow = classify_request(
+        {
+            "messages": [
+                _user(
+                    [
+                        {"type": "text", "text": "<system-reminder>\nMCP Server..."},
+                        {"type": "text", "text": "<system-reminder>\nSession-specific..."},
+                        {"type": "text", "text": "너무 반가워! 잘 지냈어?"},
+                    ]
+                )
+            ]
+        }
+    )
+    assert session_sidecar.first_msg_hash == main_flow.first_msg_hash
+
+
+def test_first_msg_hash_skips_synthetic_wrapper_blocks() -> None:
+    """Adding/removing leading `<system-reminder>` blocks does not
+    change the hash because they are skipped during canonicalisation.
+    """
+    with_wrapper = classify_request(
+        {
+            "messages": [
+                _user(
+                    [
+                        {"type": "text", "text": "<system-reminder>\nfoo"},
+                        {
+                            "type": "text",
+                            "text": "<local-command-stdout>bar</local-command-stdout>",
+                        },
+                        {"type": "text", "text": "real input"},
+                    ]
+                )
+            ]
+        }
+    )
+    without_wrapper = classify_request(
+        {"messages": [_user([{"type": "text", "text": "real input"}])]}
+    )
+    assert with_wrapper.first_msg_hash == without_wrapper.first_msg_hash
+
+
+def test_first_msg_hash_only_wrappers_collapses_to_empty() -> None:
+    """A `messages[0]` with only synthetic wrappers (no user text)
+    hashes the empty string. Two such messages share a hash —
+    acceptable per the (B) trade-off; production rarely emits this
+    shape outside the post-`/compact` resume marker case.
+    """
+    a = classify_request(
+        {"messages": [_user([{"type": "text", "text": "<system-reminder>\nfoo"}])]}
+    )
+    b = classify_request(
+        {"messages": [_user([{"type": "text", "text": "This session is being continued..."}])]}
+    )
+    assert a.first_msg_hash == b.first_msg_hash
+
+
+def test_classify_message_assistant_role() -> None:
+    msg = {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}
+    assert classify_message(msg) == "assistant"
+
+
+def test_classify_message_user_typed_list_content() -> None:
+    msg = _user(
+        [
+            {"type": "text", "text": "<system-reminder>\nwrap"},
+            {"type": "text", "text": "real text"},
+        ]
+    )
+    assert classify_message(msg) == "user_input_turn_start"
+
+
+def test_classify_message_tool_result_continuation() -> None:
+    msg = _user(
+        [
+            {"type": "tool_result", "tool_use_id": "t", "content": "ok"},
+            {"type": "text", "text": "<system-reminder>\nposttool"},
+        ]
+    )
+    assert classify_message(msg) == "tool_continuation"
+
+
+def test_classify_message_string_content_is_internal_subprompt() -> None:
+    """`/compact`, SUGGESTION MODE, step-away recap — all string content."""
+    assert classify_message(_user("[SUGGESTION MODE: ...]")) == "internal_subprompt"
+    assert classify_message(_user("CRITICAL: Respond with TEXT ONLY...")) == "internal_subprompt"
+
+
+def test_classify_message_session_sidecar_string_is_internal_subprompt() -> None:
+    """The `<session>`-wrapped session-classify sidecar arrives as
+    string content, so the string-content branch catches it.
+    """
+    msg = _user("<session>\n너무 반가워!\n</session>")
+    assert classify_message(msg) == "internal_subprompt"
+
+
+def test_classify_message_only_synthetic_wrappers_is_internal_subprompt() -> None:
+    """A user message whose only text blocks are synthetic wrappers
+    (e.g. the post-`/compact` resume marker without trailing user
+    input) classifies as internal_subprompt.
+    """
+    msg = _user(
+        [
+            {"type": "text", "text": "<system-reminder>\nNote: STATUS.md was read"},
+            {"type": "text", "text": "This session is being continued..."},
+        ]
+    )
+    assert classify_message(msg) == "internal_subprompt"
+
+
+def test_classify_message_empty_content_defensive() -> None:
+    assert classify_message(_user([])) == "internal_subprompt"
+    assert classify_message(_user(None)) == "internal_subprompt"
+
+
+def test_classify_message_session_wrap_on_list_is_user_input() -> None:
+    """Claude Code's `<session>` wrap inside a list (system_text not
+    available at per-message scope) — the text inside is user-typed,
+    so this classifies as user_input_turn_start. Slight divergence
+    from `classify_request` rule 5 for the rare offline probe; an
+    analyst joins `plugin_analytics.turn_kind` to recover the
+    per-exchange distinction when needed.
+    """
+    msg = _user(
+        [
+            {"type": "text", "text": "<system-reminder>\nfoo"},
+            {"type": "text", "text": "<session>\n반가워\n</session>"},
+        ]
+    )
+    assert classify_message(msg) == "user_input_turn_start"

@@ -12,7 +12,11 @@ from llm_tracker_sdk import BasePlugin, HookContext, Pass
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from ulid import ULID
 
-from .classifier import Classification, classify_request
+from .classifier import (
+    Classification,
+    classify_message,
+    classify_request,
+)
 from .normalize import canonical_message
 
 DATABASE_URL_ENV = "LLMTRACK_DATABASE_URL"
@@ -40,8 +44,17 @@ _INSERT_SQL = sa.text(
 # Per-message UPSERT for the conversation_messages dedup table
 # (migration 0015). Runs once per `messages[idx]` before the analytics
 # row INSERT, inside the same transaction so the view never sees a row
-# whose messages haven't landed yet. `ON CONFLICT DO NOTHING` makes the
-# write idempotent against stream retries — the first arrival wins.
+# whose messages haven't landed yet.
+#
+# Priority UPSERT (ADR-0036): a stored row whose role is
+# `internal_subprompt` / `claude_manage_probe` (Claude Code sidecar
+# placeholder — SUGGESTION MODE, `<session>` probe, `/compact`,
+# title-gen) can be displaced by a later arrival whose role is
+# `user_input_turn_start`, `tool_continuation`, or `assistant`. The
+# `WHERE` guards both directions so real content never gets overwritten
+# by a later sidecar, and stream-retry idempotency is preserved (a
+# retry's `EXCLUDED.role` equals the stored role, so the `WHERE` is
+# false and the UPDATE is elided).
 _UPSERT_MESSAGE_SQL = sa.text(
     """
     INSERT INTO conversation_messages
@@ -49,7 +62,13 @@ _UPSERT_MESSAGE_SQL = sa.text(
     VALUES
         (:conversation_id, :msg_index, :org_id, :role,
          CAST(:content_jsonb AS jsonb))
-    ON CONFLICT (conversation_id, msg_index) DO NOTHING
+    ON CONFLICT (conversation_id, msg_index) DO UPDATE
+        SET role = EXCLUDED.role,
+            content_jsonb = EXCLUDED.content_jsonb
+        WHERE conversation_messages.role
+                IN ('internal_subprompt', 'claude_manage_probe')
+          AND EXCLUDED.role
+                IN ('user_input_turn_start', 'tool_continuation', 'assistant')
     """
 )
 
@@ -198,9 +217,7 @@ class AnalyticsSink(BasePlugin):
                     reason="no_request_body",
                 )
                 return
-            self._log.info(
-                "analytics_sink.persist_fallback_recovered", exchange_id=exchange_id
-            )
+            self._log.info("analytics_sink.persist_fallback_recovered", exchange_id=exchange_id)
         if self._engine is None:
             return
         if ctx.org_id is None:
@@ -230,20 +247,27 @@ class AnalyticsSink(BasePlugin):
                 # Messages first — the helper view joins on
                 # conversation_id and msg_index, so the analytics row
                 # must not be visible before the messages it points to.
+                #
+                # ADR-0036: `role` carries the per-message *origin*
+                # (`classify_message`), not the API protocol role. The
+                # vocabulary is a superset of `turn_kind` plus
+                # `assistant` so `cm.role = pa.turn_kind` joins line
+                # up on the last message of an exchange. The priority
+                # UPSERT clause uses these values to let real content
+                # displace sidecar placeholders.
                 for idx, m in enumerate(parsed_messages):
                     if not isinstance(m, dict):
                         continue
                     norm = canonical_message(m)
+                    origin = classify_message(m)
                     await conn.execute(
                         _UPSERT_MESSAGE_SQL,
                         {
                             "conversation_id": conv_id,
                             "msg_index": idx,
                             "org_id": ctx.org_id,
-                            "role": norm["role"] or "",
-                            "content_jsonb": json.dumps(
-                                norm["content"], ensure_ascii=False
-                            ),
+                            "role": origin,
+                            "content_jsonb": json.dumps(norm["content"], ensure_ascii=False),
                         },
                     )
                 await conn.execute(_INSERT_SQL, row)

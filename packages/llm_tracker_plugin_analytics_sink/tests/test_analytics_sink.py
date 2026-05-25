@@ -330,9 +330,7 @@ async def test_persist_fallback_recovers_when_body_arrives_late() -> None:
     plugin = AnalyticsSink(engine=engine)
 
     # First hook: ctx has no body yet — stash miss.
-    ctx = HookContext(
-        session_id="server", exchange_id="ex_late", mode="R", user_opted_in=True
-    )
+    ctx = HookContext(session_id="server", exchange_id="ex_late", mode="R", user_opted_in=True)
     ctx.org_id = uuid.uuid4()
     await plugin.on_request_received("ex_late", ctx)
     assert "ex_late" not in plugin._stash
@@ -372,7 +370,7 @@ async def test_slash_commands_bound_as_json_string_not_python_list() -> None:
         b'{"model":"claude-x","messages":[{"role":"user","content":['
         b'{"type":"text","text":"<command-name>/compact</command-name>"},'
         b'{"type":"text","text":"resume after compact"}'
-        b']}]}'
+        b"]}]}"
     )
     ctx = _make_ctx(request_body=body, org_id=uuid.uuid4(), parsed_response=None)
 
@@ -458,7 +456,74 @@ async def test_normalization_applied_at_upsert_boundary() -> None:
     assert len(upserts) == 1
     # content_jsonb is JSON-encoded; the inner value is the bare string.
     assert _json.loads(upserts[0]["content_jsonb"]) == "hello"
-    assert upserts[0]["role"] == "user"
+    # ADR-0036: role carries per-message origin, not the API protocol
+    # role. A list-content user message with real text classifies as
+    # user_input_turn_start.
+    assert upserts[0]["role"] == "user_input_turn_start"
+
+
+@pytest.mark.asyncio
+async def test_upserts_carry_per_message_origin_roles() -> None:
+    """ADR-0036 (V): each UPSERT's `role` reflects the per-message
+    origin classification, not the raw API protocol role. A mixed
+    `messages` array (user-typed, assistant, tool_continuation,
+    internal_subprompt) produces one distinct role per index.
+    """
+    engine, conn = _fake_engine()
+    plugin = AnalyticsSink(engine=engine)
+
+    # 5 messages spanning every origin kind classify_message emits.
+    body = (
+        b'{"model":"claude-x","messages":['
+        # msg 0: user-typed (list content with real text)
+        b'{"role":"user","content":[{"type":"text","text":"first"}]},'
+        # msg 1: assistant response
+        b'{"role":"assistant","content":[{"type":"text","text":"ok"}]},'
+        # msg 2: user tool_result continuation
+        b'{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"x"}]},'
+        # msg 3: SUGGESTION MODE sidecar (string content)
+        b'{"role":"user","content":"[SUGGESTION MODE: ...]"},'
+        # msg 4: user-typed follow-up
+        b'{"role":"user","content":[{"type":"text","text":"next"}]}'
+        b"]}"
+    )
+    ctx = _make_ctx(request_body=body, org_id=uuid.uuid4(), parsed_response=None)
+
+    await plugin.on_request_received("ex_mix", ctx)
+    await plugin.on_persisted("ex_mix", ctx)
+
+    upserts = _upsert_calls(conn)
+    by_index = {u["msg_index"]: u["role"] for u in upserts}
+    assert by_index == {
+        0: "user_input_turn_start",
+        1: "assistant",
+        2: "tool_continuation",
+        3: "internal_subprompt",
+        4: "user_input_turn_start",
+    }
+
+
+@pytest.mark.asyncio
+async def test_upsert_sql_uses_priority_do_update() -> None:
+    """ADR-0036 (P): the UPSERT SQL must allow real-content arrivals
+    to displace stored sidecar placeholders. We assert the SQL string
+    rather than against a live DB — keeps the contract visible at the
+    plugin layer; full UPSERT semantics are exercised by integration
+    tests downstream.
+    """
+    from llm_tracker_plugin_analytics_sink.plugin import _UPSERT_MESSAGE_SQL
+
+    sql = str(_UPSERT_MESSAGE_SQL)
+    # DO UPDATE replaces the prior DO NOTHING policy.
+    assert "DO UPDATE" in sql
+    assert "DO NOTHING" not in sql
+    # WHERE clause restricts overwrites to sidecar placeholders.
+    assert "'internal_subprompt'" in sql
+    assert "'claude_manage_probe'" in sql
+    # And only by real-content arrivals.
+    assert "'user_input_turn_start'" in sql
+    assert "'tool_continuation'" in sql
+    assert "'assistant'" in sql
 
 
 @pytest.mark.asyncio
@@ -469,9 +534,7 @@ async def test_persist_skipped_when_body_never_arrives() -> None:
     engine, conn = _fake_engine()
     plugin = AnalyticsSink(engine=engine)
 
-    ctx = HookContext(
-        session_id="server", exchange_id="ex_never", mode="R", user_opted_in=True
-    )
+    ctx = HookContext(session_id="server", exchange_id="ex_never", mode="R", user_opted_in=True)
     ctx.org_id = uuid.uuid4()
     await plugin.on_request_received("ex_never", ctx)
     await plugin.on_persisted("ex_never", ctx)

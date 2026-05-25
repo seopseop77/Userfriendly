@@ -171,6 +171,61 @@ If the production page still shows the old `pip install ...` line, the
 deploy didn't pick up the template change — investigate the Docker
 image layer cache before re-litigating the ADR.
 
+## Follow-up touch-ups (same session)
+
+Operator ran the new two-line flow on their own laptop and surfaced two
+small UX issues that landed before the redeploy:
+
+1. **Brew uv → astral uv shadow.** Operator already had `uv` from
+   Homebrew; copy-pasting `curl … | sh` installed a second uv at
+   `~/.local/bin/uv` and pushed `~/.local/bin` ahead of
+   `/opt/homebrew/bin` in PATH. Both uvs work but the update channel
+   splits (`brew upgrade` vs `uv self update`). The `<details>`/skip
+   note in Step 1 wasn't enough to prevent the muscle-memory copy-paste.
+   Fix: wrap the bootstrap line in a POSIX guard
+   (`command -v uv >/dev/null || curl …`) so an already-installed uv
+   short-circuits the install. (commit pending)
+2. **Step 2 command visually wrapped onto two lines** in the operator's
+   browser when `proxy_server_url` is set to the live Fly URL — the
+   combined `claude-manage setup <token> --server-url …` exceeds the
+   pre block's render width and Tailwind's `overflow-x-auto` did not
+   prevent wrap on its own. Fix: add `whitespace-pre` to every step
+   `<pre>` so `white-space: pre` is locked in regardless of preflight
+   defaults; `overflow-x-auto` then yields a horizontal scrollbar
+   instead of a visual wrap. Copy still produces a clean single-line
+   string because the DOM never had a newline in the first place — the
+   visual wrap was CSS-only. (commit pending)
+
+### What was done (follow-up)
+
+- Modified
+  `packages/llm_tracker_signup/src/llm_tracker_signup/templates/success.html` —
+  Step 1a `<code id="step-1-uv-code">` now reads
+  `command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh`.
+  Added `whitespace-pre` to all five step `<pre>` blocks
+  (step-1-uv, step-1-uv-win, step-1, step-2, step-3). (commit pending)
+- Modified `packages/llm_tracker_signup/tests/test_app.py` — the
+  uv-bootstrap assertion now requires the full guarded line including
+  `command -v uv >/dev/null ||` prefix so a regression to the bare
+  `curl … | sh` form fails fast. The literal `>` is verbatim in the
+  rendered body — Jinja autoescape only touches `{{ variable }}`
+  outputs, not static template text. (commit pending)
+
+### Verification (follow-up)
+
+```
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker_signup/tests/test_app.py -q
+...sss                                                                   [100%]
+3 passed, 3 skipped in 0.47s
+
+$ .venv/bin/python3.12 -m ruff check packages/llm_tracker_signup/tests/test_app.py
+All checks passed!
+```
+
+Operator-side visual verification of the wrap fix is still pending the
+Fly redeploy (same as the main worklog body — the redeploy is the
+forcing function).
+
 ## Suggestions (untouched)
 
 - **Bake a `Last updated` timestamp into `success.html`** so we can tell
@@ -180,3 +235,7 @@ image layer cache before re-litigating the ADR.
 - **Consider linking ADR-0035 from the success page footer** as a
   participant-facing rationale for why we recommend uv. Probably noise
   for the average participant; mentioned for completeness.
+- **Windows PowerShell equivalent of the `command -v` guard** would be
+  `if (-not (Get-Command uv -ErrorAction SilentlyContinue)) { irm … | iex }`,
+  uglier and harder to copy-paste. Left as-is for now — the
+  `<details>` disclosure already implies "use if needed".

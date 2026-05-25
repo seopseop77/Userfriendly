@@ -17,11 +17,11 @@
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: backfill ff5fac0 hash in STATUS + worklog
+- `<pending>` signup: idempotent uv bootstrap + no-wrap code blocks
+- `a1c5af7` docs: backfill ff5fac0 hash in STATUS + worklog
 - `ff5fac0` docs: ADR-0035 - switch agent install to uv tool
 - `d0b8502` signup: fix Copy button overlap on long commands
 - `428860f` signup: per-step Copy buttons on success page
-- `ffb476a` signup: success page — concrete v0.1.0 wheel URL
 
 ## Where we paused
 
@@ -39,9 +39,15 @@
   install command in `success.html` and `docs/deploy.md` changed.
 - ADR-0034's status carries an "Amendment note" pointing to ADR-0035;
   its distribution-channel decision stands.
+- Follow-up: operator hit two UX issues on first-run (brew uv shadowed
+  by astral uv from copy-paste; long Step 2 command visually wrapped).
+  Fixed by wrapping the uv bootstrap in a `command -v uv` POSIX guard
+  and adding `whitespace-pre` to every step `<pre>` block. Tests
+  updated to lock in the guard prefix.
 - Test: `pytest packages/llm_tracker_signup/tests/test_app.py -q` →
   3 passed / 3 skipped (DB-touching skips unchanged from prior session).
-- Worklog: `docs/worklog/2026-05-25-uv-tool-install.md`.
+- Worklog: `docs/worklog/2026-05-25-uv-tool-install.md` (incl. follow-up
+  section).
 
 ## Next single step
 

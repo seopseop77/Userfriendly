@@ -80,7 +80,14 @@ async def test_get_success_renders_token() -> None:
     # ADR-0035: Step 1 recommends `uv tool install <wheel-url>`, not
     # `pip install <wheel-url>`. Lock the recommended command in.
     assert "uv tool install https://github.com/seopseop77/Userfriendly" in body
-    assert "curl -LsSf https://astral.sh/uv/install.sh | sh" in body
+    # The uv-bootstrap line is wrapped in a `command -v uv` guard so
+    # participants who already have uv installed don't shadow it with a
+    # second installation (observed: brew uv → astral uv at ~/.local/bin
+    # after copy-paste).
+    assert (
+        "command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh"
+        in body
+    )
     # Each of the three step blocks must have a copy button wired to its
     # code element via the data-copy-target pattern.
     for step in ("step-1-code", "step-2-code", "step-3-code"):

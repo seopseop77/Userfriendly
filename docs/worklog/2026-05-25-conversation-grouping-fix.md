@@ -33,31 +33,31 @@ backfill recompute hashes without the dropped `messages_json` column.
 ## What was done
 
 - Created `docs/decisions/0036-canonical-conversation-grouping.md` —
-  three-part decision (E + P + V) with options analysis (commit `<pending>`).
-- Opened this worklog (commit `<pending>`).
+  three-part decision (E + P + V) with options analysis (commit `7cf83f3`).
+- Opened this worklog (commit `7cf83f3`).
 - Modified
   `packages/llm_tracker_plugin_analytics_sink/src/llm_tracker_plugin_analytics_sink/classifier.py`:
   added `MessageOrigin` literal, `OVERWRITABLE_ROLES` constant,
   `_SESSION_WRAP_RE`, helpers `_canonical_user_text` and
   `_last_real_user_text`, rewrote `_hash_first_message` over canonical
   user text, refactored rule 6 to share the helper, added public
-  `classify_message(msg)` (commit `<pending>`).
+  `classify_message(msg)` (commit `7cf83f3`).
 - Modified
   `packages/llm_tracker_plugin_analytics_sink/src/llm_tracker_plugin_analytics_sink/plugin.py`:
   imported `classify_message`, swapped `ON CONFLICT DO NOTHING` for
   priority `DO UPDATE ... WHERE` (real-content arrivals displace
   `internal_subprompt`/`claude_manage_probe` placeholders), call
-  `classify_message` to write per-message origin role (commit `<pending>`).
+  `classify_message` to write per-message origin role (commit `7cf83f3`).
 - Modified
   `packages/llm_tracker_plugin_analytics_sink/tests/test_classifier.py`:
   imported `classify_message`, added 11 new tests covering canonical
   hash collision (sidecar ↔ main flow), wrapper-stripping stability,
-  per-message classifier across all five origin shapes (commit `<pending>`).
+  per-message classifier across all five origin shapes (commit `7cf83f3`).
 - Modified
   `packages/llm_tracker_plugin_analytics_sink/tests/test_analytics_sink.py`:
   updated `test_normalization_applied_at_upsert_boundary` for new role
   vocab, added `test_upserts_carry_per_message_origin_roles` and
-  `test_upsert_sql_uses_priority_do_update` (commit `<pending>`).
+  `test_upsert_sql_uses_priority_do_update` (commit `7cf83f3`).
 
 (planned, next steps in order:)
 

@@ -17,11 +17,11 @@
 
 ## Recent commits (last 5)
 
-- `<pending>` analytics_sink: ADR-0036 canonical grouping + role vocab + priority UPSERT
+- `<pending>` docs: backfill 7cf83f3 hash in STATUS + worklog
+- `7cf83f3` analytics_sink: canonical grouping (ADR-0036)
 - `a96d095` docs: backfill 2b73b4c hash in STATUS + worklog
 - `2b73b4c` signup: inline style for pre no-wrap (CDN class insufficient)
 - `f55d18b` docs: backfill 2b4f573 hash in STATUS + worklog
-- `2b4f573` signup: idempotent uv bootstrap + no-wrap code blocks
 
 ## Where we paused
 

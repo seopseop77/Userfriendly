@@ -16,6 +16,7 @@ from .classifier import (
     Classification,
     classify_message,
     classify_request,
+    split_first_message,
 )
 from .normalize import canonical_message
 
@@ -42,19 +43,18 @@ _INSERT_SQL = sa.text(
 )
 
 # Per-message UPSERT for the conversation_messages dedup table
-# (migration 0015). Runs once per `messages[idx]` before the analytics
-# row INSERT, inside the same transaction so the view never sees a row
-# whose messages haven't landed yet.
+# (migration 0015). Runs once per stored message row before the
+# analytics row INSERT, inside the same transaction so the view never
+# sees a row whose messages haven't landed yet.
 #
-# Priority UPSERT (ADR-0036): a stored row whose role is
-# `internal_subprompt` / `claude_manage_probe` (Claude Code sidecar
-# placeholder — SUGGESTION MODE, `<session>` probe, `/compact`,
-# title-gen) can be displaced by a later arrival whose role is
-# `user_input_turn_start`, `tool_continuation`, or `assistant`. The
-# `WHERE` guards both directions so real content never gets overwritten
-# by a later sidecar, and stream-retry idempotency is preserved (a
-# retry's `EXCLUDED.role` equals the stored role, so the `WHERE` is
-# false and the UPDATE is elided).
+# Priority UPSERT (ADR-0037): a stored row whose role is `title_gen`
+# (Claude Code's per-session title fetch landing first at the same
+# msg_index where the main-flow user input will later arrive) can be
+# displaced by an arrival whose role is one of the real-content
+# values. The `WHERE` guards both directions so real content never
+# gets overwritten by a later sidecar, and stream-retry idempotency is
+# preserved (a retry's `EXCLUDED.role` equals the stored role, so the
+# `WHERE` is false and the UPDATE is elided).
 _UPSERT_MESSAGE_SQL = sa.text(
     """
     INSERT INTO conversation_messages
@@ -65,10 +65,9 @@ _UPSERT_MESSAGE_SQL = sa.text(
     ON CONFLICT (conversation_id, msg_index) DO UPDATE
         SET role = EXCLUDED.role,
             content_jsonb = EXCLUDED.content_jsonb
-        WHERE conversation_messages.role
-                IN ('internal_subprompt', 'claude_manage_probe')
+        WHERE conversation_messages.role = 'title_gen'
           AND EXCLUDED.role
-                IN ('user_input_turn_start', 'tool_continuation', 'assistant')
+                IN ('system_prompt', 'user_input', 'model_output', 'assistant')
     """
 )
 
@@ -234,6 +233,18 @@ class AnalyticsSink(BasePlugin):
 
         parsed_messages = (parsed or {}).get("messages") or []
 
+        # ADR-0037 split: when messages[0] carries leading wrapper
+        # blocks (Claude Code's session-opener shape), peel them into
+        # a separate `system_prompt` row at msg_index=0 and shift the
+        # user's typed text to msg_index=1. All subsequent messages
+        # shift by +1 as well. The split is `None` when no shift is
+        # needed (string content, single-block list, only wrappers,
+        # etc.) — the loop then degenerates to the pre-ADR-0037
+        # 1:1 mapping.
+        split = split_first_message(parsed_messages[0]) if parsed_messages else None
+        if split is not None:
+            row["n_messages_at_request"] = classification.n_messages + 1
+
         try:
             async with self._engine.begin() as conn:
                 conv_id, turn_seq = await self._resolve_conversation(
@@ -248,31 +259,84 @@ class AnalyticsSink(BasePlugin):
                 # conversation_id and msg_index, so the analytics row
                 # must not be visible before the messages it points to.
                 #
-                # ADR-0036: `role` carries the per-message *origin*
-                # (`classify_message`), not the API protocol role. The
-                # vocabulary is a superset of `turn_kind` plus
-                # `assistant` so `cm.role = pa.turn_kind` joins line
-                # up on the last message of an exchange. The priority
-                # UPSERT clause uses these values to let real content
-                # displace sidecar placeholders.
-                for idx, m in enumerate(parsed_messages):
-                    if not isinstance(m, dict):
-                        continue
-                    norm = canonical_message(m)
-                    origin = classify_message(m)
-                    await conn.execute(
-                        _UPSERT_MESSAGE_SQL,
-                        {
-                            "conversation_id": conv_id,
-                            "msg_index": idx,
-                            "org_id": ctx.org_id,
-                            "role": origin,
-                            "content_jsonb": json.dumps(norm["content"], ensure_ascii=False),
-                        },
-                    )
+                # ADR-0037: `role` carries the display vocab (5 values:
+                # system_prompt / user_input / title_gen / model_output
+                # / assistant). `cm.role = pa.turn_kind` no longer
+                # joins symbolically; analyst queries that depended on
+                # that equivalence must update.
+                await self._upsert_messages(
+                    conn,
+                    conv_id=conv_id,
+                    org_id=ctx.org_id,
+                    parsed_messages=parsed_messages,
+                    split=split,
+                )
                 await conn.execute(_INSERT_SQL, row)
         except Exception as exc:  # pragma: no cover — defensive
             self._log.warning("analytics_sink.insert_failed", error=str(exc))
+
+    async def _upsert_messages(
+        self,
+        conn: Any,
+        *,
+        conv_id: str | None,
+        org_id: Any,
+        parsed_messages: list[Any],
+        split: tuple[list[dict[str, Any]], dict[str, Any]] | None,
+    ) -> None:
+        """Walk `parsed_messages` and emit one UPSERT per stored row.
+
+        When `split` is set (ADR-0037 session-opener shape), the first
+        API message expands to two stored rows (msg_index 0=system,
+        1=user); subsequent API messages occupy msg_index 2, 3, ….
+        When `split` is `None`, the mapping is 1:1.
+        """
+        if split is not None:
+            system_blocks, user_msg = split
+            await conn.execute(
+                _UPSERT_MESSAGE_SQL,
+                {
+                    "conversation_id": conv_id,
+                    "msg_index": 0,
+                    "org_id": org_id,
+                    "role": "system_prompt",
+                    "content_jsonb": json.dumps(system_blocks, ensure_ascii=False),
+                },
+            )
+            user_norm = canonical_message(user_msg)
+            await conn.execute(
+                _UPSERT_MESSAGE_SQL,
+                {
+                    "conversation_id": conv_id,
+                    "msg_index": 1,
+                    "org_id": org_id,
+                    "role": "user_input",
+                    "content_jsonb": json.dumps(user_norm["content"], ensure_ascii=False),
+                },
+            )
+            shift = 1
+            start_idx = 1
+        else:
+            shift = 0
+            start_idx = 0
+
+        for api_idx, m in enumerate(parsed_messages):
+            if api_idx < start_idx:
+                continue
+            if not isinstance(m, dict):
+                continue
+            norm = canonical_message(m)
+            role = classify_message(m)
+            await conn.execute(
+                _UPSERT_MESSAGE_SQL,
+                {
+                    "conversation_id": conv_id,
+                    "msg_index": api_idx + shift,
+                    "org_id": org_id,
+                    "role": role,
+                    "content_jsonb": json.dumps(norm["content"], ensure_ascii=False),
+                },
+            )
 
     async def _resolve_conversation(
         self,

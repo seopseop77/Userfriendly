@@ -1,19 +1,31 @@
 """Turn classification for `plugin_analytics` rows.
 
-Pure functions — no I/O, no DB. Two public entry points:
+Pure functions — no I/O, no DB. Three public entry points:
 
 * `classify_request(...)` — per-exchange classifier. Derives
   `turn_kind`, `slash_commands`, `first_msg_hash`, `n_messages` from
   the parsed Anthropic Messages API request body. The plugin uses
   the result for the analytics row and the chain-lookup that
   resolves `conversation_id`.
-* `classify_message(msg) -> str` — per-message classifier. Returns
-  the *origin* of an individual message in the array so the
-  `conversation_messages.role` column distinguishes user-typed input
-  from framework-synthesised continuations (tool_result, SUGGESTION
-  MODE, `/compact`, title-gen sidecar, `<session>` probe). The
-  vocabulary is a superset of `TurnKind` plus `"assistant"` so
-  `cm.role = pa.turn_kind` joins on the last message of an exchange.
+* `classify_message(msg) -> MessageRole` — per-message classifier.
+  Returns the *display role* of an individual message for the
+  `conversation_messages.role` column (ADR-0037). Five-value vocab:
+  `system_prompt`, `user_input`, `title_gen`, `model_output`,
+  `assistant`. `system_prompt` is never emitted from
+  `classify_message` directly — it is only assigned by the splitter
+  on `messages[0]` (see `split_first_message`).
+* `split_first_message(msg)` — splits a `messages[0]` whose content
+  array begins with synthetic wrapper blocks (`<system-reminder>`,
+  `<command-name>`, …) into a `(system_prompt_blocks, user_input_msg)`
+  pair so each lands in its own `conversation_messages` row.
+  Returns `None` when no split applies.
+
+`TurnKind` (the request-level vocab written to
+`plugin_analytics.turn_kind`) is unchanged from ADR-0036 — the
+classifier still emits the original four values. The display vocab
+for `conversation_messages.role` diverged from `TurnKind` under
+ADR-0037; downstream queries that joined `cm.role = pa.turn_kind`
+must update.
 
 `classify_request` rule summary (see worklog
 `2026-05-19-turn-classification.md` for derivation; per-message
@@ -73,28 +85,35 @@ TurnKind = Literal[
     "claude_manage_probe",
 ]
 
-# Per-message origin vocabulary (ADR-0036). Superset of TurnKind plus
-# "assistant" for `role=assistant` messages. Stored in
-# `conversation_messages.role` so a downstream consumer can tell typed
-# input apart from framework continuations without joining
-# `plugin_analytics`. `claude_manage_probe` is reserved for parity with
-# TurnKind but `classify_message` currently never emits it — see the
-# docstring note in `classify_message` below.
-MessageOrigin = Literal[
-    "user_input_turn_start",
-    "tool_continuation",
-    "internal_subprompt",
-    "claude_manage_probe",
+# Per-message display vocabulary (ADR-0037). Stored in
+# `conversation_messages.role`. Diverges from `TurnKind`: this vocab
+# separates the session-start system prompt from the first user input
+# (`system_prompt` / `user_input`), splits title-gen sidecars out of
+# the catch-all internal subprompt bucket (`title_gen`), and uses
+# `model_output` for assistant turns. Non-title-gen sidecars
+# (SUGGESTION MODE, `/compact` summarize, step-away recap) and
+# tool_result continuations both fold into `assistant` per operator
+# direction (2026-05-25).
+MessageRole = Literal[
+    "system_prompt",
+    "user_input",
+    "title_gen",
+    "model_output",
     "assistant",
 ]
 
+# Backwards-compatibility alias — code imported `MessageOrigin` before
+# ADR-0037. Kept as an alias rather than deleted to avoid churn in
+# downstream callers; new code uses `MessageRole`.
+MessageOrigin = MessageRole
+
 # Roles a stored `conversation_messages` row can be overwritten *from*
-# by the priority UPSERT in `plugin.py`. Mirrors the same set used in
-# the `WHERE` clause; centralised here so the ADR-0036 rule lives next
-# to the vocabulary it references. New real-content roles arrive and
-# displace sidecar placeholders; sidecar arrivals never displace real
-# content.
-OVERWRITABLE_ROLES: frozenset[str] = frozenset({"internal_subprompt", "claude_manage_probe"})
+# by the priority UPSERT in `plugin.py`. Under ADR-0037 only `title_gen`
+# is a sidecar placeholder (the title-gen probe fires before the main
+# flow lands real content at the same msg_index). Real-content arrivals
+# (`system_prompt`, `user_input`, `model_output`, `assistant`) displace
+# title_gen; sidecar arrivals never displace real content.
+OVERWRITABLE_ROLES: frozenset[str] = frozenset({"title_gen"})
 
 # Block text prefixes Claude Code uses for synthesised content that wraps
 # (but is not) user input. Order matters only for documentation.
@@ -316,54 +335,129 @@ def _last_real_user_text(content: list[Any]) -> str | None:
     return None
 
 
-def classify_message(msg: dict[str, Any]) -> MessageOrigin:
-    """Classify a single Anthropic Messages API message by its origin.
+def classify_message(msg: dict[str, Any]) -> MessageRole:
+    """Classify a single Anthropic Messages API message by display role.
 
-    Mirrors `classify_request` at the per-message scope: distinguishes
-    user-typed input from framework-synthesised continuations
-    (tool_result, SUGGESTION MODE, `/compact`, step-away recap,
-    title-gen sidecar) that the Anthropic API also serialises with
-    `role=user`.
+    ADR-0037 vocab. Returns one of:
 
-    Returns one of:
+    * ``"model_output"`` — `role=assistant`.
+    * ``"title_gen"`` — string content whose payload is a
+      `<session>...</session>` wrapper (Claude Code's per-session
+      title fetch carries the user's first message inside this shape).
+    * ``"assistant"`` — every other framework-synthesised message
+      Claude Code emits with `role=user`: `/compact` summarize,
+      `[SUGGESTION MODE: ...]`, step-away recap, tool_result
+      continuations, and list content whose only text blocks are
+      synthetic wrappers (post-`/compact` resume marker, etc.).
+    * ``"user_input"`` — list content with at least one non-wrapper
+      text block (the user's typed text).
 
-    * ``"assistant"`` — `role=assistant`.
-    * ``"tool_continuation"`` — list content with any `tool_result`
-      block.
-    * ``"internal_subprompt"`` — string content (Claude Code internal
-      sub-prompt: `/compact`, `[SUGGESTION MODE: ...]`, step-away
-      recap), or list content where every text block is a synthetic
-      wrapper (no real user-typed text was found).
-    * ``"user_input_turn_start"`` — list content with at least one
-      non-wrapper text block (the user's typed text).
-
-    `claude_manage_probe` is **never emitted** at per-message scope:
-    distinguishing it from the title-gen sidecar requires inspecting
-    the request's `system` field, which is not available here. The
-    rare offline claude-manage probe (whose last text starts with
-    `<session>` but where `<session>` is the user-typed input)
-    classifies as `user_input_turn_start`; an analyst can join
-    `plugin_analytics.turn_kind` to recover the per-exchange
-    distinction when needed.
+    `system_prompt` is **never emitted** from this function — it is
+    only assigned by `split_first_message` when `messages[0]` carries
+    leading wrapper blocks. A caller iterating messages should call
+    `split_first_message` on index 0 first; if it returns a split,
+    persist the system_prompt slice with role=`system_prompt` and the
+    user_input slice with role=`user_input`, then continue iterating
+    from index 1 with `classify_message`.
     """
     if msg.get("role") == "assistant":
-        return "assistant"
+        return "model_output"
 
     content = msg.get("content")
 
-    if isinstance(content, list) and any(_block_type(b) == "tool_result" for b in content):
-        return "tool_continuation"
-
+    # title_gen: bare string payload wrapped in `<session>...</session>`.
+    # Per-message scope has no `system` field to disambiguate, so we
+    # match on the wrapper shape alone — production data (2026-05-25)
+    # shows this shape only appears for title-gen sidecars and the
+    # one historic mislabel that the new vocab now classifies correctly.
     if isinstance(content, str):
-        return "internal_subprompt"
+        if _SESSION_WRAP_RE.match(content):
+            return "title_gen"
+        # Other string sub-prompts (/compact, SUGGESTION, step-away).
+        return "assistant"
+
+    if isinstance(content, list) and any(_block_type(b) == "tool_result" for b in content):
+        return "assistant"
 
     if not isinstance(content, list) or not content:
-        return "internal_subprompt"
+        return "assistant"
 
     if _last_real_user_text(content) is not None:
-        return "user_input_turn_start"
+        return "user_input"
 
-    return "internal_subprompt"
+    # Only synthetic wrappers — system sidecar.
+    return "assistant"
+
+
+def split_first_message(
+    msg: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    """Split `messages[0]` into a system_prompt slice and a user_input slice.
+
+    The Anthropic Messages API delivers Claude Code's session opener
+    as a single user message whose content is a list of text blocks:
+    leading `<system-reminder>` (and friends) followed by the user's
+    typed text. Storing that as one row obscures the user's actual
+    input. Splitting it into two `conversation_messages` rows under
+    ADR-0037:
+
+    * ``msg_index = 0``, role=`system_prompt`, content=the wrapper
+      blocks (preserved as a list so the original framing is intact).
+    * ``msg_index = 1``, role=`user_input`, content=the trailing
+      non-wrapper blocks.
+
+    The downstream caller is responsible for shifting subsequent
+    msg_index values by +1 (and adjusting `n_messages_at_request`
+    accordingly) when a split is taken.
+
+    Returns ``None`` when no split applies:
+
+    * Content is a string (title_gen sidecar, internal sub-prompt).
+    * Content is a list with no leading wrapper block.
+    * Content is a list where every text block is a synthetic wrapper
+      (no real user text to peel off).
+    * `msg.role != "user"` (assistant never carries wrappers).
+    """
+    if msg.get("role") != "user":
+        return None
+    content = msg.get("content")
+    if not isinstance(content, list) or not content:
+        return None
+
+    # Walk blocks from the start, peeling wrapper text blocks into the
+    # system_prompt slice. The first block that is NOT a wrapper text
+    # ends the system_prompt and starts user_input; everything from
+    # that point onward stays in user_input (including any non-text
+    # blocks like tool_use, which are not expected at messages[0] but
+    # preserved defensively).
+    system_blocks: list[dict[str, Any]] = []
+    user_blocks: list[dict[str, Any]] = []
+    split_point: int | None = None
+    for idx, b in enumerate(content):
+        if not isinstance(b, dict):
+            split_point = idx
+            break
+        if _block_type(b) != "text":
+            split_point = idx
+            break
+        text = (b.get("text") or "").lstrip()
+        if text.startswith(_SYNTHETIC_WRAPPER_PREFIXES):
+            system_blocks.append(b)
+            continue
+        split_point = idx
+        break
+
+    if split_point is None or not system_blocks:
+        # No wrapper-prefixed lead, or every block was a wrapper.
+        # Either way there is nothing to peel off as system_prompt.
+        return None
+
+    user_blocks = list(content[split_point:])
+    if not user_blocks:
+        return None
+
+    user_msg = {"role": "user", "content": user_blocks}
+    return system_blocks, user_msg
 
 
 def _block_type(block: Any) -> str | None:

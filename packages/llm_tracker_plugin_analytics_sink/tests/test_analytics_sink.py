@@ -456,26 +456,26 @@ async def test_normalization_applied_at_upsert_boundary() -> None:
     assert len(upserts) == 1
     # content_jsonb is JSON-encoded; the inner value is the bare string.
     assert _json.loads(upserts[0]["content_jsonb"]) == "hello"
-    # ADR-0036: role carries per-message origin, not the API protocol
-    # role. A list-content user message with real text classifies as
-    # user_input_turn_start.
-    assert upserts[0]["role"] == "user_input_turn_start"
+    # ADR-0037: role carries the 5-value display vocab. A list-content
+    # user message with one real text block classifies as `user_input`.
+    assert upserts[0]["role"] == "user_input"
 
 
 @pytest.mark.asyncio
-async def test_upserts_carry_per_message_origin_roles() -> None:
-    """ADR-0036 (V): each UPSERT's `role` reflects the per-message
-    origin classification, not the raw API protocol role. A mixed
-    `messages` array (user-typed, assistant, tool_continuation,
-    internal_subprompt) produces one distinct role per index.
+async def test_upserts_carry_display_roles() -> None:
+    """ADR-0037: each UPSERT's `role` reflects the 5-value display
+    vocab (system_prompt / user_input / title_gen / model_output /
+    assistant). A mixed `messages` array (bare user text — no split,
+    assistant turn, tool_result continuation, SUGGESTION sidecar,
+    user follow-up) produces one distinct role per index.
     """
     engine, conn = _fake_engine()
     plugin = AnalyticsSink(engine=engine)
 
-    # 5 messages spanning every origin kind classify_message emits.
+    # 5 messages — index 0 is bare user text (no wrapper) so no split.
     body = (
         b'{"model":"claude-x","messages":['
-        # msg 0: user-typed (list content with real text)
+        # msg 0: user-typed (single text block, no leading wrapper)
         b'{"role":"user","content":[{"type":"text","text":"first"}]},'
         # msg 1: assistant response
         b'{"role":"assistant","content":[{"type":"text","text":"ok"}]},'
@@ -495,21 +495,90 @@ async def test_upserts_carry_per_message_origin_roles() -> None:
     upserts = _upsert_calls(conn)
     by_index = {u["msg_index"]: u["role"] for u in upserts}
     assert by_index == {
-        0: "user_input_turn_start",
-        1: "assistant",
-        2: "tool_continuation",
-        3: "internal_subprompt",
-        4: "user_input_turn_start",
+        0: "user_input",
+        1: "model_output",
+        2: "assistant",  # tool_continuation folded into assistant under ADR-0037
+        3: "assistant",  # SUGGESTION MODE folded into assistant under ADR-0037
+        4: "user_input",
     }
 
 
 @pytest.mark.asyncio
+async def test_session_opener_splits_into_system_prompt_and_user_input() -> None:
+    """ADR-0037 split: `messages[0]` whose content begins with
+    `<system-reminder>` wrappers expands to two stored rows.
+    Subsequent API messages shift msg_index by +1 and
+    `n_messages_at_request` is bumped to match the helper view's
+    row-count filter.
+    """
+    import json as _json
+
+    engine, conn = _fake_engine()
+    plugin = AnalyticsSink(engine=engine)
+
+    body = (
+        b'{"model":"claude-x","messages":['
+        b'{"role":"user","content":['
+        b'{"type":"text","text":"<system-reminder>\\nAvailable agent types..."},'
+        b'{"type":"text","text":"hello"}'
+        b"]},"
+        b'{"role":"assistant","content":[{"type":"text","text":"ok"}]}'
+        b"]}"
+    )
+    ctx = _make_ctx(request_body=body, org_id=uuid.uuid4(), parsed_response=None)
+
+    await plugin.on_request_received("ex_split", ctx)
+    await plugin.on_persisted("ex_split", ctx)
+
+    upserts = _upsert_calls(conn)
+    by_index = {u["msg_index"]: u for u in upserts}
+    # Three stored rows from two API messages (split applied at idx 0).
+    assert sorted(by_index) == [0, 1, 2]
+    assert by_index[0]["role"] == "system_prompt"
+    sys_content = _json.loads(by_index[0]["content_jsonb"])
+    assert isinstance(sys_content, list)
+    assert sys_content[0]["text"].startswith("<system-reminder>")
+    assert by_index[1]["role"] == "user_input"
+    # Single bare text block normalises to a bare string.
+    assert _json.loads(by_index[1]["content_jsonb"]) == "hello"
+    assert by_index[2]["role"] == "model_output"
+
+    params = _insert_params(conn)
+    # API delivered 2 messages, split yields 3 stored rows.
+    assert params["n_messages_at_request"] == 3
+
+
+@pytest.mark.asyncio
+async def test_title_gen_string_classifies_correctly() -> None:
+    """`<session>...</session>` string payload at messages[0] →
+    role=`title_gen`. The split helper returns None for string content,
+    so no msg_index shift."""
+    engine, conn = _fake_engine()
+    plugin = AnalyticsSink(engine=engine)
+
+    body = (
+        b'{"model":"claude-x","messages":['
+        b'{"role":"user","content":"<session>\\nhello\\n</session>"}'
+        b"]}"
+    )
+    ctx = _make_ctx(request_body=body, org_id=uuid.uuid4(), parsed_response=None)
+
+    await plugin.on_request_received("ex_title", ctx)
+    await plugin.on_persisted("ex_title", ctx)
+
+    upserts = _upsert_calls(conn)
+    assert len(upserts) == 1
+    assert upserts[0]["msg_index"] == 0
+    assert upserts[0]["role"] == "title_gen"
+
+
+@pytest.mark.asyncio
 async def test_upsert_sql_uses_priority_do_update() -> None:
-    """ADR-0036 (P): the UPSERT SQL must allow real-content arrivals
-    to displace stored sidecar placeholders. We assert the SQL string
-    rather than against a live DB — keeps the contract visible at the
-    plugin layer; full UPSERT semantics are exercised by integration
-    tests downstream.
+    """ADR-0037: the UPSERT SQL allows real-content arrivals to
+    displace a stored `title_gen` sidecar placeholder. We assert the
+    SQL string rather than against a live DB — keeps the contract
+    visible at the plugin layer; full UPSERT semantics are exercised
+    by integration tests downstream.
     """
     from llm_tracker_plugin_analytics_sink.plugin import _UPSERT_MESSAGE_SQL
 
@@ -517,12 +586,15 @@ async def test_upsert_sql_uses_priority_do_update() -> None:
     # DO UPDATE replaces the prior DO NOTHING policy.
     assert "DO UPDATE" in sql
     assert "DO NOTHING" not in sql
-    # WHERE clause restricts overwrites to sidecar placeholders.
-    assert "'internal_subprompt'" in sql
-    assert "'claude_manage_probe'" in sql
-    # And only by real-content arrivals.
-    assert "'user_input_turn_start'" in sql
-    assert "'tool_continuation'" in sql
+    # Stored sidecar placeholder under ADR-0037 is `title_gen` only.
+    assert "'title_gen'" in sql
+    # Pre-ADR-0037 placeholder names no longer appear.
+    assert "'internal_subprompt'" not in sql
+    assert "'claude_manage_probe'" not in sql
+    # Real-content arrivals — the 4 values that can displace title_gen.
+    assert "'system_prompt'" in sql
+    assert "'user_input'" in sql
+    assert "'model_output'" in sql
     assert "'assistant'" in sql
 
 

@@ -20,6 +20,7 @@ from llm_tracker_plugin_analytics_sink.classifier import (
     Classification,
     classify_message,
     classify_request,
+    split_first_message,
 )
 
 
@@ -424,76 +425,163 @@ def test_first_msg_hash_only_wrappers_collapses_to_empty() -> None:
     assert a.first_msg_hash == b.first_msg_hash
 
 
-def test_classify_message_assistant_role() -> None:
+# ---------------------------------------------------------------------
+# ADR-0037: 5-role display vocab on conversation_messages.role.
+# `classify_message` now emits system_prompt / user_input / title_gen /
+# model_output / assistant. (system_prompt is only assigned by the
+# splitter; the per-message classifier never returns it directly.)
+# ---------------------------------------------------------------------
+
+
+def test_classify_message_assistant_role_is_model_output() -> None:
     msg = {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}
-    assert classify_message(msg) == "assistant"
+    assert classify_message(msg) == "model_output"
 
 
-def test_classify_message_user_typed_list_content() -> None:
+def test_classify_message_user_typed_list_content_is_user_input() -> None:
     msg = _user(
         [
             {"type": "text", "text": "<system-reminder>\nwrap"},
             {"type": "text", "text": "real text"},
         ]
     )
-    assert classify_message(msg) == "user_input_turn_start"
+    assert classify_message(msg) == "user_input"
 
 
-def test_classify_message_tool_result_continuation() -> None:
+def test_classify_message_tool_result_continuation_is_assistant() -> None:
+    """tool_result continuations fold into the `assistant` bucket
+    under ADR-0037 (operator direction: continuations and non-title-gen
+    sub-prompts share one display role)."""
     msg = _user(
         [
             {"type": "tool_result", "tool_use_id": "t", "content": "ok"},
             {"type": "text", "text": "<system-reminder>\nposttool"},
         ]
     )
-    assert classify_message(msg) == "tool_continuation"
+    assert classify_message(msg) == "assistant"
 
 
-def test_classify_message_string_content_is_internal_subprompt() -> None:
-    """`/compact`, SUGGESTION MODE, step-away recap — all string content."""
-    assert classify_message(_user("[SUGGESTION MODE: ...]")) == "internal_subprompt"
-    assert classify_message(_user("CRITICAL: Respond with TEXT ONLY...")) == "internal_subprompt"
+def test_classify_message_non_session_string_is_assistant() -> None:
+    """`/compact` summarize, SUGGESTION MODE, step-away recap —
+    all framework-generated string sub-prompts fold into `assistant`."""
+    assert classify_message(_user("[SUGGESTION MODE: ...]")) == "assistant"
+    assert classify_message(_user("CRITICAL: Respond with TEXT ONLY...")) == "assistant"
 
 
-def test_classify_message_session_sidecar_string_is_internal_subprompt() -> None:
-    """The `<session>`-wrapped session-classify sidecar arrives as
-    string content, so the string-content branch catches it.
-    """
+def test_classify_message_session_string_is_title_gen() -> None:
+    """The `<session>`-wrapped string is Claude Code's per-session
+    title fetch — split out from `assistant` under ADR-0037."""
     msg = _user("<session>\n너무 반가워!\n</session>")
-    assert classify_message(msg) == "internal_subprompt"
+    assert classify_message(msg) == "title_gen"
 
 
-def test_classify_message_only_synthetic_wrappers_is_internal_subprompt() -> None:
+def test_classify_message_only_synthetic_wrappers_is_assistant() -> None:
     """A user message whose only text blocks are synthetic wrappers
     (e.g. the post-`/compact` resume marker without trailing user
-    input) classifies as internal_subprompt.
-    """
+    input) is not user input — folds into `assistant`."""
     msg = _user(
         [
             {"type": "text", "text": "<system-reminder>\nNote: STATUS.md was read"},
             {"type": "text", "text": "This session is being continued..."},
         ]
     )
-    assert classify_message(msg) == "internal_subprompt"
+    assert classify_message(msg) == "assistant"
 
 
 def test_classify_message_empty_content_defensive() -> None:
-    assert classify_message(_user([])) == "internal_subprompt"
-    assert classify_message(_user(None)) == "internal_subprompt"
+    assert classify_message(_user([])) == "assistant"
+    assert classify_message(_user(None)) == "assistant"
 
 
 def test_classify_message_session_wrap_on_list_is_user_input() -> None:
-    """Claude Code's `<session>` wrap inside a list (system_text not
-    available at per-message scope) — the text inside is user-typed,
-    so this classifies as user_input_turn_start. Slight divergence
-    from `classify_request` rule 5 for the rare offline probe; an
-    analyst joins `plugin_analytics.turn_kind` to recover the
-    per-exchange distinction when needed.
-    """
+    """`<session>` inside a list (vs. as a bare string payload) is
+    *not* title_gen — title_gen detection at the per-message scope is
+    string-only. List shape with `<session>` carrying real user text
+    classifies as user_input."""
     msg = _user(
         [
             {"type": "text", "text": "<system-reminder>\nfoo"},
             {"type": "text", "text": "<session>\n반가워\n</session>"},
         ]
     )
-    assert classify_message(msg) == "user_input_turn_start"
+    assert classify_message(msg) == "user_input"
+
+
+# ---------------------------------------------------------------------
+# split_first_message — peels leading synthetic wrappers from
+# messages[0] into a system_prompt slice and a user_input slice.
+# ---------------------------------------------------------------------
+
+
+def test_split_first_message_session_opener_shape() -> None:
+    """The canonical Claude Code session opener: one or more wrapper
+    blocks followed by the user's typed text. Splits into two rows."""
+    msg = _user(
+        [
+            {"type": "text", "text": "<system-reminder>\nAvailable agent types..."},
+            {"type": "text", "text": "<system-reminder>\nMCP Server Instructions..."},
+            {"type": "text", "text": "STATUS.md 읽어줘"},
+        ]
+    )
+    result = split_first_message(msg)
+    assert result is not None
+    system_blocks, user_msg = result
+    assert len(system_blocks) == 2
+    assert all(b["text"].startswith("<system-reminder>") for b in system_blocks)
+    assert user_msg["role"] == "user"
+    assert user_msg["content"] == [{"type": "text", "text": "STATUS.md 읽어줘"}]
+
+
+def test_split_first_message_no_wrapper_returns_none() -> None:
+    """Single user-typed block at index 0 — nothing to peel."""
+    msg = _user([{"type": "text", "text": "quota"}])
+    assert split_first_message(msg) is None
+
+
+def test_split_first_message_string_content_returns_none() -> None:
+    """String content (title_gen sidecar, /compact, SUGGESTION MODE,
+    etc.) is not a candidate for splitting."""
+    assert split_first_message(_user("<session>\nfoo\n</session>")) is None
+    assert split_first_message(_user("[SUGGESTION MODE: ...]")) is None
+
+
+def test_split_first_message_only_wrappers_returns_none() -> None:
+    """Every block is a wrapper — no real user text to peel off,
+    so no split. The whole message classifies as `assistant` later."""
+    msg = _user(
+        [
+            {"type": "text", "text": "<system-reminder>\nNote: STATUS.md was read"},
+            {"type": "text", "text": "This session is being continued..."},
+        ]
+    )
+    assert split_first_message(msg) is None
+
+
+def test_split_first_message_assistant_role_returns_none() -> None:
+    """Assistant messages never carry wrapper-prefixed user input."""
+    msg = {
+        "role": "assistant",
+        "content": [
+            {"type": "text", "text": "<system-reminder>\nfoo"},
+            {"type": "text", "text": "ok"},
+        ],
+    }
+    assert split_first_message(msg) is None
+
+
+def test_split_first_message_slash_command_block_kept_with_user() -> None:
+    """`<command-name>` blocks are wrappers; the user's follow-up text
+    after a /clear or /compact still peels into user_input."""
+    msg = _user(
+        [
+            {"type": "text", "text": "<system-reminder>\nAvailable agent types..."},
+            {"type": "text", "text": "<command-name>/clear</command-name>"},
+            {"type": "text", "text": "<local-command-stdout></local-command-stdout>"},
+            {"type": "text", "text": "안녕~"},
+        ]
+    )
+    result = split_first_message(msg)
+    assert result is not None
+    system_blocks, user_msg = result
+    assert len(system_blocks) == 3
+    assert user_msg["content"] == [{"type": "text", "text": "안녕~"}]

@@ -9,47 +9,50 @@
 
 ---
 
-**Last updated**: 2026-05-25
+**Last updated**: 2026-05-26
 
 ## Active worklog
 
-`docs/worklog/2026-05-25-conversation-grouping-fix.md`
+`docs/worklog/2026-05-26-display-role-vocab.md`
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: backfill 354d2e2 hash in STATUS + worklog
+- `<pending>` docs: backfill d34818a + 5f60435 hashes in worklog + STATUS
+- `5f60435` analytics_sink: ADR-0037 backfill script + applied
+- `d34818a` analytics_sink: ADR-0037 display role vocab split
+- `cf7fcd2` docs: backfill 354d2e2 hash in STATUS + worklog
 - `354d2e2` analytics_sink: ADR-0036 backfill script + applied
-- `e391822` docs: backfill 7cf83f3 hash in STATUS + worklog
-- `7cf83f3` analytics_sink: canonical grouping (ADR-0036)
-- `a96d095` docs: backfill 2b73b4c hash in STATUS + worklog
 
 ## Where we paused
 
-**ADR-0036 fully delivered.** Code patch + backfill applied to live
-Supabase. The three defects (split conv on `<session>` sidecar,
-silent loss on UPSERT collision, ambiguous `role=user`) are all
-resolved forward and the historic rows are repaired.
+**ADR-0037 fully delivered.** `conversation_messages.role` now uses
+the 5-value display vocab (`system_prompt`, `user_input`,
+`title_gen`, `model_output`, `assistant`); the session-opener
+splits into its own row at `msg_index=0` and the user's first
+typed text lives at `msg_index=1`. Forward writes, the priority
+UPSERT, and the helper view all updated; backfill applied to the
+246 historic rows.
 
-- Backfill applied via Supabase MCP `execute_sql` in three stages
-  (A: 151 role rows, B: 155 hashes, C: 14 conv merges incl. one
-  3-way). Final state: 34 distinct conversations across both
-  tables, no orphans, no rows left with the old `user` role.
-- The investigation conv `01KSEVGY6FT6655DN0J708VPTD` (was the
-  `<session>` sidecar twin) now holds the full 9-message "너무
-  반가워" main flow. msg_index 0 is the real user turn (was the
-  `<session>` placeholder). msg_index 4 is *still* the SUGGESTION
-  sidecar — that's the operator's lost "현재 mcp 리스트?" turn,
-  which cannot be backfilled because the original request body is
-  gone. Forward writes are protected.
+- Backfill applied via Supabase MCP `execute_sql` in three phases.
+  Phase A: one UPDATE renamed roles across un-migrated convs
+  (104 model_output, 65 → assistant, 53 → user_input, 24 split
+  between title_gen / assistant by `<session>` content shape;
+  one historic mislabel auto-corrected).
+  Phase B: DO block split 26 msg_index=0 array rows whose first
+  block was a synthetic wrapper, shifting siblings +1 via a
+  temp-negative trick.
+  Phase C: `plugin_analytics.n_messages_at_request += 1` for every
+  exchange in a split conv.
+- Final state: 272 rows (was 246, +26 system_prompt inserts), 37
+  conversations, 0 stragglers, helper view `gap = 0` against
+  `n_messages_at_request` on the sample conv.
 - Backfill script committed at
-  `packages/llm_tracker_plugin_analytics_sink/scripts/backfill_canonical_grouping.py`
-  for future re-runs. Dual-mode: `--emit-sql` (default) or
-  `--apply` against `LLMTRACK_DATABASE_URL`. Also accepts
-  `--from-json` for offline runs.
+  `packages/llm_tracker_plugin_analytics_sink/scripts/backfill_display_role_vocab.py`
+  (idempotent — re-runs skip already-migrated convs).
 
 ## Next single step
 
-**Operator's choice.** ADR-0036 is closed. Two outstanding tracks:
+**Operator's choice.** ADR-0037 is closed. Two outstanding tracks:
 
 1. (back-burner) Participant-#1 install — see ADR-0035 follow-up
    in `docs/worklog/2026-05-25-uv-tool-install.md`. Owner: operator;

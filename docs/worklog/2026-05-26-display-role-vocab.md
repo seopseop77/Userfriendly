@@ -35,7 +35,7 @@ backfill the 246 historic rows in addition to the forward writes.
 - Created `docs/decisions/0037-display-role-vocab-split.md` — the
   ADR documenting the 5-value display vocab, msg_index +1 shift on
   split, `n_messages_at_request` bump, priority UPSERT update, and
-  trade-offs. (commit <pending>)
+  trade-offs. (commit d34818a)
 - Modified
   `packages/llm_tracker_plugin_analytics_sink/src/llm_tracker_plugin_analytics_sink/classifier.py`
   — replaced `MessageOrigin` Literal with `MessageRole`
@@ -43,7 +43,7 @@ backfill the 246 historic rows in addition to the forward writes.
   added `split_first_message` helper that peels leading wrapper
   blocks off `messages[0]`. `TurnKind` and `classify_request` left
   unchanged. `OVERWRITABLE_ROLES` narrowed to `frozenset({"title_gen"})`.
-  (commit <pending>)
+  (commit d34818a)
 - Modified
   `packages/llm_tracker_plugin_analytics_sink/src/llm_tracker_plugin_analytics_sink/plugin.py`
   — pulled the UPSERT loop into `_upsert_messages`; calls
@@ -51,7 +51,7 @@ backfill the 246 historic rows in addition to the forward writes.
   writes two rows (msg_index 0/1) then shifts subsequent API
   messages by +1. `n_messages_at_request` bumped by +1 in the same
   branch. `_UPSERT_MESSAGE_SQL` `WHERE` clause now targets
-  `title_gen` only. (commit <pending>)
+  `title_gen` only. (commit d34818a)
 - Modified
   `packages/llm_tracker_plugin_analytics_sink/tests/test_classifier.py`
   and `tests/test_analytics_sink.py` — replaced old-vocab
@@ -60,7 +60,7 @@ backfill the 246 historic rows in addition to the forward writes.
   `test_no_split_*`, `test_title_gen_string_*`,
   `test_upsert_sql_uses_priority_do_update` (new WHERE clause
   assertion). 61 tests in the package pass, 283 in the full repo.
-  (commit <pending>)
+  (commit d34818a)
 - Created
   `packages/llm_tracker_plugin_analytics_sink/scripts/backfill_display_role_vocab.py`
   — dual-mode (`--emit-sql` / `--apply` / `--from-json`) script

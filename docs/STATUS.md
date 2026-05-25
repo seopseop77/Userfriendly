@@ -17,11 +17,11 @@
 
 ## Recent commits (last 5)
 
-- `<pending>` analytics_sink: ADR-0036 backfill script + applied
+- `<pending>` docs: backfill 354d2e2 hash in STATUS + worklog
+- `354d2e2` analytics_sink: ADR-0036 backfill script + applied
 - `e391822` docs: backfill 7cf83f3 hash in STATUS + worklog
 - `7cf83f3` analytics_sink: canonical grouping (ADR-0036)
 - `a96d095` docs: backfill 2b73b4c hash in STATUS + worklog
-- `2b73b4c` signup: inline style for pre no-wrap (CDN class insufficient)
 
 ## Where we paused
 

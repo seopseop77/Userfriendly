@@ -67,7 +67,7 @@ backfill recompute hashes without the dropped `messages_json` column.
   `classify_message` from the package so the backfill cannot drift
   from the runtime logic. Operator-confirmed go-ahead given;
   applied directly via Supabase MCP `execute_sql` against the live
-  DB in this session (commit `<pending>`).
+  DB in this session (commit `354d2e2`).
 - Applied ADR-0036 backfill against live Supabase:
   - **Stage A** (role reclass): 253 conversation_messages rows ->
     `assistant=102 / internal_subprompt=35 / tool_continuation=68 /

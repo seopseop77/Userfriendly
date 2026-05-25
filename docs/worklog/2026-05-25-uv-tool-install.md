@@ -171,6 +171,60 @@ If the production page still shows the old `pip install ...` line, the
 deploy didn't pick up the template change — investigate the Docker
 image layer cache before re-litigating the ADR.
 
+## Follow-up touch-ups 2: inline style for no-wrap (same session)
+
+After the first wrap fix shipped, operator still saw Step 2 wrap onto a
+second line ("…llm-tracke" / "  dev") on the deployed page, while
+Step 1a/1b on the *same* page (same `<pre>` class string, content of
+similar or greater length) rendered correctly with horizontal overflow
+and no wrap. Rendered-HTML inspection confirmed:
+
+- Both pres carry identical classes
+  (`flex-1 min-w-0 ... overflow-x-auto whitespace-pre text-sm`).
+- Step 2's text is 76 bytes of plain ASCII with no embedded newlines,
+  no zero-width characters, and no trailing whitespace.
+
+Why the same Tailwind utility applied to two identical-class elements
+produced different wrap behavior in the operator's browser is not
+fully understood — most likely a `cdn.tailwindcss.com` JIT quirk
+interacting with the live Fly-rendered DOM, but not reproducible from
+the server side. Rather than spend more time root-causing a CDN
+behavior we don't control, switched to an **inline `style=`
+attribute** on every step `<pre>`:
+`white-space:pre; word-break:keep-all; overflow-wrap:normal`. Inline
+styles have specificity 1000 — they win over any Tailwind utility or
+preflight rule that could be in play, and remove Tailwind from the
+critical path for the wrap-prevention behavior. The `whitespace-pre`
+class is left in place too as defense-in-depth and for documentation.
+
+### What was done (follow-up 2)
+
+- Modified
+  `packages/llm_tracker_signup/src/llm_tracker_signup/templates/success.html` —
+  every step `<pre>` (5 total) now carries
+  `style="white-space:pre;word-break:keep-all;overflow-wrap:normal"`
+  alongside the existing utility classes. Verified by rendering the
+  template through Starlette's TestClient: inline style appears 5 times
+  in the response body, one per pre block. (commit pending)
+
+### Verification (follow-up 2)
+
+```
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker_signup/tests/test_app.py -q
+...sss                                                                   [100%]
+3 passed, 3 skipped in 0.41s
+
+$ inline-style render hits in /success body: 5
+```
+
+The visual fix is not verified end-to-end in a browser from this
+session — that's again the post-redeploy operator check. If wrap STILL
+appears after Fly picks this up, the next step is asking the operator
+to open devtools on the Step 2 `<pre>` and report computed
+`white-space` / `word-break` / `overflow-wrap` values; with inline
+specificity 1000, anything other than `pre` / `keep-all` / `normal`
+would indicate a parent-frame override I haven't anticipated.
+
 ## Follow-up touch-ups (same session)
 
 Operator ran the new two-line flow on their own laptop and surfaced two

@@ -17,11 +17,11 @@
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: backfill 2b4f573 hash in STATUS + worklog
+- `<pending>` signup: inline style for no-wrap (Tailwind class insufficient)
+- `f55d18b` docs: backfill 2b4f573 hash in STATUS + worklog
 - `2b4f573` signup: idempotent uv bootstrap + no-wrap code blocks
 - `a1c5af7` docs: backfill ff5fac0 hash in STATUS + worklog
 - `ff5fac0` docs: ADR-0035 - switch agent install to uv tool
-- `d0b8502` signup: fix Copy button overlap on long commands
 
 ## Where we paused
 
@@ -42,8 +42,15 @@
 - Follow-up: operator hit two UX issues on first-run (brew uv shadowed
   by astral uv from copy-paste; long Step 2 command visually wrapped).
   Fixed by wrapping the uv bootstrap in a `command -v uv` POSIX guard
-  and adding `whitespace-pre` to every step `<pre>` block. Tests
-  updated to lock in the guard prefix.
+  and adding `whitespace-pre` to every step `<pre>` block.
+- Follow-up 2: after redeploy operator confirmed `command -v` shows
+  but Step 2 *still wrapped* — same Tailwind class worked on Step 1.
+  Rendered HTML inspection ruled out hidden chars / class diffs.
+  Likely a Tailwind CDN JIT quirk we can't reproduce server-side.
+  Switched to inline `style="white-space:pre;word-break:keep-all;overflow-wrap:normal"`
+  on every step `<pre>` — specificity 1000 wins regardless of CDN
+  state. Tests updated assert inline style renders on all 5 pre
+  blocks.
 - Test: `pytest packages/llm_tracker_signup/tests/test_app.py -q` →
   3 passed / 3 skipped (DB-touching skips unchanged from prior session).
 - Worklog: `docs/worklog/2026-05-25-uv-tool-install.md` (incl. follow-up

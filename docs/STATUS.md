@@ -9,53 +9,64 @@
 
 ---
 
-**Last updated**: 2026-05-21
+**Last updated**: 2026-05-25
 
 ## Active worklog
 
-`docs/worklog/2026-05-21-agent-release-pipeline.md`
+`docs/worklog/2026-05-25-uv-tool-install.md`
 
 ## Recent commits (last 5)
 
-- `<pending>` signup: fix Copy button overlap on long commands
+- `<pending>` docs+signup: swap participant install to `uv tool install` (ADR-0035)
+- `d0b8502` signup: fix Copy button overlap on long commands
 - `428860f` signup: per-step Copy buttons on success page
 - `ffb476a` signup: success page — concrete v0.1.0 wheel URL
 - `bcb7d50` docs: backfill cc2874e hash in STATUS + worklog
-- `cc2874e` docs: participant install section for claude-manage
 
 ## Where we paused
 
-**Thin-agent v0.1.0 release published; signup success page wired up.**
+**Participant install recommendation switched from `pip install <wheel>` to
+`uv tool install <wheel>` (ADR-0035, amends ADR-0034).**
 
-- Release `agent/v0.1.0` is live on GitHub with wheel
-  `llm_tracker_agent-0.1.0-py3-none-any.whl` (5.94 KB) attached.
-- Repo renamed `Userfreiendly` → `Userfriendly` (typo fix). Release
-  survived the rename; canonical wheel URL is now
-  `https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.0/llm_tracker_agent-0.1.0-py3-none-any.whl`.
-- `success.html` of the signup app has the concrete URL baked in (no
-  more `[GITHUB_RELEASE_URL]` placeholder). Route tests updated; 3
-  passed / 3 skipped on `pytest packages/llm_tracker_signup/tests/test_app.py`.
-- `docs/deploy.md` `## Participant Installation` left with `<WHEEL_URL>`
-  placeholder by design — deploy.md is a generic guide, not a per-
-  release artefact.
-- Worklog: `docs/worklog/2026-05-21-agent-release-pipeline.md`.
-
-**Proxy redeploy still operator-owned** (see worklog
-`2026-05-21-signup-app.md` for commands; unchanged).
+- Trigger: operator hit PEP 668 (`error: externally-managed-environment`)
+  on Homebrew Python 3.12 when copying the success-page Step 1. Same
+  failure reproduces on Debian/Ubuntu apt, recent Fedora, Arch, and WSL.
+- ADR-0035 picks `uv tool install <wheel-url>` because uv ships its own
+  Python interpreter — PEP 668 becomes structurally irrelevant, and the
+  participant's machine no longer needs Python pre-installed.
+- Distribution channel (GitHub Releases wheel, ADR-0034) unchanged. CI
+  workflow `.github/workflows/release-agent.yml` unchanged. Only the
+  install command in `success.html` and `docs/deploy.md` changed.
+- ADR-0034's status carries an "Amendment note" pointing to ADR-0035;
+  its distribution-channel decision stands.
+- Test: `pytest packages/llm_tracker_signup/tests/test_app.py -q` →
+  3 passed / 3 skipped (DB-touching skips unchanged from prior session).
+- Worklog: `docs/worklog/2026-05-25-uv-tool-install.md`.
 
 ## Next single step
 
-**Operator-owned: redeploy the signup app** so participants see the new
-success page with the live wheel URL:
+**Operator-owned: redeploy the signup app + re-do the participant-#1
+install with the new two-line flow.**
 
 ```
 fly deploy -c packages/llm_tracker_signup/fly.toml
 # or push to main and let .github/workflows/deploy-signup.yml run
 ```
 
-Sanity-check after deploy: hit `https://llm-tracker-signup.fly.dev/success?token=lts_demo`
-and confirm the rendered Step 1 `pip install ...` line carries the
-v0.1.0 wheel URL.
+Then, on the operator's own laptop:
+
+```
+curl -LsSf https://astral.sh/uv/install.sh | sh
+exec $SHELL -l
+uv tool install https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.0/llm_tracker_agent-0.1.0-py3-none-any.whl
+claude-manage --help
+```
+
+Sanity-check the deployed success page: visit
+`https://llm-tracker-signup.fly.dev/success?token=lts_demo` and confirm
+Step 1 renders the `uv tool install …` line (not the old `pip install …`
+line). If the old line is still visible, the deploy did not pick up the
+template — investigate before re-litigating the ADR.
 
 ---
 

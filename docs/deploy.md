@@ -431,15 +431,22 @@ the current `claude-manage` release.
 
 Distribution channel: **GitHub Releases wheel** (ADR-0034). No PyPI; no
 binary. Each release tag (`agent/vX.Y.Z`) auto-publishes a wheel asset
-via `.github/workflows/release-agent.yml`.
+via `.github/workflows/release-agent.yml`. Recommended install command:
+`uv tool install <WHEEL_URL>` (ADR-0035 — amends ADR-0034 after PEP 668
+broke the original `pip install` recommendation on the most common
+dev-laptop Python distributions).
 
 ### Requirements
 
-- **Python 3.11+** — `python --version` (or `python3 --version`) reports
-  `3.11.x` or newer. Already present on any machine running Claude Code.
-- **`pip`** (ships with Python) or **`pipx`** (`brew install pipx` /
-  `python -m pip install --user pipx`). `pipx` is recommended — it gives
-  `claude-manage` its own isolated environment.
+- **`uv`** — Astral's single static binary that manages its own Python
+  interpreter. The participant does **not** need Python pre-installed;
+  uv downloads `python-build-standalone` on demand
+  (~150 MB, one-time). Install with the one-liner below.
+
+If the participant prefers to use an existing Python install instead,
+Python 3.11+ is required (the wheel's `requires-python`). `pip` /
+`pipx` paths still work but are no longer the recommended flow — see
+the fallback block at the end of this section.
 
 ### Install
 
@@ -449,9 +456,15 @@ GitHub Release page (e.g.
 The signup app's success page hands this URL to the participant.
 
 ```
-pipx install <WHEEL_URL>
-# or, into the current Python environment:
-pip install <WHEEL_URL>
+# 1. Install uv (skip if already installed).
+#    macOS / Linux / WSL:
+curl -LsSf https://astral.sh/uv/install.sh | sh
+#    Windows PowerShell:
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# 2. Install claude-manage. uv creates an isolated tool environment
+#    and registers `claude-manage` on PATH (~/.local/bin).
+uv tool install <WHEEL_URL>
 ```
 
 ### Setup
@@ -484,9 +497,7 @@ preferred one is taken.
 Each new release publishes a wheel at a new versioned URL. To upgrade:
 
 ```
-pipx install --force <NEW_WHEEL_URL>     # pipx replaces the env
-# or
-pip install --upgrade <NEW_WHEEL_URL>    # plain pip
+uv tool install --force <NEW_WHEEL_URL>
 ```
 
 There is no auto-update channel; the signup app (or operator
@@ -495,10 +506,28 @@ announcement) re-distributes the new URL.
 ### Uninstall
 
 ```
-pipx uninstall llm-tracker-agent
-# or
-pip uninstall llm-tracker-agent
+uv tool uninstall llm-tracker-agent
 ```
 
 The local config at `~/.llm-tracker/config.toml` is left in place; delete
 it manually if you want to wipe the bearer token from disk.
+
+### Fallback: `pipx` / `pip` (not recommended)
+
+The wheel is a standard PEP 427 artifact and still works with `pipx` and
+`pip` for participants who would rather not adopt `uv`. The catches that
+motivated ADR-0035 still apply — on Homebrew Python, recent
+Debian/Ubuntu, Fedora, Arch, and WSL Ubuntu the system `pip` refuses
+non-`--user`, non-venv installs under PEP 668; `pipx` sidesteps that but
+must itself be bootstrapped (`brew install pipx`, `apt install pipx`,
+or equivalent).
+
+```
+pipx install <WHEEL_URL>
+# or, into an active venv:
+pip install <WHEEL_URL>
+```
+
+Upgrade with `pipx install --force <NEW_WHEEL_URL>` /
+`pip install --upgrade <NEW_WHEEL_URL>`. Uninstall with
+`pipx uninstall llm-tracker-agent` / `pip uninstall llm-tracker-agent`.

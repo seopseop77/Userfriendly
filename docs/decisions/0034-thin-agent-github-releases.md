@@ -1,11 +1,22 @@
 # ADR-0034 · Thin-agent distribution channel: GitHub Releases (wheel)
 
-- **Status**: Accepted
+- **Status**: Accepted (install command amended by ADR-0035, 2026-05-25)
 - **Date**: 2026-05-21
 - **Author**: Claude Code (drafting) / Claude Cowork (decision)
 - **Related**: ADR-0003 (monorepo + per-package pyproject + git URL install),
-  ADR-0025 (thin agent — Python CLI), `docs/deploy.md`,
+  ADR-0025 (thin agent — Python CLI), ADR-0035 (install command —
+  `uv tool install`), `docs/deploy.md`,
   `docs/worklog/2026-05-21-agent-release-pipeline.md`
+
+> **Amendment note (2026-05-25, ADR-0035)**: the *distribution channel*
+> decision (Option 1 — GitHub Releases wheel) stands. The recommended
+> *install command* — `pip install <url>` / `pipx install <url>` in the
+> §Operating-shape block and §Decision reason #2's "audience already has
+> Python 3.11+" premise — were superseded by ADR-0035 after PEP 668 broke
+> the flow on participant #1's Homebrew Python. Treat the `pip install` /
+> `pipx install` snippets below as historical; current participant
+> instructions live in `docs/deploy.md#participant-installation` and the
+> signup app's `success.html`.
 
 ## Context
 

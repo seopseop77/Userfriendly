@@ -17,11 +17,11 @@
 
 ## Recent commits (last 5)
 
-- `<pending>` docs+signup: swap participant install to `uv tool install` (ADR-0035)
+- `<pending>` docs: backfill ff5fac0 hash in STATUS + worklog
+- `ff5fac0` docs: ADR-0035 - switch agent install to uv tool
 - `d0b8502` signup: fix Copy button overlap on long commands
 - `428860f` signup: per-step Copy buttons on success page
 - `ffb476a` signup: success page — concrete v0.1.0 wheel URL
-- `bcb7d50` docs: backfill cc2874e hash in STATUS + worklog
 
 ## Where we paused
 

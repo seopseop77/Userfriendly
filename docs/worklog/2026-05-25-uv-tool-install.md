@@ -43,13 +43,13 @@ open questions in ADR-0035 §Open questions.
   the PEP 668 incident, the factual error in ADR-0034 reason #2
   (Claude Code is Node-based, not Python-based), the five options
   considered, and the chosen Option 3 (`uv tool install`). Distribution
-  channel and release CI are explicitly left unchanged. (commit pending)
+  channel and release CI are explicitly left unchanged. (commit ff5fac0)
 - Modified `docs/decisions/0034-thin-agent-github-releases.md` — status
   line updated to `Accepted (install command amended by ADR-0035,
   2026-05-25)`; prepended an "Amendment note" callout pointing readers
   at ADR-0035 for the current install command. ADR-0034's
   distribution-channel decision (Option 1 in that ADR) is preserved.
-  (commit pending)
+  (commit ff5fac0)
 - Modified
   `packages/llm_tracker_signup/src/llm_tracker_signup/templates/success.html` —
   Step 1 ("Install") becomes a two-substep block: (a) install uv via the
@@ -59,7 +59,7 @@ open questions in ADR-0035 §Open questions.
   `step-1-uv-win-code` id and a copy button using the existing
   `data-copy-target` pattern. The wheel URL and the `step-1-code` /
   `step-2-code` / `step-3-code` ids are preserved so the existing route
-  tests still cover them. Steps 2 and 3 unchanged. (commit pending)
+  tests still cover them. Steps 2 and 3 unchanged. (commit ff5fac0)
 - Modified `docs/deploy.md` — rewrote "Participant Installation →
   Requirements" to lead with uv (no Python prerequisite) and demote
   `pip` / `pipx` to a fallback paragraph that names the PEP 668
@@ -67,7 +67,7 @@ open questions in ADR-0035 §Open questions.
   install; "Upgrading" / "Uninstall" become `uv tool install --force`
   and `uv tool uninstall`. Appended a new "Fallback: `pipx` / `pip`
   (not recommended)" section that retains the previous commands for
-  participants who insist. (commit pending)
+  participants who insist. (commit ff5fac0)
 - Modified `packages/llm_tracker_signup/tests/test_app.py` —
   `test_get_success_renders_token` now asserts (a) the rendered Step 1
   contains `uv tool install https://github.com/seopseop77/Userfriendly`,
@@ -75,7 +75,7 @@ open questions in ADR-0035 §Open questions.
   bootstrap line, and (c) `step-1-uv-code` / `step-1-uv-win-code` ids
   are present with matching `data-copy-target` buttons. The existing
   assertions on the wheel URL and the three primary step ids are kept
-  unchanged. (commit pending)
+  unchanged. (commit ff5fac0)
 
 ## Decisions
 

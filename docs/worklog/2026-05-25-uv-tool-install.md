@@ -205,7 +205,7 @@ class is left in place too as defense-in-depth and for documentation.
   `style="white-space:pre;word-break:keep-all;overflow-wrap:normal"`
   alongside the existing utility classes. Verified by rendering the
   template through Starlette's TestClient: inline style appears 5 times
-  in the response body, one per pre block. (commit pending)
+  in the response body, one per pre block. (commit 2b73b4c)
 
 ### Verification (follow-up 2)
 

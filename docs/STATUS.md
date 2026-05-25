@@ -17,11 +17,11 @@
 
 ## Recent commits (last 5)
 
-- `<pending>` signup: inline style for no-wrap (Tailwind class insufficient)
+- `<pending>` docs: backfill 2b73b4c hash in STATUS + worklog
+- `2b73b4c` signup: inline style for pre no-wrap (CDN class insufficient)
 - `f55d18b` docs: backfill 2b4f573 hash in STATUS + worklog
 - `2b4f573` signup: idempotent uv bootstrap + no-wrap code blocks
 - `a1c5af7` docs: backfill ff5fac0 hash in STATUS + worklog
-- `ff5fac0` docs: ADR-0035 - switch agent install to uv tool
 
 ## Where we paused
 

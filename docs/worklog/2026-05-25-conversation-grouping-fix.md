@@ -59,15 +59,39 @@ backfill recompute hashes without the dropped `messages_json` column.
   vocab, added `test_upserts_carry_per_message_origin_roles` and
   `test_upsert_sql_uses_priority_do_update` (commit `7cf83f3`).
 
-(planned, next steps in order:)
-
-- Write backfill script
+- Created
   `packages/llm_tracker_plugin_analytics_sink/scripts/backfill_canonical_grouping.py`
-  with `--dry-run` (default) and `--apply` flags, single transaction.
-- Run backfill `--dry-run` against the live Supabase DB via MCP to
-  produce a report; review with operator before `--apply`.
-- Apply backfill (operator confirmation required), commit, refresh
-  STATUS.md handoff.
+  — dual-mode backfill (`--emit-sql` default, `--apply` for direct
+  execution via `LLMTRACK_DATABASE_URL`; also accepts `--from-json`
+  for offline runs). Reuses `_canonical_user_text` and
+  `classify_message` from the package so the backfill cannot drift
+  from the runtime logic. Operator-confirmed go-ahead given;
+  applied directly via Supabase MCP `execute_sql` against the live
+  DB in this session (commit `<pending>`).
+- Applied ADR-0036 backfill against live Supabase:
+  - **Stage A** (role reclass): 253 conversation_messages rows ->
+    `assistant=102 / internal_subprompt=35 / tool_continuation=68 /
+    user_input_turn_start=48`. Zero rows remain with old `user`
+    vocab.
+  - **Stage B** (hash recompute): 155 plugin_analytics rows updated
+    to the canonical user-text hash. Distinct hash count 48 -> 34.
+  - **Stage C** (conversation merge): 14 loser convs merged into
+    their `<session>` ↔ main-flow pair winners. One 3-way merge
+    (`01KS06FVZ9...`). Priority UPSERT correctly displaced
+    `internal_subprompt` placeholders with `user_input_turn_start`
+    real content (notably msg_index 0 of the investigation conv
+    `01KSEVGY...` is now the real "너무 반가워" main-flow
+    bundle, not the `<session>` wrap).
+  - Final counts: 34 distinct conversations in both tables; no
+    orphans (pa <-> cm); 231 conversation_messages rows (was 253;
+    -22 from sidecar placeholders replaced + 3-way merger
+    DISTINCT-ON dedup).
+  - C1 first attempt failed: Postgres rejects multiple incoming
+    rows competing for the same `ON CONFLICT` slot within a single
+    statement (the 3-way merger collision). Fix: pre-deduplicate
+    via `DISTINCT ON (winner_conv, msg_index)` with priority-aware
+    ORDER BY so only the highest-priority incoming row hits the
+    UPSERT. Applied successfully on retry.
 
 ## Decisions
 
@@ -117,17 +141,42 @@ Targeted new-test highlights (see `test_classifier.py` and
   SUGGESTION sidecar + user-typed follow-up) produces one distinct
   origin role per index.
 
-Live-DB backfill not yet run — pending operator review on dry-run.
+Live-DB post-backfill verification (Supabase MCP execute_sql):
+
+```
+remaining_old_user:  0
+distinct_roles:      4  (assistant, internal_subprompt,
+                         tool_continuation, user_input_turn_start)
+pa_distinct_convs:   34
+cm_distinct_convs:   34
+pa_orphans:          0
+cm_orphans:          0
+```
+
+Investigation conv `01KSEVGY6FT6655DN0J708VPTD` (post-merge) — the
+"너무 반가워" session — now contains all 9 messages of the original
+main flow under the unified conversation_id:
+
+* msg 0  user_input_turn_start  (system-reminder + "너무 반가워")
+* msg 1  assistant              "안녕! 반가워 😊..."
+* msg 2  user_input_turn_start  "이모지 안 쓰기로 언제 한거야?"
+* msg 3  assistant              (thinking + emoji rule answer)
+* msg 4  internal_subprompt     [SUGGESTION MODE: ...] — see limit
+* msg 5  assistant              (thinking + `claude mcp list` Bash)
+* msg 6  tool_continuation      MCP server health check
+* msg 7  assistant              "현재 연결된 MCP 서버 목록이야:..."
+* msg 8  internal_subprompt     [SUGGESTION MODE: ...]
 
 ## What's left / known limits
 
-- Backfill script + live dry-run + apply (the operator-gated step
-  remaining to close out the ADR; everything else is in code).
-- The original
-  `01KSEVH1XVKBCH6GX1Y00P4WS9` / `01KSEVGY6FT6655DN0J708VPTD` pair
-  in production still has the *old* hash and split conversation_id.
-  The backfill is what folds them. Until then, *new* sessions get
-  the fixed behaviour but historic rows look unchanged.
+- **Real user input lost at original write time is NOT recoverable.**
+  Investigation conv msg_index 4 still shows the SUGGESTION
+  placeholder; the operator's actual "현재 mcp 리스트 알려줘" turn
+  was dropped by the old `ON CONFLICT DO NOTHING` policy and only
+  the LLM API response (msg_index 5-7) survived. The forward fix
+  prevents this for new traffic; the backfill cannot resurrect a
+  message whose request body is no longer in
+  `conversation_messages`.
 - `classify_message` does not emit `claude_manage_probe`. The five-
   value vocabulary is reserved for parity with `TurnKind`; the rare
   offline-probe case (list content with `<session>` last text and no
@@ -136,19 +185,26 @@ Live-DB backfill not yet run — pending operator review on dry-run.
   per the ADR (rare in production; analyst joins
   `plugin_analytics.turn_kind` for the exchange-level distinction
   when needed).
+- The backfill ran via Supabase MCP `execute_sql` rather than the
+  committed Python script. Functional equivalent (same canonical
+  hash function imported into Python computation; same priority
+  UPSERT clause translated to SQL), but a re-run for verification
+  would invoke the script via `LLMTRACK_DATABASE_URL` against a
+  copy of the DB.
 
 ## Handoff
 
-Code checkpoint committed (next: backfill script + dry-run +
-operator-reviewed apply). Resume by:
+ADR-0036 fully delivered: code patch + backfill applied + worklog
+post-mortem. Resume tasks beyond this scope (e.g. participant-#1
+install — see ADR-0035 follow-up in
+`docs/worklog/2026-05-25-uv-tool-install.md`).
 
-1. Read this worklog's "What's left" section.
-2. Open
-   `packages/llm_tracker_plugin_analytics_sink/scripts/backfill_canonical_grouping.py`
-   (to be created), confirm the dry-run report logic.
-3. Run dry-run against the live Supabase DB; show counts to operator
-   (hash changes, conversation_id collapses, role changes,
-   collision-merge cases).
-4. Apply only after operator OK.
-5. Commit "backfill: applied ADR-0036 canonical grouping to N rows"
-   referencing this worklog.
+If a new investigation of historic conversations is needed, the
+post-backfill state is:
+
+* 34 distinct conversation_ids across plugin_analytics and
+  conversation_messages (down from 48 / 75 respectively pre-fix).
+* `role` carries per-message origin everywhere (`user` is no longer
+  a valid value); join `cm.role = pa.turn_kind` is now meaningful.
+* `<session>` ↔ main-flow pairs are unified; the 14 collapse pairs
+  are documented above.

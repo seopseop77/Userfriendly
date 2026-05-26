@@ -494,16 +494,37 @@ def test_classify_message_empty_content_defensive() -> None:
 
 
 def test_classify_message_session_wrap_on_list_is_user_input() -> None:
-    """`<session>` inside a list (vs. as a bare string payload) is
-    *not* title_gen — title_gen detection at the per-message scope is
-    string-only. List shape with `<session>` carrying real user text
-    classifies as user_input."""
+    """`<session>` inside a *multi-block* list (alongside wrappers and
+    other user text) is not title_gen — title_gen detection requires
+    that the entire message body be the `<session>...</session>`
+    payload. Multi-block list with `<session>` as one of several
+    blocks classifies as user_input."""
     msg = _user(
         [
             {"type": "text", "text": "<system-reminder>\nfoo"},
             {"type": "text", "text": "<session>\n반가워\n</session>"},
         ]
     )
+    assert classify_message(msg) == "user_input"
+
+
+def test_classify_message_session_wrap_single_block_list_is_title_gen() -> None:
+    """Claude Code's title-gen sidecar arrives over HTTP with
+    `messages[0].content` as a single bare text block carrying the
+    full `<session>...</session>` payload. The Rule B normaliser later
+    collapses it to a bare string, but `classify_message` runs on the
+    un-normalised dict — so the list-of-one shape must also match
+    title_gen, not user_input. (Regression: conv 01KSGW0CHY3HAFEM4QRRJ3Y1ST,
+    2026-05-26.)"""
+    msg = _user([{"type": "text", "text": "<session>\n안녕! 너를 소개해봐\n</session>"}])
+    assert classify_message(msg) == "title_gen"
+
+
+def test_classify_message_single_block_non_session_is_user_input() -> None:
+    """A single bare text block whose content is plain user input (not
+    a `<session>` wrapper) must still classify as user_input — the new
+    list-of-one title_gen branch is gated on the full session shape."""
+    msg = _user([{"type": "text", "text": "안녕"}])
     assert classify_message(msg) == "user_input"
 
 

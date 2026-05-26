@@ -189,6 +189,53 @@ choice**, identical to the post-ADR-0036 handoff:
    in `docs/worklog/2026-05-25-uv-tool-install.md`.
 2. (paused) scope_guard live smoke — still at `0c1ca9d`.
 
+## Follow-up — title_gen list-shape regression (same-day)
+
+After ADR-0037 deployed, the first new title-gen sidecar to land
+(conv `01KSGW0CHY3HAFEM4QRRJ3Y1ST`, exchange
+`01KSGW0AKTNKQR0XCJZAXX0G1K`, captured 2026-05-26 00:47:26) stored
+its msg_index=0 row with role `user_input` despite content being
+`<session>\n안녕! 너를 소개해봐\n</session>`.
+
+Root cause: `classify_message` only fired the `<session>` rule on
+*string* content. The HTTP-level request body delivers the title-gen
+message as a single bare text block — `[{"type": "text", "text":
+"<session>...</session>"}]` — and `canonical_message` Rule B
+collapses it to a bare string only at the storage boundary. Classification
+runs on the un-normalised dict, so the message hit the list-handling
+branch; `_last_real_user_text` returned the `<session>...` text (no
+synthetic-wrapper prefix match), and the classifier emitted
+`user_input`. The normaliser then stored the content as a string, but
+the role had already been decided.
+
+Backfill missed this because the ADR-0037 backfill script's
+`<session>` auto-correction ran against *already-stored* string
+content; the new-write path was independent.
+
+Fix:
+- Modified `classifier.py:classify_message` — added a narrow branch
+  that, for a list whose *only* block is a text block matching the
+  full `<session>...</session>` regex, returns `title_gen`. Sits
+  between the existing string branch and the tool_result branch.
+  Multi-block lists and non-`<session>` single blocks are unaffected.
+- Added two unit tests: `test_classify_message_session_wrap_single_block_list_is_title_gen`
+  (regression on the conv above) and
+  `test_classify_message_single_block_non_session_is_user_input`
+  (negative — ensures the new branch is gated on the full session
+  shape, not on single-blockness alone). Tightened the existing
+  multi-block test's docstring.
+- Applied one-shot UPDATE to live Supabase, flipping
+  `01KSGW0CHY3HAFEM4QRRJ3Y1ST` msg_index=0 from `user_input` to
+  `title_gen`. Verification: all 11 string-`<session>` rows now
+  carry role `title_gen`, zero stragglers. (commit <pending>)
+
+No ADR — ADR-0037's spec ("`title_gen` is `<session>...</session>`")
+is unchanged; this is a missed implementation case in
+`classify_message`, fixed by extending the same rule to the
+pre-normalisation shape.
+
+Tests: 63 pkg / 285 repo / ruff clean.
+
 ## Suggestions (untouched)
 
 - The post-`/compact` resume marker row (`This session is being

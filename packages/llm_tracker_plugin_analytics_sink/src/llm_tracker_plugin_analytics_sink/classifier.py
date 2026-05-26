@@ -376,6 +376,21 @@ def classify_message(msg: dict[str, Any]) -> MessageRole:
         # Other string sub-prompts (/compact, SUGGESTION, step-away).
         return "assistant"
 
+    # title_gen, list shape: Claude Code's title-gen sidecar arrives over
+    # HTTP as a single bare text block whose text is the full
+    # `<session>...</session>` payload; the canonical_message normaliser
+    # later collapses it to a bare string (Rule B), but classification
+    # runs on the un-normalised dict, so this branch must catch the
+    # list-of-one form before falling through to user_input.
+    if isinstance(content, list) and len(content) == 1:
+        only = content[0]
+        if (
+            isinstance(only, dict)
+            and _block_type(only) == "text"
+            and _SESSION_WRAP_RE.match(only.get("text") or "")
+        ):
+            return "title_gen"
+
     if isinstance(content, list) and any(_block_type(b) == "tool_result" for b in content):
         return "assistant"
 

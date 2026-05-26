@@ -19,11 +19,11 @@
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: backfill afa3d59 hash + refresh STATUS
+- `<pending>` agent: release v0.1.1 (mid-stream resilience fix)
+- `f3cd704` docs: backfill afa3d59 hash + refresh STATUS
 - `afa3d59` agent: swallow mid-stream upstream close in proxy
 - `3fe4044` docs: backfill 00cc2b0 hash + refresh STATUS
 - `00cc2b0` analytics_sink: strip x-anthropic-billing-header
-- `4694b30` docs: backfill 121276a hash in worklog + STATUS
 
 ## Where we paused
 
@@ -48,27 +48,47 @@ Coverage: new `test_swallows_midstream_upstream_close` in
 exact failure path via a custom `AsyncByteStream` that yields one
 chunk then raises `RemoteProtocolError`.
 
-Tests: 10 pkg / 285 repo / ruff clean.
+**Cut release v0.1.1** so the fix reaches the operator's
+installed wheel (the install command points at a fixed GitHub
+Release asset URL, not at the workspace source). Bumped
+`packages/llm_tracker_agent/pyproject.toml` to `0.1.1`, plus the
+signup-app success-page URL, the signup test assertion, and the
+`docs/deploy.md` example. Local tag `agent/v0.1.1` created on the
+release commit; push triggers `.github/workflows/release-agent.yml`
+which builds + attaches the wheel.
+
+Tests: 16 pkg (agent + signup) / ruff clean.
 
 ## Next single step
 
-**Operator reinstalls the uv tool and restarts Claude Code.** The
-traceback originates from
-`/Users/minseop/.local/share/uv/tools/llm-tracker-agent/...`,
-which is a separate wheel install from the workspace source.
-The source-level fix only takes effect after:
+**Operator pushes commits + tag, then reinstalls.** Three things
+in sequence, none of which Claude Code can do itself:
 
 ```
-uv tool install --reinstall ./packages/llm_tracker_agent
+# 1. Publish the release commits + tag.
+git push origin main
+git push origin agent/v0.1.1
+# → GitHub Actions builds the wheel and attaches it to the
+#   auto-created Release at agent/v0.1.1.
+
+# 2. After the Actions run finishes (a minute or two), reinstall
+#    the local uv tool from the new URL:
+uv tool install --reinstall \
+  https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.1/llm_tracker_agent-0.1.1-py3-none-any.whl
+
+# 3. Restart Claude Code so the new agent process loads.
 ```
 
-(or the equivalent from `2026-05-25-uv-tool-install.md`),
-followed by restarting Claude Code so the new agent process
-loads. After that, retry `/context` — the uvicorn traceback
-should no longer appear.
+After that, retry `/context` — the uvicorn traceback should no
+longer appear. If it does, the new traceback's filename tells us
+whether the wheel actually refreshed (`...llm-tracker-agent/lib/
+python3.12/site-packages/llm_tracker_agent/proxy.py` should now
+contain the new `except _UNREACHABLE_ERRORS: return` block; if it
+doesn't, the `--reinstall` step was skipped).
 
-If the traceback persists, the file path in the new traceback
-tells us whether the installed copy actually refreshed.
+Separately (does not block the fix): redeploy the signup app to
+fly so the live success page hands out the new wheel URL to new
+participants.
 
 ---
 

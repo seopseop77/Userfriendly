@@ -74,8 +74,8 @@ async def test_get_success_renders_token() -> None:
     assert "lts_demo123" in body
     assert "https://proxy.example.com" in body
     assert (
-        "https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.0/"
-        "llm_tracker_agent-0.1.0-py3-none-any.whl"
+        "https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.1/"
+        "llm_tracker_agent-0.1.1-py3-none-any.whl"
     ) in body
     # ADR-0035: Step 1 recommends `uv tool install <wheel-url>`, not
     # `pip install <wheel-url>`. Lock the recommended command in.

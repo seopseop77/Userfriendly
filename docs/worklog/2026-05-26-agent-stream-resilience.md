@@ -137,3 +137,116 @@ and confirm the uvicorn traceback no longer appears. If it still
 does, the new traceback's filename will tell us whether the
 installed copy was actually refreshed — that is the first
 diagnostic.
+
+## Follow-up · Release v0.1.1
+
+**Trigger**: Operator pointed out (verbatim) "uv tool install
+https://github.com/.../agent/v0.1.0/llm_tracker_agent-0.1.0-py3-none-any.whl
+원래 이걸로 설치해야 하는데, release도 변경해야 하는거 아니야?"
+
+Correct: the install URL is a fixed GitHub Release asset, and the
+local agent process is loaded from that wheel — not from the
+workspace source. A source patch with the same pyproject version
+would either be ignored (uv tool sees the same version, refuses to
+reinstall cleanly) or, worse, silently install a 0.1.0 wheel built
+from post-fix code, leaving the version string lying. The right
+move is semver patch bump and a new tag.
+
+### Decisions
+
+- **Patch bump (0.1.0 → 0.1.1).** Behavior change is a defensive
+  resilience fix in `body_iter` exception handling — no public
+  interface shift (CLI flags, env vars, hook lifecycle, etc. per
+  CLAUDE.md §9 untouched), no API surface change. Operator-
+  confirmed patch over minor.
+- **Bump the signup-app success-page wheel URL in the same
+  commit.** New participants installing via the live success page
+  would otherwise receive a now-stale URL pointing at the buggy
+  wheel. The signup app still needs a fly redeploy for the
+  template change to land in production (separate operator step,
+  same redeploy command as the ADR-0035 follow-up worklog).
+- **No CI / workflow change.** `.github/workflows/release-agent.yml`
+  is tag-driven (`agent/v*`) and version-agnostic; the build step
+  (`uv build --out-dir dist`) consumes `pyproject.toml`'s `version`
+  field at build time, so the tag + pyproject bump is sufficient.
+
+### What was done
+
+- Modified `packages/llm_tracker_agent/pyproject.toml` —
+  `version = "0.1.0"` → `"0.1.1"`. (commit &lt;pending&gt;)
+- Modified
+  `packages/llm_tracker_signup/src/llm_tracker_signup/templates/success.html` —
+  Step 1b's `step-1-code` `<code>` URL bumped to
+  `agent/v0.1.1/llm_tracker_agent-0.1.1-py3-none-any.whl`. (commit
+  &lt;pending&gt;)
+- Modified `packages/llm_tracker_signup/tests/test_app.py` —
+  `test_get_success_renders_token`'s wheel-URL assertion bumped in
+  lockstep so a regression to the old URL fails fast. (commit
+  &lt;pending&gt;)
+- Modified `docs/deploy.md` — the example URL under "Participant
+  Installation → Install" bumped from `0.1.0` to `0.1.1`. (commit
+  &lt;pending&gt;)
+
+### Verification
+
+```
+$ .venv/bin/python3.12 -m pytest \
+    packages/llm_tracker_agent/tests/ \
+    packages/llm_tracker_signup/tests/ -q
+16 passed, 5 skipped in 0.83s
+
+$ .venv/bin/python3.12 -m ruff check \
+    packages/llm_tracker_agent/ packages/llm_tracker_signup/
+All checks passed!
+```
+
+The 5 skipped signup tests are the DB-touching ones that need
+`LLMTRACK_TEST_DATABASE_URL` — same baseline as the ADR-0035
+worklog, not a regression.
+
+### Handoff (release v0.1.1)
+
+A local tag `agent/v0.1.1` will be created on the release commit.
+The release workflow only fires on **pushed** tags, so the operator
+needs to:
+
+```
+git push origin main          # publish the two release commits
+git push origin agent/v0.1.1  # publish the tag → triggers
+                              # .github/workflows/release-agent.yml
+```
+
+The workflow checks out the tagged commit, runs `uv build` from
+`packages/llm_tracker_agent`, and attaches
+`llm_tracker_agent-0.1.1-py3-none-any.whl` (and the matching
+sdist) to the auto-created GitHub Release. The asset URL becomes:
+
+```
+https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.1/llm_tracker_agent-0.1.1-py3-none-any.whl
+```
+
+Then on the operator machine (or any participant machine):
+
+```
+uv tool install --reinstall \
+  https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.1/llm_tracker_agent-0.1.1-py3-none-any.whl
+# restart Claude Code so the new agent process loads
+```
+
+`--reinstall` is required because uv sees `claude-manage` already
+installed; without the flag uv keeps the 0.1.0 wheel even if the
+URL is new.
+
+For the signup app, the live success page still hands out the
+0.1.0 URL until fly redeploys; same redeploy command as before:
+
+```
+fly deploy -c packages/llm_tracker_signup/fly.toml
+# or push to main and let .github/workflows/deploy-signup.yml run
+```
+
+If the new wheel fails to attach to the Release, check the
+Actions tab for the `Release llm-tracker-agent` run — the most
+common failure mode is the workflow not triggering at all (tag
+prefix mismatch), which would show no run rather than a failed
+one.

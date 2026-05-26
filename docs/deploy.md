@@ -452,7 +452,7 @@ the fallback block at the end of this section.
 
 Replace `<WHEEL_URL>` with the URL of the wheel asset on the relevant
 GitHub Release page (e.g.
-`https://github.com/<owner>/Userfriendly/releases/download/agent/v0.1.0/llm_tracker_agent-0.1.0-py3-none-any.whl`).
+`https://github.com/<owner>/Userfriendly/releases/download/agent/v0.1.1/llm_tracker_agent-0.1.1-py3-none-any.whl`).
 The signup app's success page hands this URL to the participant.
 
 ```

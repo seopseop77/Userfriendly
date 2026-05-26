@@ -89,22 +89,69 @@ this session — the unit tests stub `_run`. The forwarding contract
 itself (`subprocess.run(["claude", *extra_args], ...)`) was unchanged,
 so the test coverage targets the new dispatch boundary specifically.
 
+## Release: v0.1.2
+
+`claude-manage` is distributed as a GitHub-Releases wheel
+(ADR-0034/ADR-0035), so the fix only reaches participants once a new
+tagged release is published. Bumped together in one release commit
+mirroring the v0.1.1 pattern (commit `<pending>`):
+
+- `packages/llm_tracker_agent/pyproject.toml`: `0.1.1` → `0.1.2`.
+- `packages/llm_tracker_signup/.../templates/success.html`:
+  install-step wheel URL bumped to `agent/v0.1.2/llm_tracker_agent-0.1.2-...`.
+- `packages/llm_tracker_signup/tests/test_app.py`: locked-in URL
+  assertion bumped in lockstep so a regression to the old URL fails
+  fast.
+- `docs/deploy.md`: example wheel URL bumped.
+
+`release-agent.yml` is tag-driven and builds whatever `pyproject` says,
+so no workflow change.
+
+Local tag `agent/v0.1.2` (annotated) created on the release commit.
+
+`agent/v0.1.1` was confirmed already on the remote (release ran
+2026-05-26 17:30 KST → wheel + tarball attached), so STATUS.md's
+"Other pending push — agent/v0.1.1" was stale; that section is
+rewritten to reference v0.1.2 instead.
+
+```
+$ .venv/bin/python3 -m pytest \
+    packages/llm_tracker_signup/tests/ packages/llm_tracker_agent/tests/ -q
+...sss...ss..............                                                [100%]
+20 passed, 5 skipped in 0.45s
+
+$ .venv/bin/python3 -m ruff check \
+    packages/llm_tracker_agent/ packages/llm_tracker_signup/
+All checks passed!
+```
+
 ## What's left / known limits
 
+- **Operator must push** — `git push origin main && git push origin agent/v0.1.2`.
+  The release workflow only fires on tag push.
 - No live `claude-manage --dangerously-skip-permissions` smoke run in
-  this session. The user can sanity-check by invoking it once after the
-  worktree is reinstalled (`pip install -e packages/llm_tracker_agent`
-  or equivalent).
+  this session. Can be sanity-checked after the operator reinstalls
+  from the new wheel.
 - `_setup_cli` no_args_is_help: invoking `claude-manage setup` with no
   token now shows Typer's help instead of an exit-2 error. Acceptable
   trade-off; mention if the user prefers strict.
 
 ## Handoff
 
-claude-manage flag pass-through is fixed and covered by unit tests; no
-follow-up work required for this fix. Next session can return to the
-analytics_sink / ADR-0038 tracks tracked in
-`docs/worklog/2026-05-26-vocab-and-collapse-refinement.md`.
+Code + tests + release commit + local tag are ready. Single next step:
+
+```
+git push origin main
+git push origin agent/v0.1.2
+# wait for release-agent.yml to attach the wheel, then on operator machines:
+uv tool install --reinstall \
+  https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.2/llm_tracker_agent-0.1.2-py3-none-any.whl
+# restart Claude Code
+```
+
+After that, the analytics_sink / ADR-0038 deploy track in
+`docs/worklog/2026-05-26-vocab-and-collapse-refinement.md` is the
+remaining work.
 
 ## Suggestions (untouched)
 

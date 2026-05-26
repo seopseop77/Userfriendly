@@ -25,11 +25,11 @@ follow-up; back to the deploy track below.)
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: backfill ded0215 hash in worklog + STATUS
+- `<pending>` agent: release v0.1.2 (claude-manage flag pass-through)
+- `9388376` docs: backfill ded0215 hash in worklog + STATUS
 - `ded0215` agent: pass-through claude flags via claude-manage
 - `8595775` docs: backfill f9197cd hash in worklog + STATUS
 - `f9197cd` analytics_sink: 3-value vocab + retire Rule-B collapse
-- `3695c48` docs: backfill 2963629 hash in worklog + STATUS
 
 **Three ADR-0038 refinements landed code-level** (no schema
 change, no new ADR — §spec sections updated in place):
@@ -99,23 +99,25 @@ WHERE role = 'user_input' AND jsonb_typeof(request_jsonb) = 'string';
 Then sample a fresh `<session>` exchange and confirm it lands as
 `role='sidecar'`.
 
-### Other pending push — `agent/v0.1.1`
+### Other pending push — `agent/v0.1.2`
 
-Mid-stream upstream-close fix in `llm_tracker_agent` is committed
-+ tagged but not pushed. Independent track from the
-analytics_sink work above; needs:
+`agent/v0.1.1` (mid-stream resilience fix) confirmed already
+pushed — the release workflow ran 2026-05-26 17:30 KST and the
+wheel is live. New release `v0.1.2` bundles the
+`claude-manage` flag pass-through fix (`ded0215`) and is
+committed + locally tagged; needs operator push:
 
 ```
 git push origin main
-git push origin agent/v0.1.1
-# then on operator machine:
+git push origin agent/v0.1.2
+# wait for release-agent.yml to attach the wheel, then on operator machines:
 uv tool install --reinstall \
-  https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.1/llm_tracker_agent-0.1.1-py3-none-any.whl
+  https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.2/llm_tracker_agent-0.1.2-py3-none-any.whl
 # restart Claude Code
 ```
 
-See `docs/worklog/2026-05-26-agent-stream-resilience.md` for
-context.
+See `docs/worklog/2026-05-27-claude-manage-passthrough-args.md`
+for context.
 
 ---
 

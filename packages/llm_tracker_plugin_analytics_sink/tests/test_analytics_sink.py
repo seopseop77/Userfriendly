@@ -486,6 +486,78 @@ async def test_system_prompt_stored_when_changed_from_prev() -> None:
 
 
 @pytest.mark.asyncio
+async def test_system_prompt_billing_header_drift_treated_as_unchanged() -> None:
+    """Claude Code's `x-anthropic-billing-header:` block drifts
+    (cc_version, cch tokens) across exchanges without carrying any
+    system-instruction content. The variation tracker must hash the
+    stripped form, so a request whose only delta vs the prev stored
+    system is the billing-header block stores NULL."""
+    prev_stored = [{"type": "text", "text": "You are Claude Code..."}]
+    engine, conn = _fake_engine(
+        prev_conversation_id="conv_prev",
+        prev_turn_seq=1,
+        prev_system=prev_stored,
+    )
+    plugin = AnalyticsSink(engine=engine)
+
+    body = json.dumps(
+        {
+            "model": "claude-x",
+            "system": [
+                {
+                    "type": "text",
+                    "text": (
+                        "x-anthropic-billing-header: cc_version=2.1.151; "
+                        "cc_entrypoint=cli; cch=NEWHASH;"
+                    ),
+                },
+                {"type": "text", "text": "You are Claude Code..."},
+            ],
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        }
+    ).encode()
+    ctx = _make_ctx(request_body=body, org_id=uuid.uuid4(), parsed_response=None)
+
+    await plugin.on_request_received("ex_billing_drift", ctx)
+    await plugin.on_persisted("ex_billing_drift", ctx)
+
+    params = _insert_params(conn)
+    assert params["system_prompt_jsonb"] is None
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_stored_form_has_billing_header_stripped() -> None:
+    """First exchange in a conversation stores the system verbatim
+    EXCEPT for `x-anthropic-billing-header:` telemetry blocks, which
+    are dropped at the storage boundary so a future re-hash of the
+    stored value matches the hash of any subsequent request."""
+    engine, conn = _fake_engine()
+    plugin = AnalyticsSink(engine=engine)
+
+    body = json.dumps(
+        {
+            "model": "claude-x",
+            "system": [
+                {
+                    "type": "text",
+                    "text": "x-anthropic-billing-header: cc_version=2.1.150; cch=f5075;",
+                },
+                {"type": "text", "text": "You are Claude Code, ..."},
+            ],
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        }
+    ).encode()
+    ctx = _make_ctx(request_body=body, org_id=uuid.uuid4(), parsed_response=None)
+
+    await plugin.on_request_received("ex_strip_store", ctx)
+    await plugin.on_persisted("ex_strip_store", ctx)
+
+    params = _insert_params(conn)
+    stored = json.loads(params["system_prompt_jsonb"])
+    assert stored == [{"type": "text", "text": "You are Claude Code, ..."}]
+
+
+@pytest.mark.asyncio
 async def test_system_prompt_null_when_unchanged_from_prev() -> None:
     """Identical system as prev (same hash) → store NULL."""
     engine, conn = _fake_engine(

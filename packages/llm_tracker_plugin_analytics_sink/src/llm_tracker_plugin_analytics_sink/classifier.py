@@ -37,6 +37,13 @@ ADR-0038 vocab. Three public entry points:
   returns the list verbatim so the original framing remains
   inspectable. String payloads are returned unchanged.
 
+* `normalize_system(system_field) -> Any`
+  Drops client-telemetry text blocks (`x-anthropic-billing-header:`
+  prefix carrying `cc_version` / `cch` tokens that drift across
+  exchanges) from the request's `system` field. Used by both the
+  variation-tracking hash and the storage write so the invariant
+  "same hash ⇒ identical stored bytes" holds.
+
 `first_msg_hash` is SHA-256[:16] of the canonical user-typed text in
 `messages[0]`. ADR-0036's (B) rule unchanged: same hash in the same
 org collapses to the same `conversation_id`.
@@ -72,6 +79,13 @@ _SYNTHETIC_WRAPPER_PREFIXES: tuple[str, ...] = (
     # Post-/compact resume marker prose header.
     "This session is being continued",
 )
+
+# Text-block prefixes Anthropic surfaces inside the system field for
+# Claude Code client telemetry. The `cc_version` / `cch` tokens drift
+# across exchanges without carrying any system-instruction content,
+# so they get dropped before both the variation-tracking hash and
+# the storage write.
+_SYSTEM_METADATA_PREFIXES: tuple[str, ...] = ("x-anthropic-billing-header:",)
 
 # Slash-command marker. Captures the bare command name (no leading slash).
 _SLASH_RE = re.compile(r"<command-name>/([A-Za-z0-9_\-]+)</command-name>")
@@ -209,6 +223,32 @@ def extract_request_content(msg: dict[str, Any]) -> Any:
         and set(stripped[0].keys()) == {"type", "text"}
     ):
         return stripped[0]["text"]
+    return stripped
+
+
+def normalize_system(system_field: Any) -> Any:
+    """Drop client-telemetry blocks from a request's `system` field.
+
+    Identifies text blocks whose `text` (after `lstrip`) starts with
+    any `_SYSTEM_METADATA_PREFIXES` value and removes them. Shared
+    by `_system_hash` (variation tracker) and `_resolve_system`
+    (storage write) in the plugin module so the invariant
+    "same hash ⇒ identical stored bytes" holds.
+
+    Non-list inputs (str, None, anything else) pass through
+    untouched — Claude Code sends the system field as a list of
+    blocks; bare-string callers stay unchanged for safety.
+    Non-dict / non-text list members also pass through.
+    """
+    if not isinstance(system_field, list):
+        return system_field
+    stripped: list[Any] = []
+    for b in system_field:
+        if isinstance(b, dict) and _block_type(b) == "text":
+            text = (b.get("text") or "").lstrip()
+            if text.startswith(_SYSTEM_METADATA_PREFIXES):
+                continue
+        stripped.append(b)
     return stripped
 
 

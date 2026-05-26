@@ -30,6 +30,7 @@ from .classifier import (
     classify_message,
     classify_request,
     extract_request_content,
+    normalize_system,
 )
 
 DATABASE_URL_ENV = "LLMTRACK_DATABASE_URL"
@@ -120,17 +121,24 @@ def _model_from_request(parsed: dict[str, Any] | None) -> str | None:
 def _system_hash(system_field: Any) -> str | None:
     """SHA-256[:16] of the system field's flattened text.
 
-    Drops prompt-caching artefacts (`cache_control` on system text
-    blocks) by extracting only the `text` strings, then joining.
+    Drops two classes of noise before hashing so the variation
+    tracker only fires on meaningful change:
+      * `cache_control` keys on system text blocks (prompt-caching
+        artefacts) — handled implicitly by reading only `text`.
+      * `x-anthropic-billing-header:` blocks (Claude Code telemetry
+        — `cc_version` / `cch` token drift) — handled by passing
+        through `normalize_system`.
+
     Returns None when system is absent.
     """
     if system_field is None:
         return None
-    if isinstance(system_field, str):
-        return hashlib.sha256(system_field.encode("utf-8")).hexdigest()[:16]
-    if isinstance(system_field, list):
+    normalized = normalize_system(system_field)
+    if isinstance(normalized, str):
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    if isinstance(normalized, list):
         parts: list[str] = []
-        for b in system_field:
+        for b in normalized:
             if isinstance(b, dict):
                 t = b.get("text")
                 if isinstance(t, str):
@@ -332,15 +340,21 @@ class AnalyticsSink(BasePlugin):
     ) -> str | None:
         """Return the JSON-encoded `system_prompt_jsonb` value, or None.
 
-        Stores the current request's system iff it is the first
+        Stores the (normalized) current system iff it is the first
         exchange in the conversation (no prior non-null system) or
         its hash differs from the most recent non-null stored
         system. Otherwise returns None so the row stores NULL.
+
+        Both the hash compare and the stored payload go through
+        `normalize_system`, so the invariant "same hash ⇒ identical
+        stored bytes" holds across exchanges with drifting
+        `x-anthropic-billing-header` blocks.
         """
         if system_field is None or conversation_id is None:
-            return (
-                json.dumps(system_field, ensure_ascii=False) if system_field is not None else None
-            )
+            if system_field is None:
+                return None
+            normalized = normalize_system(system_field)
+            return json.dumps(normalized, ensure_ascii=False)
 
         prev = (
             await conn.execute(
@@ -349,11 +363,12 @@ class AnalyticsSink(BasePlugin):
             )
         ).first()
 
+        normalized = normalize_system(system_field)
         current_hash = _system_hash(system_field)
         if prev is None or prev.system_prompt_jsonb is None:
-            return json.dumps(system_field, ensure_ascii=False)
+            return json.dumps(normalized, ensure_ascii=False)
 
         prev_hash = _system_hash(prev.system_prompt_jsonb)
         if current_hash == prev_hash:
             return None
-        return json.dumps(system_field, ensure_ascii=False)
+        return json.dumps(normalized, ensure_ascii=False)

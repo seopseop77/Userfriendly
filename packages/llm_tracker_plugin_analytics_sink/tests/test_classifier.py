@@ -18,6 +18,7 @@ from llm_tracker_plugin_analytics_sink.classifier import (
     classify_message,
     classify_request,
     extract_request_content,
+    normalize_system,
 )
 
 
@@ -336,3 +337,70 @@ def test_extract_drops_cache_control_keys() -> None:
     # `{type, text}` shape required for Rule B collapse.
     assert isinstance(out, list)
     assert out[0]["text"] == "real"
+
+
+# ---------------------------------------------------------------------
+# normalize_system: drop `x-anthropic-billing-header` telemetry blocks.
+# ---------------------------------------------------------------------
+
+
+def test_normalize_system_strips_billing_header_block() -> None:
+    sf = [
+        {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.150; cc_entrypoint=cli; cch=f5075;",
+        },
+        {"type": "text", "text": "You are Claude Code..."},
+    ]
+    assert normalize_system(sf) == [{"type": "text", "text": "You are Claude Code..."}]
+
+
+def test_normalize_system_preserves_blocks_without_metadata_prefix() -> None:
+    sf = [
+        {"type": "text", "text": "You are Claude Code..."},
+        {"type": "text", "text": "Some other instruction"},
+    ]
+    assert normalize_system(sf) == sf
+
+
+def test_normalize_system_billing_header_only_returns_empty_list() -> None:
+    sf = [{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1;"}]
+    assert normalize_system(sf) == []
+
+
+def test_normalize_system_string_passes_through() -> None:
+    """Claude Code sends system as a list of blocks, but the helper
+    is defensive — bare strings pass through untouched."""
+    assert normalize_system("be brief") == "be brief"
+
+
+def test_normalize_system_none_passes_through() -> None:
+    assert normalize_system(None) is None
+
+
+def test_normalize_system_preserves_cache_control_keys_on_kept_blocks() -> None:
+    """`cache_control` metadata on a kept block survives normalization;
+    it's stripped only inside `_system_hash` (text-only extraction)."""
+    sf = [
+        {
+            "type": "text",
+            "text": "You are Claude Code...",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    out = normalize_system(sf)
+    assert out == sf
+
+
+def test_normalize_system_idempotent() -> None:
+    """Running normalize_system twice returns the same value as
+    once. Required for the variation-tracker invariant: re-hashing a
+    previously-stored (already-normalized) system must produce the
+    same hash as hashing the freshly-normalized current system."""
+    sf = [
+        {"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1;"},
+        {"type": "text", "text": "You are Claude Code..."},
+    ]
+    once = normalize_system(sf)
+    twice = normalize_system(once)
+    assert once == twice

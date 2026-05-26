@@ -165,9 +165,29 @@ blocks). Stored only when:
   non-null `system_prompt_jsonb` in this conversation.
 
 The variation-tracking hash is SHA-256[:16] of `_system_text(request)`
-**after stripping prompt-caching artefacts** (`cache_control` keys
-on system text blocks; same spirit as ADR-0036 Rule A but applied
-to `system` rather than message content).
+**after dropping two classes of noise**:
+
+- `cache_control` keys on system text blocks (prompt-caching
+  artefact; same spirit as ADR-0036 Rule A but applied to `system`).
+- Entire text blocks whose `text` starts with
+  `x-anthropic-billing-header:`. Anthropic surfaces a per-request
+  Claude Code telemetry header
+  (`cc_version=2.1.150; cc_entrypoint=cli; cch=f5075;` and similar)
+  inside the system field. The `cc_version` and `cch` tokens drift
+  across exchanges without carrying any system-instruction content,
+  so leaving them in would make the variation tracker fire on
+  essentially every exchange.
+
+The same stripping is applied **at storage time**: `system_prompt_jsonb`
+stores the post-strip system, not the raw one. This preserves the
+invariant *"if two exchanges hash equal, their stored
+`system_prompt_jsonb` payloads are byte-identical."* Without it, a
+future hash compare against a previously-stored row could disagree
+with a hash compare against the raw request payload.
+
+Implementation lives in `classifier.normalize_system(system_field)`
+and is shared by `_system_hash` and `_resolve_system` in the plugin
+module.
 
 ### `turn_seq`
 
@@ -319,8 +339,10 @@ live deploy verifies in the second).
   no follow-up, only wrapper blocks remain → row classifies as
   `sidecar`. Verify in live data once forward writes resume.
 - **System-variation false positives from `cache_control` movement.**
-  The hash compare must drop `cache_control` keys; if any other
-  prompt-caching artefact drifts independently of meaningful
-  content, the variation tracker will over-trigger. Monitor with
-  a query that counts `system_prompt_jsonb IS NOT NULL` rows per
-  conversation against an expected baseline.
+  The hash compare drops `cache_control` keys (implicitly, by
+  extracting only `text`) and `x-anthropic-billing-header:` blocks
+  (explicitly, via `normalize_system`). If any other prompt-caching
+  artefact or Anthropic-injected metadata drifts independently of
+  meaningful content, the variation tracker will over-trigger.
+  Monitor with a query that counts `system_prompt_jsonb IS NOT
+  NULL` rows per conversation against an expected baseline.

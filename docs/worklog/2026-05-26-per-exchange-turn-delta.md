@@ -197,6 +197,69 @@ for end users but observable in logs.
 After deploy, smoke-test by sending one exchange through the proxy
 and confirming a row lands with the new columns populated.
 
+## Follow-up · `x-anthropic-billing-header` stripping
+
+**Trigger**: Operator pushed the new plugin code, ran a real
+exchange, and noticed every exchange would store a fresh
+`system_prompt_jsonb` (variation tracker firing on every write).
+Root cause: Anthropic surfaces a per-request Claude Code telemetry
+header inside the system field
+(`x-anthropic-billing-header: cc_version=2.1.150; cc_entrypoint=cli;
+cch=f5075;`). The `cc_version` and `cch` tokens drift between
+otherwise-identical exchanges, so the previous hash compare —
+which read raw text — saw "different system" on every call.
+
+**Resolution (refinement of ADR-0038, not a new ADR)**: introduced
+`classifier.normalize_system(system_field)` which drops text blocks
+whose `text` starts with `x-anthropic-billing-header:`. The helper
+is invoked by both `_system_hash` (so the variation hash ignores
+the header drift) and `_resolve_system` (so the stored
+`system_prompt_jsonb` already has the header stripped, preserving
+the invariant *"same hash ⇒ identical stored bytes"*).
+
+Scope kept tight: only the billing-header prefix is matched. A
+generic `x-anthropic-*` strip was considered and rejected
+(over-broad without a second concrete prefix to motivate it).
+
+What changed:
+
+- `classifier.py` — added `_SYSTEM_METADATA_PREFIXES` and
+  `normalize_system(system_field) -> Any`. Idempotent: re-running
+  on already-stripped output returns the same value.
+- `plugin.py` — `_system_hash` and `_resolve_system` both pipe
+  through `normalize_system`; `_resolve_system` now stores the
+  normalized form rather than the raw `system_field`.
+- `tests/test_classifier.py` — 7 new unit tests for
+  `normalize_system` (strip / preserve / billing-header-only /
+  string passthrough / None passthrough / cache_control preserved
+  on kept blocks / idempotency).
+- `tests/test_analytics_sink.py` — 2 new plugin-level tests
+  (billing-header drift ⇒ `system_prompt_jsonb` NULL on second
+  exchange; first-exchange stored form has the header dropped).
+- `docs/decisions/0038-per-exchange-turn-delta.md` —
+  §`system_prompt_jsonb semantics` and §Open questions updated.
+
+No alembic migration: this is a code-only refinement. The 16
+historic rows have `system_prompt_jsonb IS NULL` (raw bodies were
+never retained), so the storage normalization applies only to
+forward writes. ADR-0038's "Loses historic `system_prompt_jsonb`"
+consequence is unchanged.
+
+**Verification**:
+
+```
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker_plugin_analytics_sink/tests/ -q
+================================ 62 passed in 0.43s ================================
+
+$ .venv/bin/python3.12 -m pytest -q
+================== 284 passed, 31 skipped in 6.45s ===================
+
+$ .venv/bin/python3.12 -m ruff check packages/llm_tracker_plugin_analytics_sink/
+All checks passed!
+```
+
+(commit &lt;pending&gt;)
+
 ## Suggestions (untouched)
 
 - A `compact_resume` role value for the post-`/compact` resume

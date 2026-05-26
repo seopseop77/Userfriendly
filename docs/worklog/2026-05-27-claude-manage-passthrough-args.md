@@ -125,13 +125,78 @@ $ .venv/bin/python3 -m ruff check \
 All checks passed!
 ```
 
+## Hotfix: v0.1.3 (typer.Exit catch)
+
+Live smoke of v0.1.2 (operator reinstalled the wheel and ran
+`claude-manage --dangerously-skip-permissions`) confirmed flag
+pass-through itself worked — Claude Code entered normally — but after
+Claude exited cleanly, `claude-manage` printed a traceback ending in
+
+```
+File ".../llm_tracker_agent/cli.py", line 127, in _run
+    raise typer.Exit(code=completed.returncode)
+typer._click.exceptions.Exit
+```
+
+and propagated exit code 1 instead of Claude's actual return code.
+
+**Root cause.** `app()` caught `click.exceptions.Exit`, but `typer.Exit`
+inherits from typer's *vendored* click fork
+(`typer._click.exceptions.Exit`), not upstream `click.exceptions.Exit`.
+Two distinct class hierarchies. The except clause silently failed to
+match, the exception escaped, Python printed the trace, and Python's
+default `SystemExit` from an uncaught exception is code 1.
+
+The original v0.1.2 unit test `test_app_translates_run_exit_to_systemexit`
+passed because it stubbed `_run` to raise `click.exceptions.Exit`
+directly — same name, wrong class for production. False confidence.
+
+**Fix** (commit `53715ad`):
+
+- `packages/llm_tracker_agent/src/llm_tracker_agent/cli.py`: drop the
+  `import click`; catch `typer.Exit` directly. Most semantically
+  correct since that's the type `_run` / `_wait_ready` actually raise.
+- `packages/llm_tracker_agent/tests/test_cli.py`:
+  - `test_app_translates_run_exit_to_systemexit` now raises the real
+    `typer.Exit` instead of `click.exceptions.Exit`.
+  - New `test_app_translates_real_run_subprocess_returncode` drives
+    the real `_run` with `subprocess.run` + `uvicorn.Server` /
+    `uvicorn.Config` / `_wait_ready` / `load_config` /
+    `_pick_port` / `make_proxy_app` stubbed, asserts the subprocess
+    returncode (42) propagates to `SystemExit(42)` AND that the
+    forwarded subprocess argv is `["claude", "--dangerously-skip-permissions"]`.
+    This is the test the v0.1.2 ship lacked.
+
+**Release v0.1.3** (commit `<pending>`):
+
+- `packages/llm_tracker_agent/pyproject.toml`: `0.1.2` → `0.1.3`.
+- `packages/llm_tracker_signup/.../templates/success.html`,
+  `packages/llm_tracker_signup/tests/test_app.py`,
+  `docs/deploy.md`: wheel URLs bumped to v0.1.3 in lockstep.
+
+Local annotated tag `agent/v0.1.3` created on the release commit.
+
+```
+$ .venv/bin/python3 -m pytest \
+    packages/llm_tracker_agent/tests/ packages/llm_tracker_signup/tests/ -q
+..................sss...ss                                               [100%]
+21 passed, 5 skipped in 0.39s
+
+$ .venv/bin/python3 -m ruff check packages/llm_tracker_agent/
+All checks passed!
+```
+
+`v0.1.2` is left published as-is (broken on exit). After v0.1.3 ships
+the v0.1.2 wheel is effectively superseded; no recall needed since no
+operator besides this dev box ever installed it.
+
 ## What's left / known limits
 
-- **Operator must push** — `git push origin main && git push origin agent/v0.1.2`.
+- **Operator must push** — `git push origin main && git push origin agent/v0.1.3`.
   The release workflow only fires on tag push.
-- No live `claude-manage --dangerously-skip-permissions` smoke run in
-  this session. Can be sanity-checked after the operator reinstalls
-  from the new wheel.
+- After reinstall, exercise the same smoke that surfaced the bug:
+  `claude-manage --dangerously-skip-permissions` → `/quit` → confirm
+  no traceback and exit code 0.
 - `_setup_cli` no_args_is_help: invoking `claude-manage setup` with no
   token now shows Typer's help instead of an exit-2 error. Acceptable
   trade-off; mention if the user prefers strict.
@@ -142,11 +207,11 @@ Code + tests + release commit + local tag are ready. Single next step:
 
 ```
 git push origin main
-git push origin agent/v0.1.2
+git push origin agent/v0.1.3
 # wait for release-agent.yml to attach the wheel, then on operator machines:
 uv tool install --reinstall \
-  https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.2/llm_tracker_agent-0.1.2-py3-none-any.whl
-# restart Claude Code
+  https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.3/llm_tracker_agent-0.1.3-py3-none-any.whl
+# restart Claude Code, run the traceback smoke check above
 ```
 
 After that, the analytics_sink / ADR-0038 deploy track in

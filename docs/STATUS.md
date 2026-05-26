@@ -15,21 +15,22 @@
 
 `docs/worklog/2026-05-26-vocab-and-collapse-refinement.md`
 
-(Agent-stream-resilience track waiting on operator push + reinstall.
-ADR-0038 deploy track still pending. See "Inactive tracks" below.
+(ADR-0038 deploy track still pending. See "Inactive tracks" below.
 
 Side-fix landed 2026-05-27: `claude-manage` now forwards arbitrary
-`claude` flags (`--dangerously-skip-permissions`, etc.) — see
-`docs/worklog/2026-05-27-claude-manage-passthrough-args.md`. No
-follow-up; back to the deploy track below.)
+`claude` flags (`--dangerously-skip-permissions`, etc.). v0.1.2
+shipped but had a traceback-on-exit bug; **v0.1.3 hotfix supersedes
+it** — see `docs/worklog/2026-05-27-claude-manage-passthrough-args.md`
+"Hotfix: v0.1.3" section. Pending operator push, then back to the
+deploy track below.)
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: backfill 4ad1d04 hash in worklog + STATUS
+- `<pending>` agent: release v0.1.3 (typer.Exit catch hotfix)
+- `53715ad` agent: catch typer.Exit (not click) in app() wrapper
+- `322d53c` docs: backfill 4ad1d04 hash in worklog + STATUS
 - `4ad1d04` agent: release v0.1.2 (claude-manage flag pass-through)
 - `9388376` docs: backfill ded0215 hash in worklog + STATUS
-- `ded0215` agent: pass-through claude flags via claude-manage
-- `8595775` docs: backfill f9197cd hash in worklog + STATUS
 
 **Three ADR-0038 refinements landed code-level** (no schema
 change, no new ADR — §spec sections updated in place):
@@ -99,25 +100,28 @@ WHERE role = 'user_input' AND jsonb_typeof(request_jsonb) = 'string';
 Then sample a fresh `<session>` exchange and confirm it lands as
 `role='sidecar'`.
 
-### Other pending push — `agent/v0.1.2`
+### Other pending push — `agent/v0.1.3`
 
-`agent/v0.1.1` (mid-stream resilience fix) confirmed already
-pushed — the release workflow ran 2026-05-26 17:30 KST and the
-wheel is live. New release `v0.1.2` bundles the
-`claude-manage` flag pass-through fix (`ded0215`) and is
-committed + locally tagged; needs operator push:
+`agent/v0.1.2` (claude-manage flag pass-through) shipped but had
+a traceback-on-exit bug: `app()` caught the upstream
+`click.exceptions.Exit` while typer raises its vendored-fork
+sibling, so the `typer.Exit` from `_run`'s normal exit escaped
+uncaught. Live smoke caught it. `v0.1.3` is the hotfix:
+catch `typer.Exit` directly, plus a real-`_run` regression test.
+Committed + locally tagged; needs operator push:
 
 ```
 git push origin main
-git push origin agent/v0.1.2
+git push origin agent/v0.1.3
 # wait for release-agent.yml to attach the wheel, then on operator machines:
 uv tool install --reinstall \
-  https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.2/llm_tracker_agent-0.1.2-py3-none-any.whl
-# restart Claude Code
+  https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.3/llm_tracker_agent-0.1.3-py3-none-any.whl
+# restart Claude Code; re-run the same smoke
+# (`claude-manage --dangerously-skip-permissions` -> /quit -> no traceback)
 ```
 
 See `docs/worklog/2026-05-27-claude-manage-passthrough-args.md`
-for context.
+"Hotfix: v0.1.3" section for context.
 
 ---
 

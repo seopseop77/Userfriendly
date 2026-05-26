@@ -5,12 +5,14 @@ from __future__ import annotations
 import os
 import socket
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
 import urllib.request
 from typing import Annotated
 
+import click
 import typer
 import uvicorn
 
@@ -22,22 +24,14 @@ DEFAULT_PORT = 18080
 READY_TIMEOUT_SECONDS = 3.0
 READY_POLL_INTERVAL = 0.05
 
-app = typer.Typer(
-    add_completion=False,
-    invoke_without_command=True,
-    no_args_is_help=False,
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
-)
+# Typer is used *only* to parse the ``setup`` subcommand. Everything else
+# (including no args) bypasses Typer entirely so flags meant for ``claude``
+# — ``--dangerously-skip-permissions``, ``--model``, … — survive intact
+# instead of being rejected by Click's group parser as unknown commands.
+_setup_cli = typer.Typer(add_completion=False, no_args_is_help=True)
 
 
-@app.callback()
-def _default(ctx: typer.Context) -> None:
-    if ctx.invoked_subcommand is not None:
-        return
-    _run(ctx.args)
-
-
-@app.command(help="Write central-server URL + token to ~/.llm-tracker/config.toml.")
+@_setup_cli.command(help="Write central-server URL + token to ~/.llm-tracker/config.toml.")
 def setup(
     token: Annotated[str, typer.Argument(help="Org API token, e.g. lts_xxxx.")],
     server_url: Annotated[
@@ -131,6 +125,29 @@ def _run(extra_args: list[str]) -> None:
         typer.echo("`claude` not found on PATH. Install Claude Code first.", err=True)
         raise typer.Exit(code=127) from None
     raise typer.Exit(code=completed.returncode)
+
+
+def app() -> None:
+    """``claude-manage`` entry point.
+
+    Dispatches the ``setup`` subcommand to Typer; every other invocation
+    starts the proxy and forwards remaining argv straight to ``claude``.
+    Bypassing Typer's group parsing on the default path keeps flags like
+    ``--dangerously-skip-permissions`` from being rejected as unknown
+    commands before they ever reach ``claude``.
+    """
+    argv = sys.argv[1:]
+    if argv and argv[0] == "setup":
+        # ``_setup_cli`` has a single command, so Typer auto-promotes it
+        # to a no-name CLI — strip the literal "setup" token so the
+        # remaining args are parsed as the command's own arguments.
+        sys.argv = [sys.argv[0], *argv[1:]]
+        _setup_cli()
+        return
+    try:
+        _run(argv)
+    except click.exceptions.Exit as exc:
+        sys.exit(exc.exit_code)
 
 
 if __name__ == "__main__":  # pragma: no cover - direct module run

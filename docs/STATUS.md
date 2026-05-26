@@ -20,11 +20,11 @@ ADR-0038 deploy track still pending. See "Inactive tracks" below.)
 
 ## Recent commits (last 5)
 
-- `<pending>` analytics_sink: 3-value vocab + retire Rule-B collapse
+- `<pending>` docs: backfill f9197cd hash in worklog + STATUS
+- `f9197cd` analytics_sink: 3-value vocab + retire Rule-B collapse
 - `3695c48` docs: backfill 2963629 hash in worklog + STATUS
 - `2963629` analytics_sink: framework prompts as wrappers
 - `021cc39` docs: backfill 9dee369 hash in worklog + STATUS
-- `9dee369` agent: release v0.1.1 (mid-stream resilience fix)
 
 **Three ADR-0038 refinements landed code-level** (no schema
 change, no new ADR — §spec sections updated in place):

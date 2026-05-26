@@ -53,7 +53,7 @@ Three independent refinements landed together in one session:
   now stores as a one-element list, matching the multi-block
   case. Function docstring updated to explain the change.
 
-(commit &lt;pending&gt;)
+(commit f9197cd)
 
 ### Tests (test_classifier.py, test_analytics_sink.py)
 
@@ -85,7 +85,7 @@ Three independent refinements landed together in one session:
 - `test_session_opener_wrappers_stripped_from_request_jsonb`:
   same, `"hello"` → list shape; docstring updated.
 
-(commit &lt;pending&gt;)
+(commit f9197cd)
 
 ### ADR-0038
 
@@ -111,7 +111,7 @@ Three independent refinements landed together in one session:
 - `§Consequences` first bullet: "4-value classifier" → "3-value
   classifier".
 
-(commit &lt;pending&gt;)
+(commit f9197cd)
 
 ## Decisions
 

@@ -19,11 +19,11 @@
 
 ## Recent commits (last 5)
 
-- `<pending>` agent: release v0.1.1 (mid-stream resilience fix)
+- `<pending>` docs: backfill 9dee369 hash in worklog + STATUS
+- `9dee369` agent: release v0.1.1 (mid-stream resilience fix)
 - `f3cd704` docs: backfill afa3d59 hash + refresh STATUS
 - `afa3d59` agent: swallow mid-stream upstream close in proxy
 - `3fe4044` docs: backfill 00cc2b0 hash + refresh STATUS
-- `00cc2b0` analytics_sink: strip x-anthropic-billing-header
 
 ## Where we paused
 

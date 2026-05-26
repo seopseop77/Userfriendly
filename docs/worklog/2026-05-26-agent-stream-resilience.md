@@ -178,14 +178,14 @@ move is semver patch bump and a new tag.
   `packages/llm_tracker_signup/src/llm_tracker_signup/templates/success.html` —
   Step 1b's `step-1-code` `<code>` URL bumped to
   `agent/v0.1.1/llm_tracker_agent-0.1.1-py3-none-any.whl`. (commit
-  &lt;pending&gt;)
+  9dee369)
 - Modified `packages/llm_tracker_signup/tests/test_app.py` —
   `test_get_success_renders_token`'s wheel-URL assertion bumped in
   lockstep so a regression to the old URL fails fast. (commit
-  &lt;pending&gt;)
+  9dee369)
 - Modified `docs/deploy.md` — the example URL under "Participant
   Installation → Install" bumped from `0.1.0` to `0.1.1`. (commit
-  &lt;pending&gt;)
+  9dee369)
 
 ### Verification
 

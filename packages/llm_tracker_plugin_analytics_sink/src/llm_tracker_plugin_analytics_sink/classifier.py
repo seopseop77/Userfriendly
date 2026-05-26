@@ -14,14 +14,14 @@ ADR-0038 vocab. Three public entry points:
   delta of this exchange). Emits one of:
   - `user_input` — user's typed text (list with at least one
     non-wrapper text block).
-  - `title_gen` — Claude Code's per-session title sidecar
-    (`<session>...</session>` as a bare string or as a single bare
-    text block).
   - `tool_result` — main-flow continuation (block list containing a
     `tool_result` block).
-  - `sidecar` — every other framework-synthesised role=user payload:
-    `/compact` summarize, `[SUGGESTION MODE: ...]`, step-away recap,
-    post-`/compact` resume marker, list of only synthetic wrappers.
+  - `sidecar` — every framework-synthesised `role=user` payload:
+    `<session>...</session>` title-generation request (was its own
+    `title_gen` role until 2026-05-26), `[SUGGESTION MODE: ...]`,
+    `/compact` summarize, step-away recap, post-`/compact` resume
+    marker, WebSearch / WebFetch / PreCompact auto-call prompts,
+    list of only synthetic wrappers.
 
   `system_prompt` and `model_output` (ADR-0037) are not emitted:
   system data lives in its own column, model output in
@@ -57,9 +57,12 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 # ADR-0038 per-row role vocab on `plugin_analytics.role`.
+# 3-value after the 2026-05-26 refinement that folded `title_gen`
+# into `sidecar` — title generation is a Claude Code framework
+# auto-call, semantically indistinguishable from other auto-calls
+# (WebSearch trigger, PreCompact summarization, step-away recap).
 MessageRole = Literal[
     "user_input",
-    "title_gen",
     "tool_result",
     "sidecar",
 ]
@@ -150,24 +153,24 @@ def classify_request(request: dict[str, Any]) -> Classification:
 def classify_message(msg: dict[str, Any]) -> MessageRole:
     """Classify a single user-side message (the exchange's `messages[-1]`).
 
-    Returns one of `user_input`, `title_gen`, `tool_result`, `sidecar`
-    per ADR-0038. The caller is responsible for invoking this only on
-    the last message of a request; the Anthropic Messages API
-    guarantees `messages[-1].role == "user"`.
+    Returns one of `user_input`, `tool_result`, `sidecar` per
+    ADR-0038 (3-value after the 2026-05-26 refinement that folded
+    `title_gen` into `sidecar`). The caller is responsible for
+    invoking this only on the last message of a request; the
+    Anthropic Messages API guarantees `messages[-1].role == "user"`.
     """
     content = msg.get("content")
 
-    # title_gen: <session>...</session> as a bare string.
+    # Bare-string content is always framework-synthesised — Claude
+    # Code's main-flow user messages always arrive as block lists.
+    # Includes `<session>...</session>` title-gen sidecar (was its
+    # own role until 2026-05-26), [SUGGESTION MODE: …],
+    # /compact summarize, step-away recap.
     if isinstance(content, str):
-        if _SESSION_WRAP_RE.match(content):
-            return "title_gen"
-        # /compact summarize, [SUGGESTION MODE: …], step-away recap.
         return "sidecar"
 
-    # title_gen, list form: single bare text block with the full
-    # <session>...</session> payload. This is how Claude Code
-    # delivers the sidecar over HTTP before Rule-B collapse used to
-    # apply at storage time (now retired).
+    # Single-block list carrying a `<session>...</session>` payload:
+    # title-gen sidecar in its HTTP wire form.
     if isinstance(content, list) and len(content) == 1:
         only = content[0]
         if (
@@ -175,7 +178,7 @@ def classify_message(msg: dict[str, Any]) -> MessageRole:
             and _block_type(only) == "text"
             and _SESSION_WRAP_RE.match(only.get("text") or "")
         ):
-            return "title_gen"
+            return "sidecar"
 
     # tool_result continuation: any tool_result block makes the
     # message a main-flow tool turn.
@@ -196,12 +199,19 @@ def classify_message(msg: dict[str, Any]) -> MessageRole:
 def extract_request_content(msg: dict[str, Any]) -> Any:
     """Compute the `request_jsonb` value for `messages[-1]`.
 
-    Drops synthetic wrapper blocks from list content. If any
-    non-wrapper blocks remain, returns just those (collapsing a
-    single bare `{type:"text",text:"X"}` to the bare string `"X"`).
-    If every block is a wrapper, returns the list verbatim so the
-    sidecar payload (e.g. the post-`/compact` resume marker) stays
+    Drops synthetic wrapper blocks from list content; returns the
+    surviving non-wrapper blocks as a list. If every block is a
+    wrapper, returns the original list verbatim so the sidecar
+    payload (e.g. the post-`/compact` resume marker) stays
     inspectable. String content is returned unchanged.
+
+    Rule-B collapse (single bare `{type, text}` block → bare
+    string) was removed 2026-05-26: it gave a visually cleaner
+    storage shape for short user-typed turns but split the column
+    between two pgtypes (string vs array) and forced every
+    downstream SQL query to handle both. Forward writes are now
+    always either an array (list content) or a string (string
+    content), with the source shape preserved.
 
     The wrapping `{role, content}` envelope is not produced — callers
     store only the inner content in `request_jsonb`. The row's
@@ -232,14 +242,6 @@ def extract_request_content(msg: dict[str, Any]) -> Any:
         # information the row carries.
         return content
 
-    # Rule-B collapse for the single-bare-text-block shape.
-    if (
-        len(stripped) == 1
-        and isinstance(stripped[0], dict)
-        and stripped[0].get("type") == "text"
-        and set(stripped[0].keys()) == {"type", "text"}
-    ):
-        return stripped[0]["text"]
     return stripped
 
 

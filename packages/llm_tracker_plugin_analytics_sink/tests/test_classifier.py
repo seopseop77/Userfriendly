@@ -172,16 +172,20 @@ def test_classify_message_bare_string_user_text_is_sidecar() -> None:
     assert classify_message(_user("CRITICAL: Respond with TEXT ONLY...")) == "sidecar"
 
 
-def test_classify_message_session_string_is_title_gen() -> None:
+def test_classify_message_session_string_is_sidecar() -> None:
+    """`<session>...</session>` title-generation sidecar arrives as
+    a bare string; it folds into `sidecar` (2026-05-26 refinement —
+    `title_gen` is no longer a separate role)."""
     msg = _user("<session>\n반가워!\n</session>")
-    assert classify_message(msg) == "title_gen"
+    assert classify_message(msg) == "sidecar"
 
 
-def test_classify_message_session_single_block_list_is_title_gen() -> None:
-    """Regression: title-gen sidecar over HTTP is a single-block list
-    carrying the `<session>...</session>` payload."""
+def test_classify_message_session_single_block_list_is_sidecar() -> None:
+    """Regression: title-gen sidecar over HTTP — single-block list
+    carrying the `<session>...</session>` payload — also classifies
+    as sidecar."""
     msg = _user([{"type": "text", "text": "<session>\nhi\n</session>"}])
-    assert classify_message(msg) == "title_gen"
+    assert classify_message(msg) == "sidecar"
 
 
 def test_classify_message_tool_result_block_is_tool_result() -> None:
@@ -241,7 +245,11 @@ def test_classify_message_session_in_multi_block_list_is_user_input() -> None:
 # ---------------------------------------------------------------------
 
 
-def test_extract_strips_leading_wrappers_and_collapses_single_block() -> None:
+def test_extract_strips_leading_wrappers() -> None:
+    """Wrapper blocks are stripped; the surviving non-wrapper text
+    is returned as a single-element list. Rule-B collapse to a
+    bare string was removed 2026-05-26 for storage-shape
+    uniformity."""
     msg = _user(
         [
             {"type": "text", "text": "<system-reminder>\nAvailable agent types..."},
@@ -249,13 +257,16 @@ def test_extract_strips_leading_wrappers_and_collapses_single_block() -> None:
             {"type": "text", "text": "hello"},
         ]
     )
-    assert extract_request_content(msg) == "hello"
+    out = extract_request_content(msg)
+    assert isinstance(out, list)
+    assert len(out) == 1
+    assert out[0]["text"] == "hello"
 
 
 def test_extract_strips_command_wrappers_too() -> None:
     """`/clear` follow-up shape: `<command-name>` and
     `<local-command-stdout>` blocks count as wrappers, the trailing
-    user text survives."""
+    user text survives as the only non-wrapper block."""
     msg = _user(
         [
             {"type": "text", "text": "<system-reminder>\nAvailable agent types..."},
@@ -264,7 +275,10 @@ def test_extract_strips_command_wrappers_too() -> None:
             {"type": "text", "text": "안녕~"},
         ]
     )
-    assert extract_request_content(msg) == "안녕~"
+    out = extract_request_content(msg)
+    assert isinstance(out, list)
+    assert len(out) == 1
+    assert out[0]["text"] == "안녕~"
 
 
 def test_extract_returns_list_when_multiple_non_wrapper_blocks() -> None:
@@ -312,17 +326,21 @@ def test_extract_tool_result_blocks_returned_verbatim() -> None:
     assert out == blocks
 
 
-def test_extract_single_block_bare_text_collapses_to_string() -> None:
-    """Rule B: a list with one bare text block collapses to a string."""
+def test_extract_single_block_bare_text_stays_array() -> None:
+    """Rule-B collapse was removed 2026-05-26 — a single bare-text
+    block is preserved as a one-element list, not collapsed to a
+    bare string. Forward writes stay in array shape so downstream
+    SQL never has to split on `jsonb_typeof`."""
     msg = _user([{"type": "text", "text": "first"}])
-    assert extract_request_content(msg) == "first"
+    out = extract_request_content(msg)
+    assert isinstance(out, list)
+    assert out == [{"type": "text", "text": "first"}]
 
 
-def test_extract_drops_cache_control_keys() -> None:
-    """A bare text block with `cache_control` metadata does NOT have
-    `{type, text}` as its only keys, so Rule B does not collapse it
-    — extracted as a list. (Future tightening could strip
-    cache_control here; for now the test pins current behaviour.)"""
+def test_extract_single_block_with_cache_control_stays_array() -> None:
+    """A bare text block with `cache_control` metadata is also
+    returned as a list — same shape as the bare `{type, text}`
+    case above. Forward writes are uniformly array-shaped."""
     msg = _user(
         [
             {
@@ -333,10 +351,9 @@ def test_extract_drops_cache_control_keys() -> None:
         ]
     )
     out = extract_request_content(msg)
-    # Returned as a list since the block doesn't match the bare
-    # `{type, text}` shape required for Rule B collapse.
     assert isinstance(out, list)
     assert out[0]["text"] == "real"
+    assert out[0]["cache_control"] == {"type": "ephemeral"}
 
 
 # ---------------------------------------------------------------------

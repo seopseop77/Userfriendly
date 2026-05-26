@@ -13,67 +13,85 @@
 
 ## Active worklog
 
-`docs/worklog/2026-05-26-framework-autocall-wrappers.md`
+`docs/worklog/2026-05-26-vocab-and-collapse-refinement.md`
 
 (Agent-stream-resilience track waiting on operator push + reinstall.
 ADR-0038 deploy track still pending. See "Inactive tracks" below.)
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: backfill 2963629 hash in worklog + STATUS
+- `<pending>` analytics_sink: 3-value vocab + retire Rule-B collapse
+- `3695c48` docs: backfill 2963629 hash in worklog + STATUS
 - `2963629` analytics_sink: framework prompts as wrappers
 - `021cc39` docs: backfill 9dee369 hash in worklog + STATUS
 - `9dee369` agent: release v0.1.1 (mid-stream resilience fix)
-- `f3cd704` docs: backfill afa3d59 hash + refresh STATUS
 
-## Where we paused
+**Three ADR-0038 refinements landed code-level** (no schema
+change, no new ADR — §spec sections updated in place):
 
-**WebSearch / PreCompact auto-call prompts now classify as
-`sidecar`, not `user_input`.** Operator surfaced
-`request_jsonb = "Perform a web search for the query: …"` rows
-landing as `user_input` — Claude Code's internal WebSearch trigger
-and PreCompact summarization prompt are LLM calls the user never
-typed, but the prompts arrive as plain text alongside the
-existing wrapper blocks, so `_SYNTHETIC_WRAPPER_PREFIXES` did not
-match them and `_last_real_user_text` picked them up.
+1. **Sidecar separation policy documented.** ADR-0038 §Sidecar
+   separation signals (new section) makes the prefix-based
+   wrapper-detection approach explicit, lists the three concrete
+   shapes that produce `sidecar`, discusses + rejects the
+   `request.tools` and `cache_control` alternatives (with the
+   contract-vs-convention reasoning), and accepts whack-a-mole
+   as the lower-risk trade-off.
+2. **`title_gen` folded into `sidecar`.** Role vocab is now
+   3-value (`user_input` / `tool_result` / `sidecar`); the
+   `<session>` payload no longer gets its own role. Title
+   generation is just one of several framework auto-call
+   patterns and its `request_jsonb` shape stays trivially
+   queryable.
+3. **Rule-B collapse retired.** `extract_request_content` no
+   longer collapses a single-bare-text-block list to a bare
+   string. `request_jsonb` is now uniformly array for list
+   content and string for string content, with no cross-pgtype
+   collapse. Downstream SQL can drop the `jsonb_typeof` branch.
 
-Fix: added two prefixes to the wrapper set in `classifier.py` —
-`"Perform a web search for the query: "` and `"CRITICAL: Respond
-with TEXT ONLY. Do NOT call any tools."`. A turn whose only
-non-wrapper text is one of those prompts now classifies as
-`sidecar` (wrapper-only payload); a turn where the prompt
-accompanies real user text stays `user_input` with the framework
-prompt stripped from `request_jsonb`.
-
-Live data reclassified: three rows
-(`01KSHQ56AFTTVS2FSAGETXYXAM`, `01KSHPZRR4SYR5QSV6FH5QD0C8`,
-`01KSHQ245K5JG9RSY1F9S5SATZ`) moved from `user_input` to
-`sidecar` with `turn_seq=NULL`. New distribution:
-`sidecar=17, user_input=14, tool_result=13, title_gen=5`.
-
-A more aggressive stdout-drop refinement (drop everything but
-the trailing block on `slash_commands`-attached turns) was tried,
-applied as a backfill on 4 rows, and abandoned after two of the
-4 rows lost their user-typed text to a PreCompact prompt that
-trailed even later in the message. Two rows' content is
-permanently lost. See the worklog for the full timeline.
+Earlier-this-day commit (2963629) also added `"Perform a web
+search for the query: "` and `"CRITICAL: Respond with TEXT
+ONLY. Do NOT call any tools."` to the wrapper-prefix list so
+WebSearch / PreCompact auto-calls classify as `sidecar`. Live
+data reclassified at that point: three rows from `user_input` →
+`sidecar`. WebFetch result (`"\nWeb page content:\n---\n…"`) is
+a third framework prompt observed once but not yet added — it
+will go in with the next discovery batch.
 
 Tests: 66 pkg / 289 repo / ruff clean.
 
 ## Next single step
 
 **Operator deploys updated `llm-tracker-server` plugin code to
-fly.** Both the original ADR-0038 schema work and this
-refinement are now waiting on the same redeploy:
+fly, then runs the two backfill UPDATEs.** ADR-0038 schema work
+(121276a), framework-prompt prefixes (2963629), and this
+refinement (3-value vocab + Rule-B retire) all ride the same
+deploy:
 
 ```
 fly deploy -c packages/llm_tracker_server/fly.toml
 # or push to main and let .github/workflows/deploy-server.yml run
 ```
 
-After deploy, send one fresh exchange that would have
-triggered the bug (any session that ends up issuing a WebSearch
-or hitting PreCompact) and confirm a row lands with
+After deploy, apply two UPDATEs to align live data with the new
+code (full SQL + rationale in
+`docs/worklog/2026-05-26-vocab-and-collapse-refinement.md`
+§"DB backfill (deferred — run after fly deploy)"):
+
+```sql
+-- Fold any historic title_gen rows into sidecar.
+UPDATE plugin_analytics
+SET role = 'sidecar', turn_seq = NULL
+WHERE role = 'title_gen';
+
+-- Restore array shape for user_input rows collapsed by retired Rule B.
+UPDATE plugin_analytics
+SET request_jsonb = jsonb_build_array(
+    jsonb_build_object('type', 'text', 'text', request_jsonb #>> '{}')
+)
+WHERE role = 'user_input' AND jsonb_typeof(request_jsonb) = 'string';
+```
+
+Then sample a fresh `<session>` exchange and confirm it lands as
 `role='sidecar'`.
 
 ### Other pending push — `agent/v0.1.1`

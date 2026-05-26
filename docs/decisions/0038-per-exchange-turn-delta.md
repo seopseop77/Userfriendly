@@ -107,14 +107,19 @@ DROP VIEW  plugin_analytics_with_messages;
 DROP TABLE conversation_messages;
 ```
 
-### `role` vocab (4 values, replaces `turn_kind`)
+### `role` vocab (3 values, replaces `turn_kind`)
 
 | value | content shape | flow | turn_seq axis |
 |---|---|---|---|
 | `user_input` | user's typed text; on the session-opener this is the user-typed text **after wrapper stripping** (see below) | main | **yes** |
-| `title_gen` | `<session>...</session>` payload, as a bare string or a single-block list | sidecar | no (NULL) |
 | `tool_result` | block list containing one or more `{type:"tool_result", ...}` blocks (Claude Code's response to the model's prior `tool_use`) | main | **yes** |
-| `sidecar` | every other framework-synthesised `role=user` message: `/compact` summarize, `[SUGGESTION MODE: ...]`, step-away recap, post-`/compact` resume marker, any `messages[-1]` whose only text blocks are synthetic wrappers | sidecar | no (NULL) |
+| `sidecar` | every framework-synthesised `role=user` message (see "Sidecar separation signals" below) | sidecar | no (NULL) |
+
+(2026-05-26 refinement: the original `title_gen` value folded into
+`sidecar`. Title generation is one of several Claude Code
+framework auto-call patterns and gives no analytic signal that
+warrants its own role — querying for it remains a one-line
+content filter against `request_jsonb`.)
 
 ADR-0037's `system_prompt` is not a `role` value here — system data
 lives in its own column. ADR-0037's `model_output` is not a `role`
@@ -175,7 +180,63 @@ distinct `system_prompt` Claude Code emits for these calls) is
 deferred until a third pattern motivates the work.
 
 **Non-opener exchanges.** `request_jsonb` is `messages[-1].content`
-verbatim — no normalisation (Rule A / Rule B are retired).
+verbatim — no normalisation (Rule A retired, and Rule B's
+single-bare-text-block collapse retired 2026-05-26 for
+storage-shape uniformity: list content now always stores as an
+array, string content as a string, with no cross-pgtype
+collapse).
+
+### Sidecar separation signals
+
+A row classifies as `sidecar` when **none of the conditions for
+`user_input` / `tool_result` hold**. Concretely:
+
+1. `messages[-1].content` is a bare string. This covers
+   `[SUGGESTION MODE: ...]`, `/compact` summarize prompts,
+   step-away recap, post-`/compact` resume marker (when delivered
+   as a string), `<session>...</session>` title-generation
+   payloads — anything Claude Code synthesises into a
+   `role=user` slot without a real user typing it.
+2. `messages[-1].content` is a single-element block list whose
+   only block carries a `<session>...</session>` payload.
+3. `messages[-1].content` is a block list whose every `type=text`
+   block, after `lstrip`, starts with one of the registered
+   wrapper prefixes (`<system-reminder>`, `<command-*>`,
+   `<local-command-*>`, `This session is being continued`,
+   framework auto-call prompt prefixes).
+
+**The signal is prefix-based pattern matching, deliberately.**
+A more robust signal — e.g. checking whether `request.tools`
+contains `web_search_*` / `web_fetch_*`, or comparing the
+`system` field's hash against a framework-auto-call baseline —
+was considered. It would reduce the maintenance burden of
+adding new prefixes as new framework prompts surface. It was
+rejected, for now, because:
+
+- Anthropic API guarantees about which fields Claude Code uses
+  for framework calls are weaker than the convention we
+  already rely on for wrapper prefixes.
+- `cache_control` looks like a tempting "the user typed this
+  vs the framework typed this" signal (operator observation
+  2026-05-26: every observed user-typed block carries
+  `cache_control`, every observed framework-typed block does
+  not). But `cache_control` is a general Anthropic API
+  optimisation knob — Claude Code attaching it on user input
+  is a convention, not a contract. If Claude Code starts
+  attaching `cache_control` to framework calls, or stops
+  attaching it on short user turns, a classifier that depended
+  on `cache_control` would silently mis-route user input into
+  `sidecar` (the more harmful direction) or vice versa.
+
+The accepted trade-off: keep adding prefixes when new framework
+prompts appear (whack-a-mole), and revisit the robust-signal
+question if a future Claude Code change ever invalidates several
+prefixes at once.
+
+Currently registered framework auto-call prefixes:
+
+- `"Perform a web search for the query: "` (WebSearch trigger)
+- `"CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."` (PreCompact summarization prompt)
 
 ### `system_prompt_jsonb` semantics
 
@@ -280,7 +341,7 @@ ORDER BY created_at DESC LIMIT 1;
 
 ```sql
 SELECT role, request_jsonb, response_jsonb FROM plugin_analytics
-WHERE conversation_id = C AND role IN ('title_gen', 'sidecar')
+WHERE conversation_id = C AND role = 'sidecar'
 ORDER BY created_at;
 ```
 
@@ -298,7 +359,10 @@ Alembic migration is a single revision:
    `messages[-1]`). Copy `content_jsonb` → `request_jsonb`. Map the
    ADR-0037 role to the ADR-0038 vocab:
    - `user_input` → `user_input`
-   - `title_gen` → `title_gen`
+   - `title_gen` → `sidecar` (the role was folded into `sidecar`
+     by the 2026-05-26 refinement; the migration script preserved
+     the old mapping when first applied, but live data was
+     reclassified to `sidecar` in a subsequent UPDATE)
    - `model_output` → impossible at messages[-1] (assistant is never
      last on a user request); ignore.
    - `assistant` with tool_result blocks in content_jsonb → `tool_result`
@@ -322,7 +386,8 @@ live deploy verifies in the second).
 ## Consequences
 
 - **Drops a large attribute surface**: `classify_message` shrinks
-  to a 4-value classifier (no split logic), `split_first_message`
+  to a 3-value classifier (no split logic, no `title_gen` —
+  folded into `sidecar` 2026-05-26), `split_first_message`
   removed, `_UPSERT_MESSAGE_SQL` removed, `_upsert_messages`
   removed, ADR-0036 helper view removed, `n_messages_at_request`
   pointer removed, Rule A / Rule B `canonical_message` removed.

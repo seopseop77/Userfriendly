@@ -169,8 +169,9 @@ async def test_row_written_on_persisted_with_parsed_response() -> None:
     assert params["input_tokens"] == 42
     # ADR-0038 columns:
     assert params["role"] == "user_input"
-    # Single bare text block collapsed to bare string by Rule B.
-    assert json.loads(params["request_jsonb"]) == "hi"
+    # 2026-05-26 refinement: Rule-B collapse retired — single bare
+    # text block is preserved as a one-element list.
+    assert json.loads(params["request_jsonb"]) == [{"type": "text", "text": "hi"}]
     assert params["turn_seq"] == 1
     assert params["slash_commands"] is None
     assert isinstance(params["first_msg_hash"], str)
@@ -350,8 +351,9 @@ async def test_slash_commands_none_passes_through_as_none() -> None:
 @pytest.mark.asyncio
 async def test_session_opener_wrappers_stripped_from_request_jsonb() -> None:
     """ADR-0038: session-opener's leading `<system-reminder>` blocks
-    are dropped from request_jsonb. A single bare text block survives
-    → collapses to a bare string by Rule B."""
+    are dropped from request_jsonb. The trailing bare text block
+    survives as a one-element list (Rule-B collapse retired
+    2026-05-26)."""
     engine, conn = _fake_engine()
     plugin = AnalyticsSink(engine=engine)
 
@@ -369,13 +371,14 @@ async def test_session_opener_wrappers_stripped_from_request_jsonb() -> None:
 
     params = _insert_params(conn)
     assert params["role"] == "user_input"
-    assert json.loads(params["request_jsonb"]) == "hello"
+    assert json.loads(params["request_jsonb"]) == [{"type": "text", "text": "hello"}]
 
 
 @pytest.mark.asyncio
-async def test_title_gen_string_classifies_correctly() -> None:
-    """`<session>...</session>` string content → role=title_gen,
-    off-axis (turn_seq NULL)."""
+async def test_session_string_classifies_as_sidecar() -> None:
+    """`<session>...</session>` string content → role=sidecar
+    (2026-05-26 refinement folded the former `title_gen` role into
+    `sidecar`), off-axis (turn_seq NULL)."""
     engine, conn = _fake_engine()
     plugin = AnalyticsSink(engine=engine)
 
@@ -389,16 +392,17 @@ async def test_title_gen_string_classifies_correctly() -> None:
     await plugin.on_persisted("ex_title", ctx)
 
     params = _insert_params(conn)
-    assert params["role"] == "title_gen"
+    assert params["role"] == "sidecar"
     assert params["turn_seq"] is None
     assert json.loads(params["request_jsonb"]) == "<session>\nhello\n</session>"
 
 
 @pytest.mark.asyncio
-async def test_title_gen_list_shape_classifies_correctly() -> None:
+async def test_session_list_shape_classifies_as_sidecar() -> None:
     """Single bare text block carrying `<session>...</session>` →
-    role=title_gen (regression coverage for the 2026-05-26 list-shape
-    bug, now resolved by ADR-0038's classifier rebuild)."""
+    role=sidecar (was `title_gen` before the 2026-05-26
+    refinement; regression coverage for the list-shape bug
+    remains relevant since the same classifier branch is exercised)."""
     engine, conn = _fake_engine()
     plugin = AnalyticsSink(engine=engine)
 
@@ -412,7 +416,7 @@ async def test_title_gen_list_shape_classifies_correctly() -> None:
     await plugin.on_persisted("ex_title_list", ctx)
 
     params = _insert_params(conn)
-    assert params["role"] == "title_gen"
+    assert params["role"] == "sidecar"
     assert params["turn_seq"] is None
 
 

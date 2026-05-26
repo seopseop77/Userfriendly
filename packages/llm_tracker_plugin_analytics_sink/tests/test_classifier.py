@@ -340,6 +340,82 @@ def test_extract_drops_cache_control_keys() -> None:
 
 
 # ---------------------------------------------------------------------
+# Framework auto-call prompts as wrappers (ADR-0038 refinement).
+# ---------------------------------------------------------------------
+
+
+def test_classify_websearch_trigger_is_sidecar() -> None:
+    """Claude Code's internal WebSearch trigger appears as a user-role
+    message whose only non-wrapper text starts with
+    `"Perform a web search for the query: "`. After adding that
+    prefix to the wrapper set, every text block is a wrapper → the
+    payload is wrapper-only → the row classifies as sidecar."""
+    msg = _user(
+        [
+            {"type": "text", "text": "<system-reminder>\nfoo"},
+            {
+                "type": "text",
+                "text": "Perform a web search for the query: 오늘의 주요 뉴스 이슈",
+            },
+        ]
+    )
+    assert classify_message(msg) == "sidecar"
+
+
+def test_classify_websearch_string_is_sidecar() -> None:
+    """The WebSearch trigger also arrives as a bare string in some
+    cases. The string-content branch of `classify_message` already
+    returns sidecar — pinning the assertion here so a future
+    string-path tweak does not silently regress."""
+    msg = _user("Perform a web search for the query: 뉴스")
+    assert classify_message(msg) == "sidecar"
+
+
+def test_classify_precompact_prompt_is_sidecar() -> None:
+    """The PreCompact auto-summarization prompt begins with
+    `"CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."`.
+    On a turn where no real user input accompanies the framework
+    prompt, every block is a wrapper and the row is sidecar."""
+    msg = _user(
+        [
+            {"type": "text", "text": "<system-reminder>\nfoo"},
+            {
+                "type": "text",
+                "text": (
+                    "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
+                    "\n\nYour task is to create a detailed summary…"
+                ),
+            },
+        ]
+    )
+    assert classify_message(msg) == "sidecar"
+
+
+def test_classify_precompact_with_user_typed_is_user_input() -> None:
+    """When PreCompact fires on a turn that also carries a user-typed
+    block (or stdout that survived as non-wrapper), the trailing
+    non-wrapper block remains and the row stays user_input. The
+    framework prompt itself is stripped from `request_jsonb` because
+    its prefix is in the wrapper set."""
+    msg = _user(
+        [
+            {"type": "text", "text": "<command-name>/context</command-name>"},
+            {"type": "text", "text": "## Context Usage\n…stdout"},
+            {"type": "text", "text": "잘했으"},
+            {
+                "type": "text",
+                "text": "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.",
+            },
+        ]
+    )
+    assert classify_message(msg) == "user_input"
+    out = extract_request_content(msg)
+    # stdout + user typed survive; PreCompact prompt is stripped.
+    assert isinstance(out, list)
+    assert [b["text"] for b in out] == ["## Context Usage\n…stdout", "잘했으"]
+
+
+# ---------------------------------------------------------------------
 # normalize_system: drop `x-anthropic-billing-header` telemetry blocks.
 # ---------------------------------------------------------------------
 

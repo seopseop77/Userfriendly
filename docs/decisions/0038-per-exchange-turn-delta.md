@@ -151,6 +151,29 @@ The wrappers themselves are not retained anywhere; raw bodies are
 not preserved in any table, and the wrapper text is mostly
 session-static framing already redundant with the `system` field.
 
+**Framework auto-call prompts treated as wrappers (2026-05-26 refinement).**
+Claude Code internally issues some LLM calls without the user typing
+a message — currently observed: the WebSearch trigger ("Perform a
+web search for the query: …") and the PreCompact summarization
+prompt ("CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.…").
+These prompts arrive as plain text blocks (no `<tag>` wrapper),
+which made them indistinguishable from user-typed text under the
+original wrapper-prefix list and caused them to classify as
+`user_input`. The two known prefixes are added to the wrapper set
+so that:
+
+- A turn whose only non-wrapper text is the framework prompt
+  classifies as `sidecar` (wrapper-only payload).
+- A turn where the framework prompt accompanies real user text
+  stays `user_input`; the framework prompt is stripped from
+  `request_jsonb` and the user text survives.
+
+This is whack-a-mole by design: new framework prompts get added
+as they are discovered. A more robust signal (e.g. inspecting
+`request.tools` for `web_search_*` server tools, or detecting the
+distinct `system_prompt` Claude Code emits for these calls) is
+deferred until a third pattern motivates the work.
+
 **Non-opener exchanges.** `request_jsonb` is `messages[-1].content`
 verbatim — no normalisation (Rule A / Rule B are retired).
 

@@ -13,82 +13,86 @@
 
 ## Active worklog
 
-`docs/worklog/2026-05-26-agent-stream-resilience.md`
+`docs/worklog/2026-05-26-framework-autocall-wrappers.md`
 
-(ADR-0038 track paused — see "Inactive tracks" below.)
+(Agent-stream-resilience track waiting on operator push + reinstall.
+ADR-0038 deploy track still pending. See "Inactive tracks" below.)
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: backfill 9dee369 hash in worklog + STATUS
+- `<pending>` analytics_sink: framework auto-call prompts as wrappers
+- `021cc39` docs: backfill 9dee369 hash in worklog + STATUS
 - `9dee369` agent: release v0.1.1 (mid-stream resilience fix)
 - `f3cd704` docs: backfill afa3d59 hash + refresh STATUS
 - `afa3d59` agent: swallow mid-stream upstream close in proxy
-- `3fe4044` docs: backfill 00cc2b0 hash + refresh STATUS
 
 ## Where we paused
 
-**Mid-stream upstream-close in `llm_tracker_agent` no longer
-crashes the proxy.** `proxy.py:body_iter` was only wrapping
-`aiter_bytes()` in `try/finally`; any `httpx.RemoteProtocolError`
-(or sibling) raised after streaming had started bubbled up as an
-ASGI 500 and printed a long uvicorn traceback on every occurrence.
-Operator saw it firing reliably around Claude Code's `/context`
-and other background calls.
+**WebSearch / PreCompact auto-call prompts now classify as
+`sidecar`, not `user_input`.** Operator surfaced
+`request_jsonb = "Perform a web search for the query: …"` rows
+landing as `user_input` — Claude Code's internal WebSearch trigger
+and PreCompact summarization prompt are LLM calls the user never
+typed, but the prompts arrive as plain text alongside the
+existing wrapper blocks, so `_SYNTHETIC_WRAPPER_PREFIXES` did not
+match them and `_last_real_user_text` picked them up.
 
-Fix: added `except _UNREACHABLE_ERRORS: return` inside
-`body_iter`'s `try` block. Status + headers have already shipped
-by the time the generator runs, so we can't degrade to 503 the
-way we do at initial `send()` time — the right move is to
-terminate the generator cleanly. Downstream client receives the
-partial bytes that already made it across; uvicorn no longer
-emits the traceback.
+Fix: added two prefixes to the wrapper set in `classifier.py` —
+`"Perform a web search for the query: "` and `"CRITICAL: Respond
+with TEXT ONLY. Do NOT call any tools."`. A turn whose only
+non-wrapper text is one of those prompts now classifies as
+`sidecar` (wrapper-only payload); a turn where the prompt
+accompanies real user text stays `user_input` with the framework
+prompt stripped from `request_jsonb`.
 
-Coverage: new `test_swallows_midstream_upstream_close` in
-`packages/llm_tracker_agent/tests/test_proxy.py` exercises the
-exact failure path via a custom `AsyncByteStream` that yields one
-chunk then raises `RemoteProtocolError`.
+Live data reclassified: three rows
+(`01KSHQ56AFTTVS2FSAGETXYXAM`, `01KSHPZRR4SYR5QSV6FH5QD0C8`,
+`01KSHQ245K5JG9RSY1F9S5SATZ`) moved from `user_input` to
+`sidecar` with `turn_seq=NULL`. New distribution:
+`sidecar=17, user_input=14, tool_result=13, title_gen=5`.
 
-**Cut release v0.1.1** so the fix reaches the operator's
-installed wheel (the install command points at a fixed GitHub
-Release asset URL, not at the workspace source). Bumped
-`packages/llm_tracker_agent/pyproject.toml` to `0.1.1`, plus the
-signup-app success-page URL, the signup test assertion, and the
-`docs/deploy.md` example. Local tag `agent/v0.1.1` created on the
-release commit; push triggers `.github/workflows/release-agent.yml`
-which builds + attaches the wheel.
+A more aggressive stdout-drop refinement (drop everything but
+the trailing block on `slash_commands`-attached turns) was tried,
+applied as a backfill on 4 rows, and abandoned after two of the
+4 rows lost their user-typed text to a PreCompact prompt that
+trailed even later in the message. Two rows' content is
+permanently lost. See the worklog for the full timeline.
 
-Tests: 16 pkg (agent + signup) / ruff clean.
+Tests: 66 pkg / 289 repo / ruff clean.
 
 ## Next single step
 
-**Operator pushes commits + tag, then reinstalls.** Three things
-in sequence, none of which Claude Code can do itself:
+**Operator deploys updated `llm-tracker-server` plugin code to
+fly.** Both the original ADR-0038 schema work and this
+refinement are now waiting on the same redeploy:
 
 ```
-# 1. Publish the release commits + tag.
+fly deploy -c packages/llm_tracker_server/fly.toml
+# or push to main and let .github/workflows/deploy-server.yml run
+```
+
+After deploy, send one fresh exchange that would have
+triggered the bug (any session that ends up issuing a WebSearch
+or hitting PreCompact) and confirm a row lands with
+`role='sidecar'`.
+
+### Other pending push — `agent/v0.1.1`
+
+Mid-stream upstream-close fix in `llm_tracker_agent` is committed
++ tagged but not pushed. Independent track from the
+analytics_sink work above; needs:
+
+```
 git push origin main
 git push origin agent/v0.1.1
-# → GitHub Actions builds the wheel and attaches it to the
-#   auto-created Release at agent/v0.1.1.
-
-# 2. After the Actions run finishes (a minute or two), reinstall
-#    the local uv tool from the new URL:
+# then on operator machine:
 uv tool install --reinstall \
   https://github.com/seopseop77/Userfriendly/releases/download/agent/v0.1.1/llm_tracker_agent-0.1.1-py3-none-any.whl
-
-# 3. Restart Claude Code so the new agent process loads.
+# restart Claude Code
 ```
 
-After that, retry `/context` — the uvicorn traceback should no
-longer appear. If it does, the new traceback's filename tells us
-whether the wheel actually refreshed (`...llm-tracker-agent/lib/
-python3.12/site-packages/llm_tracker_agent/proxy.py` should now
-contain the new `except _UNREACHABLE_ERRORS: return` block; if it
-doesn't, the `--reinstall` step was skipped).
-
-Separately (does not block the fix): redeploy the signup app to
-fly so the live success page hands out the new wheel URL to new
-participants.
+See `docs/worklog/2026-05-26-agent-stream-resilience.md` for
+context.
 
 ---
 

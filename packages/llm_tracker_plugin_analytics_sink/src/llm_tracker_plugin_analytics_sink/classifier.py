@@ -68,6 +68,20 @@ MessageRole = Literal[
 # wraps (but is not) user input. Shared between
 # `_canonical_user_text` (for first_msg_hash) and
 # `extract_request_content` (for request_jsonb stripping).
+#
+# Three categories:
+#   1. Bracket-tag wrappers (`<system-reminder>`, `<command-*>`,
+#      `<local-command-*>`) — Claude Code attaches these around or
+#      alongside user-typed text in every main-flow message.
+#   2. Post-/compact resume prose header.
+#   3. Framework auto-call prompt prefixes — Claude Code internally
+#      issues these LLM calls without a user typing them
+#      (WebSearch trigger, PreCompact summarization request).
+#      Listed as wrapper prefixes so the surrounding turn classifies
+#      as `sidecar` (or stays `user_input` when accompanied by an
+#      actual typed message), and the framework prompt itself does
+#      not leak into `request_jsonb`. Whack-a-mole by design — new
+#      framework prompts get added as discovered.
 _SYNTHETIC_WRAPPER_PREFIXES: tuple[str, ...] = (
     "<system-reminder>",
     "<local-command-caveat>",
@@ -78,6 +92,9 @@ _SYNTHETIC_WRAPPER_PREFIXES: tuple[str, ...] = (
     "<command-args>",
     # Post-/compact resume marker prose header.
     "This session is being continued",
+    # Framework auto-call prompts (ADR-0038 refinement).
+    "Perform a web search for the query: ",
+    "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.",
 )
 
 # Text-block prefixes Anthropic surfaces inside the system field for

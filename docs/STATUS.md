@@ -17,11 +17,11 @@
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: backfill 121276a hash in worklog + STATUS
+- `<pending>` docs: backfill 00cc2b0 hash in worklog + STATUS
+- `00cc2b0` analytics_sink: strip x-anthropic-billing-header
+- `4694b30` docs: backfill 121276a hash in worklog + STATUS
 - `121276a` analytics_sink: ADR-0038 per-exchange schema
 - `ac61a46` docs: ADR-0038 per-exchange turn delta (proposed)
-- `6822dc2` docs: backfill 937f6d1 hash in worklog + STATUS
-- `937f6d1` analytics_sink: fix title_gen list-shape classify
 
 ## Where we paused
 
@@ -58,7 +58,18 @@ ADR-0036, ADR-0037: Status `Superseded by ADR-0038`.
   role distribution: user_input 3 / title_gen 2 / tool_result 5 /
   sidecar 6. `system_prompt_jsonb` NULL on all historic rows (raw
   bodies not retained — forward writes populate).
-- Tests: 53 pkg / 275 repo / ruff clean.
+
+**Follow-up refinement** (this checkpoint): variation tracker was
+firing on every exchange because Anthropic surfaces a per-request
+`x-anthropic-billing-header:` block inside the system field whose
+`cc_version` / `cch` tokens drift across calls. Added
+`classifier.normalize_system` which strips that prefix; both
+`_system_hash` and `_resolve_system` pipe through it (hash + stored
+form), preserving the invariant "same hash ⇒ identical stored
+bytes". ADR-0038 §system_prompt_jsonb semantics updated. No new
+migration — historic rows already NULL.
+
+- Tests: 62 pkg / 284 repo / ruff clean.
 
 ## Next single step
 

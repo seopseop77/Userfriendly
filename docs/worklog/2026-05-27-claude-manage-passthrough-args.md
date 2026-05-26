@@ -167,7 +167,7 @@ directly — same name, wrong class for production. False confidence.
     forwarded subprocess argv is `["claude", "--dangerously-skip-permissions"]`.
     This is the test the v0.1.2 ship lacked.
 
-**Release v0.1.3** (commit `<pending>`):
+**Release v0.1.3** (commit `496e517`):
 
 - `packages/llm_tracker_agent/pyproject.toml`: `0.1.2` → `0.1.3`.
 - `packages/llm_tracker_signup/.../templates/success.html`,

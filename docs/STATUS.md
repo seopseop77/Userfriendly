@@ -26,11 +26,11 @@ deploy track below.)
 
 ## Recent commits (last 5)
 
-- `<pending>` agent: release v0.1.3 (typer.Exit catch hotfix)
+- `<pending>` docs: backfill 496e517 hash in worklog + STATUS
+- `496e517` agent: release v0.1.3 (typer.Exit catch hotfix)
 - `53715ad` agent: catch typer.Exit (not click) in app() wrapper
 - `322d53c` docs: backfill 4ad1d04 hash in worklog + STATUS
 - `4ad1d04` agent: release v0.1.2 (claude-manage flag pass-through)
-- `9388376` docs: backfill ded0215 hash in worklog + STATUS
 
 **Three ADR-0038 refinements landed code-level** (no schema
 change, no new ADR — §spec sections updated in place):

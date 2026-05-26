@@ -45,7 +45,7 @@ propagated to Starlette → ASGI 500 → uvicorn traceback.
   503 is no longer a valid response; the generator just terminates
   cleanly, the downstream client receives whatever partial bytes
   arrived, and uvicorn no longer prints the traceback. (commit
-  &lt;pending&gt;)
+  afa3d59)
 - Extended
   `packages/llm_tracker_agent/tests/test_proxy.py` — added
   `_MidStreamFailStream` (an `httpx.AsyncByteStream` that yields

@@ -19,11 +19,11 @@
 
 ## Recent commits (last 5)
 
-- `<pending>` agent: swallow mid-stream upstream close in proxy
+- `<pending>` docs: backfill afa3d59 hash + refresh STATUS
+- `afa3d59` agent: swallow mid-stream upstream close in proxy
 - `3fe4044` docs: backfill 00cc2b0 hash + refresh STATUS
 - `00cc2b0` analytics_sink: strip x-anthropic-billing-header
 - `4694b30` docs: backfill 121276a hash in worklog + STATUS
-- `121276a` analytics_sink: ADR-0038 per-exchange schema
 
 ## Where we paused
 

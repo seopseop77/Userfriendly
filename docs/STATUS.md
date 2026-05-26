@@ -20,11 +20,11 @@ ADR-0038 deploy track still pending. See "Inactive tracks" below.)
 
 ## Recent commits (last 5)
 
-- `<pending>` analytics_sink: framework auto-call prompts as wrappers
+- `<pending>` docs: backfill 2963629 hash in worklog + STATUS
+- `2963629` analytics_sink: framework prompts as wrappers
 - `021cc39` docs: backfill 9dee369 hash in worklog + STATUS
 - `9dee369` agent: release v0.1.1 (mid-stream resilience fix)
 - `f3cd704` docs: backfill afa3d59 hash + refresh STATUS
-- `afa3d59` agent: swallow mid-stream upstream close in proxy
 
 ## Where we paused
 

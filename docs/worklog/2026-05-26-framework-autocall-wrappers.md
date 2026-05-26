@@ -40,7 +40,7 @@ up as user-typed.
   explaining the three categories (bracket-tag wrappers,
   post-/compact prose header, framework auto-call prompt
   prefixes) and the whack-a-mole acknowledgement. (commit
-  &lt;pending&gt;)
+  2963629)
 - Modified
   `packages/llm_tracker_plugin_analytics_sink/tests/test_classifier.py`
   — added four scenario tests under a new "Framework auto-call

@@ -94,7 +94,7 @@ so the test coverage targets the new dispatch boundary specifically.
 `claude-manage` is distributed as a GitHub-Releases wheel
 (ADR-0034/ADR-0035), so the fix only reaches participants once a new
 tagged release is published. Bumped together in one release commit
-mirroring the v0.1.1 pattern (commit `<pending>`):
+mirroring the v0.1.1 pattern (commit `4ad1d04`):
 
 - `packages/llm_tracker_agent/pyproject.toml`: `0.1.1` → `0.1.2`.
 - `packages/llm_tracker_signup/.../templates/success.html`:

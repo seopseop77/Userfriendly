@@ -25,11 +25,11 @@ follow-up; back to the deploy track below.)
 
 ## Recent commits (last 5)
 
-- `<pending>` agent: release v0.1.2 (claude-manage flag pass-through)
+- `<pending>` docs: backfill 4ad1d04 hash in worklog + STATUS
+- `4ad1d04` agent: release v0.1.2 (claude-manage flag pass-through)
 - `9388376` docs: backfill ded0215 hash in worklog + STATUS
 - `ded0215` agent: pass-through claude flags via claude-manage
 - `8595775` docs: backfill f9197cd hash in worklog + STATUS
-- `f9197cd` analytics_sink: 3-value vocab + retire Rule-B collapse
 
 **Three ADR-0038 refinements landed code-level** (no schema
 change, no new ADR — §spec sections updated in place):

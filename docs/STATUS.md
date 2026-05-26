@@ -13,63 +13,64 @@
 
 ## Active worklog
 
-`docs/worklog/2026-05-26-display-role-vocab.md`
+`docs/worklog/2026-05-26-per-exchange-turn-delta.md`
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: backfill 937f6d1 hash in worklog + STATUS
+- `<pending>` docs: backfill 121276a hash in worklog + STATUS
+- `121276a` analytics_sink: ADR-0038 per-exchange schema
+- `ac61a46` docs: ADR-0038 per-exchange turn delta (proposed)
+- `6822dc2` docs: backfill 937f6d1 hash in worklog + STATUS
 - `937f6d1` analytics_sink: fix title_gen list-shape classify
-- `400a68c` docs: backfill d34818a + 5f60435 hashes in worklog + STATUS
-- `5f60435` analytics_sink: ADR-0037 backfill script + applied
-- `d34818a` analytics_sink: ADR-0037 display role vocab split
 
 ## Where we paused
 
-**ADR-0037 fully delivered + post-deploy regression fixed.**
-`conversation_messages.role` now uses the 5-value display vocab
-(`system_prompt`, `user_input`, `title_gen`, `model_output`,
-`assistant`); the session-opener splits into its own row at
-`msg_index=0` and the user's first typed text lives at
-`msg_index=1`. Forward writes, the priority UPSERT, and the helper
-view all updated; backfill applied to the 246 historic rows.
+**ADR-0038 delivered and applied live.** `conversation_messages`
+and the `plugin_analytics_with_messages` helper view are retired;
+per-exchange turn deltas now live directly on `plugin_analytics` in
+three new columns:
 
-**Follow-up (937f6d1)**: first title-gen sidecar to arrive after
-the ADR-0037 deploy (conv `01KSGW0CHY3HAFEM4QRRJ3Y1ST`,
-2026-05-26 00:47) was misclassified as `user_input`.
-`classify_message` only fired the `<session>` rule on string
-content; title-gen arrives as a single-block list and Rule B
-collapses to string at storage time, so the un-normalised
-classification missed the shape. Added a narrow list-of-one branch
-mirroring the string rule + two unit tests + one-shot UPDATE on
-the affected row. All 11 string-`<session>` rows now carry
-`title_gen`.
+- `role` (text, ADR-0038 4-value vocab: `user_input` / `title_gen`
+  / `tool_result` / `sidecar`) replaces `turn_kind`.
+- `request_jsonb` (jsonb) stores `messages[-1].content` with
+  session-opener wrappers stripped; no `{role, content}` envelope.
+- `system_prompt_jsonb` (jsonb) stores `request.system` only when
+  it differs from the conversation's most recent non-null stored
+  system (first exchange or variation).
 
-- Backfill applied via Supabase MCP `execute_sql` in three phases.
-  Phase A: one UPDATE renamed roles across un-migrated convs
-  (104 model_output, 65 → assistant, 53 → user_input, 24 split
-  between title_gen / assistant by `<session>` content shape;
-  one historic mislabel auto-corrected).
-  Phase B: DO block split 26 msg_index=0 array rows whose first
-  block was a synthetic wrapper, shifting siblings +1 via a
-  temp-negative trick.
-  Phase C: `plugin_analytics.n_messages_at_request += 1` for every
-  exchange in a split conv.
-- Final state: 272 rows (was 246, +26 system_prompt inserts), 37
-  conversations, 0 stragglers, helper view `gap = 0` against
-  `n_messages_at_request` on the sample conv.
-- Backfill script committed at
-  `packages/llm_tracker_plugin_analytics_sink/scripts/backfill_display_role_vocab.py`
-  (idempotent — re-runs skip already-migrated convs).
+`response_json` (text) cast + renamed to `response_jsonb` (jsonb).
+`n_messages_at_request` dropped. `classify_message` /
+`split_first_message` (the per-message classifier surface of
+ADR-0037) retired in favour of one role per exchange.
+
+ADR-0036, ADR-0037: Status `Superseded by ADR-0038`.
+
+- Live migration applied via Supabase MCP `execute_sql`:
+  - ADD COLUMN role / request_jsonb / system_prompt_jsonb.
+  - DROP VIEW plugin_analytics_with_messages.
+  - ALTER + RENAME response_json → response_jsonb.
+  - UPDATE backfill of request_jsonb + role from
+    conversation_messages.
+  - DROP COLUMN turn_kind, n_messages_at_request.
+  - DROP TABLE conversation_messages.
+  - UPDATE alembic_version → `0019_per_exchange_turn_delta`.
+- Final state: 16 rows / 0 missing role / 0 missing request_jsonb.
+  role distribution: user_input 3 / title_gen 2 / tool_result 5 /
+  sidecar 6. `system_prompt_jsonb` NULL on all historic rows (raw
+  bodies not retained — forward writes populate).
+- Tests: 53 pkg / 275 repo / ruff clean.
 
 ## Next single step
 
-**Operator's choice.** ADR-0037 is closed. Two outstanding tracks:
+**Operator deploys updated plugin code to fly (`llm-tracker-server`).**
+The new schema is live but the production proxy still runs the
+ADR-0036 code path, which writes to columns + tables that no longer
+exist. Until deploy, `analytics_sink.insert_failed` will appear in
+structlog for every new exchange; the proxy itself stays healthy
+(plugin failures are caught defensively).
 
-1. (back-burner) Participant-#1 install — see ADR-0035 follow-up
-   in `docs/worklog/2026-05-25-uv-tool-install.md`. Owner: operator;
-   waits on signup-app redeploy.
-2. (paused) scope_guard live smoke — still at `0c1ca9d`, separate
-   owner. Do not auto-resume.
+After deploy, send one exchange through the proxy and confirm a row
+lands with `role` and `request_jsonb` populated.
 
 ---
 
@@ -78,3 +79,6 @@ the affected row. All 11 string-`<session>` rows now carry
 **scope_guard** — paused at `0c1ca9d`. Code-complete on Gemini (ADR-0031)
 but no live smoke. Separate owner. Do NOT auto-resume.
 Production: `fly secrets set LLMTRACK_PLUGINS_DISABLED=scope_guard -a llm-tracker-server`
+
+**Participant-#1 install** — back-burner, waits on signup-app redeploy.
+See ADR-0035 follow-up in `docs/worklog/2026-05-25-uv-tool-install.md`.

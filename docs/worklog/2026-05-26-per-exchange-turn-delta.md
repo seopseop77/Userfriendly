@@ -73,33 +73,136 @@ checkpoints in this worklog.)
   safe because the existing column stores raw JSON strings; the
   forward-write code path will start sending jsonb directly.
 
+## What was done (continued)
+
+- Rewrote
+  `packages/llm_tracker_plugin_analytics_sink/src/llm_tracker_plugin_analytics_sink/classifier.py`
+  — dropped `TurnKind` Literal and the request-level `turn_kind`
+  output; `classify_message` now emits the ADR-0038 4-value vocab
+  (`user_input` / `title_gen` / `tool_result` / `sidecar`); added
+  `extract_request_content` for wrapper-stripped `request_jsonb`
+  payloads; `split_first_message` and the `_UPSERT_MESSAGE_SQL`
+  surface removed. `_canonical_user_text` + `_SESSION_WRAP_RE`
+  retained for `first_msg_hash`. (commit 121276a)
+- Rewrote
+  `packages/llm_tracker_plugin_analytics_sink/src/llm_tracker_plugin_analytics_sink/plugin.py`
+  — removed `_upsert_messages`; INSERT now writes `role`,
+  `request_jsonb`, `system_prompt_jsonb`; added `_resolve_system`
+  (hash-compare against the conversation's most recent non-null
+  `system_prompt_jsonb`, store on first exchange or on variation);
+  renamed `response_json` → `response_jsonb` in the INSERT SQL.
+  (commit 121276a)
+- Added alembic migration
+  `packages/llm_tracker_server/alembic/versions/0019_per_exchange_turn_delta.py`
+  — adds the three new columns, casts + renames `response_json` →
+  `response_jsonb` (text → jsonb), backfills `request_jsonb` +
+  `role` from `conversation_messages` using a `CASE` mapper, drops
+  `turn_kind` / `n_messages_at_request` columns, drops the helper
+  view, drops the dedup table. (commit 121276a)
+- Rewrote
+  `packages/llm_tracker_plugin_analytics_sink/tests/test_classifier.py`
+  and `tests/test_analytics_sink.py` for the new vocab + schema.
+  53 pkg / 275 repo / ruff clean. (commit 121276a)
+- **Applied the migration live via Supabase MCP** (`execute_sql`,
+  single connection):
+  - Phase 1 — `ADD COLUMN role / request_jsonb / system_prompt_jsonb`;
+    `DROP VIEW plugin_analytics_with_messages`;
+    `ALTER COLUMN response_json TYPE jsonb USING …`; `RENAME COLUMN
+    response_json TO response_jsonb`.
+  - Phase 2 — backfill `request_jsonb` + `role` from
+    `conversation_messages` (one `UPDATE … FROM` with the CASE
+    mapper baked into the migration script).
+  - Phase 3 — `DROP COLUMN turn_kind`; `DROP COLUMN
+    n_messages_at_request`; `DROP INDEX
+    idx_conversation_messages_org_conv`; `DROP TABLE
+    conversation_messages`; `UPDATE alembic_version SET version_num
+    = '0019_per_exchange_turn_delta'`.
+
+## Decisions (continued)
+
+- **No new ADR for the historic system_prompt_jsonb gap.** Raw
+  request bodies were never retained; the gap is explicit in the
+  ADR-0038 consequences section. Forward writes start populating
+  the column.
+- **Backfill kept `turn_seq` values as-is.** ADR-0037-era rows that
+  classified as `user_input_turn_start` but whose stored
+  `messages[-1]` was a SUGGESTION MODE payload (e.g. exchange
+  `01KSH2041NZYR0XA2NW46G1FRT` at 02:32:17) now classify as
+  `sidecar` under ADR-0038's `classify_message`, yet retain a
+  non-null `turn_seq` from the old vocab. Acceptable historic
+  artefact — forward writes will produce consistent
+  `(role, turn_seq)` pairs.
+
 ## Verification
 
-(To be filled at the next checkpoint, after code changes + tests +
-live migration land.)
+```
+$ .venv/bin/python3.12 -m pytest packages/llm_tracker_plugin_analytics_sink/tests/ -q
+================================ 53 passed in 0.34s ================================
+
+$ .venv/bin/python3.12 -m pytest -q
+================== 275 passed, 31 skipped in 6.40s ===================
+
+$ .venv/bin/python3.12 -m ruff check packages/llm_tracker_plugin_analytics_sink/
+All checks passed!
+```
+
+Live data (post-migration):
+
+```
+plugin_analytics:
+  total_rows                       16
+  rows_with_role                   16  (0 missing)
+  rows_with_request_jsonb          16  (0 missing)
+  rows_with_system_prompt_jsonb     0  (expected — historic backfill out of scope)
+
+role distribution:
+  user_input    3
+  title_gen     2
+  tool_result   5
+  sidecar       6
+
+alembic_version:
+  0019_per_exchange_turn_delta
+```
+
+Sample conv `01KSH1EK8JDG9RBWZZ8B38BZF9` reads top-to-bottom as
+intended (user_input → tool_result → sidecar mix, all
+`request_jsonb` payloads legible).
 
 ## What's left / known limits
 
-- **Phase A — code/migration/tests**: rewrite `classifier.py` (drop
-  `turn_kind` output, ADR-0038 4-value `classify_message`,
-  wrapper-stripping helper for the session-opener), retire
-  `normalize.py`'s `canonical_message` (keep
-  `_canonical_user_text` for `first_msg_hash`), rewrite
-  `plugin.py` (no `_UPSERT_MESSAGE_SQL`, write role / request_jsonb
-  / system_prompt_jsonb on INSERT, system-variation hash compare
-  with cache_control stripping). Add alembic revision. Update unit
-  tests for new vocab + schema.
-- **Phase B — live apply**: run migration on Supabase; backfill
-  `request_jsonb` + `role` from `conversation_messages`; verify
-  row counts match expected; drop the now-empty
-  `conversation_messages` table and `plugin_analytics_with_messages`
-  view.
-- **Phase C — finalisation**: STATUS.md + worklog Handoff + Status
-  hash backfill commit.
+- **Production plugin not yet redeployed.** The fly app
+  `llm-tracker-server` is still running the ADR-0036 code path,
+  which writes to `conversation_messages` (now dropped) and to
+  `turn_kind` / `n_messages_at_request` (now dropped). Until the
+  operator pushes + `fly deploy`s the new code, incoming exchanges
+  will hit `analytics_sink.insert_failed` in structlog and produce
+  no row. The proxy itself is unaffected (plugin failures are
+  caught defensively in `on_persisted`).
+- **`system_prompt_jsonb` will be NULL on all 16 historic rows
+  forever.** Forward writes populate the column via
+  `_resolve_system`'s variation tracker.
+- **`turn_seq` mismatches with `role` on some historic rows.**
+  Backfill did not recompute `turn_seq` (it was already populated
+  by ADR-0036). Forward writes will produce consistent pairs.
 
 ## Handoff
 
-(Will be set at end of session.)
+ADR-0038 fully delivered and applied live. Next single step:
+operator deploys the new plugin code to fly
+(`llm-tracker-server`). Until then the production proxy keeps
+forwarding but `analytics_sink` writes will fail — non-blocking
+for end users but observable in logs.
+
+After deploy, smoke-test by sending one exchange through the proxy
+and confirming a row lands with the new columns populated.
+
+## Suggestions (untouched)
+
+- A `compact_resume` role value for the post-`/compact` resume
+  marker (currently classifying as `sidecar`) could be carved out
+  if usage justifies it later. Carried forward from the
+  ADR-0037 worklog's open suggestion.
 
 ## Suggestions (untouched)
 

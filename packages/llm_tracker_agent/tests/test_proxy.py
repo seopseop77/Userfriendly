@@ -85,6 +85,45 @@ async def test_strips_hop_by_hop() -> None:
     assert outbound["content-length"] == str(len(b'{"hi":1}'))
 
 
+class _MidStreamFailStream(httpx.AsyncByteStream):
+    """Yields a single chunk then raises mid-stream, as a chunked-transfer
+    upstream that closes the TCP connection before terminating the body."""
+
+    async def __aiter__(self):
+        yield b"partial"
+        raise httpx.RemoteProtocolError("simulated mid-stream close")
+
+    async def aclose(self) -> None:
+        return None
+
+
+class _MidStreamFailTransport(httpx.AsyncBaseTransport):
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/plain"},
+            stream=_MidStreamFailStream(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_swallows_midstream_upstream_close() -> None:
+    upstream = httpx.AsyncClient(
+        transport=_MidStreamFailTransport(),
+        base_url=CONFIG.server_url,
+    )
+    app = make_proxy_app(CONFIG, client=upstream)
+    try:
+        resp = await _post_through_app(app, path="/v1/messages", content=b'{"hi":1}')
+    finally:
+        await upstream.aclose()
+
+    # Status + headers already shipped; partial body reaches the client and the
+    # ASGI app terminates the generator cleanly (no 500, no traceback).
+    assert resp.status_code == 200
+    assert resp.content == b"partial"
+
+
 @pytest.mark.asyncio
 async def test_fail_closed_on_server_unreachable() -> None:
     upstream = httpx.AsyncClient(

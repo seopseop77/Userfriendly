@@ -84,6 +84,12 @@ def make_proxy_app(
             try:
                 async for chunk in upstream_response.aiter_bytes():
                     yield chunk
+            except _UNREACHABLE_ERRORS:
+                # Upstream closed the chunked stream after we already started
+                # forwarding. Status + headers have shipped, so we cannot turn
+                # this into a 503; terminate the generator cleanly instead of
+                # bubbling out as ASGI 500.
+                return
             finally:
                 await upstream_response.aclose()
 

@@ -13,19 +13,71 @@
 
 ## Active worklog
 
-`docs/worklog/2026-05-26-per-exchange-turn-delta.md`
+`docs/worklog/2026-05-26-agent-stream-resilience.md`
+
+(ADR-0038 track paused — see "Inactive tracks" below.)
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: backfill 00cc2b0 hash in worklog + STATUS
+- `<pending>` agent: swallow mid-stream upstream close in proxy
+- `3fe4044` docs: backfill 00cc2b0 hash + refresh STATUS
 - `00cc2b0` analytics_sink: strip x-anthropic-billing-header
 - `4694b30` docs: backfill 121276a hash in worklog + STATUS
 - `121276a` analytics_sink: ADR-0038 per-exchange schema
-- `ac61a46` docs: ADR-0038 per-exchange turn delta (proposed)
 
 ## Where we paused
 
-**ADR-0038 delivered and applied live.** `conversation_messages`
+**Mid-stream upstream-close in `llm_tracker_agent` no longer
+crashes the proxy.** `proxy.py:body_iter` was only wrapping
+`aiter_bytes()` in `try/finally`; any `httpx.RemoteProtocolError`
+(or sibling) raised after streaming had started bubbled up as an
+ASGI 500 and printed a long uvicorn traceback on every occurrence.
+Operator saw it firing reliably around Claude Code's `/context`
+and other background calls.
+
+Fix: added `except _UNREACHABLE_ERRORS: return` inside
+`body_iter`'s `try` block. Status + headers have already shipped
+by the time the generator runs, so we can't degrade to 503 the
+way we do at initial `send()` time — the right move is to
+terminate the generator cleanly. Downstream client receives the
+partial bytes that already made it across; uvicorn no longer
+emits the traceback.
+
+Coverage: new `test_swallows_midstream_upstream_close` in
+`packages/llm_tracker_agent/tests/test_proxy.py` exercises the
+exact failure path via a custom `AsyncByteStream` that yields one
+chunk then raises `RemoteProtocolError`.
+
+Tests: 10 pkg / 285 repo / ruff clean.
+
+## Next single step
+
+**Operator reinstalls the uv tool and restarts Claude Code.** The
+traceback originates from
+`/Users/minseop/.local/share/uv/tools/llm-tracker-agent/...`,
+which is a separate wheel install from the workspace source.
+The source-level fix only takes effect after:
+
+```
+uv tool install --reinstall ./packages/llm_tracker_agent
+```
+
+(or the equivalent from `2026-05-25-uv-tool-install.md`),
+followed by restarting Claude Code so the new agent process
+loads. After that, retry `/context` — the uvicorn traceback
+should no longer appear.
+
+If the traceback persists, the file path in the new traceback
+tells us whether the installed copy actually refreshed.
+
+---
+
+## Inactive tracks
+
+### ADR-0038 per-exchange turn delta — awaiting fly deploy
+
+Active worklog: `docs/worklog/2026-05-26-per-exchange-turn-delta.md`.
+ADR-0038 delivered and applied live. `conversation_messages`
 and the `plugin_analytics_with_messages` helper view are retired;
 per-exchange turn deltas now live directly on `plugin_analytics` in
 three new columns:
@@ -71,25 +123,23 @@ migration — historic rows already NULL.
 
 - Tests: 62 pkg / 284 repo / ruff clean.
 
-## Next single step
+**Pending operator step**: deploy updated plugin code to fly
+(`llm-tracker-server`). The new schema is live but the production
+proxy still runs the ADR-0036 code path, which writes to columns +
+tables that no longer exist. Until deploy,
+`analytics_sink.insert_failed` will appear in structlog for every
+new exchange; the proxy itself stays healthy (plugin failures are
+caught defensively). After deploy, send one exchange through the
+proxy and confirm a row lands with `role` and `request_jsonb`
+populated.
 
-**Operator deploys updated plugin code to fly (`llm-tracker-server`).**
-The new schema is live but the production proxy still runs the
-ADR-0036 code path, which writes to columns + tables that no longer
-exist. Until deploy, `analytics_sink.insert_failed` will appear in
-structlog for every new exchange; the proxy itself stays healthy
-(plugin failures are caught defensively).
+### scope_guard
 
-After deploy, send one exchange through the proxy and confirm a row
-lands with `role` and `request_jsonb` populated.
-
----
-
-## Inactive tracks
-
-**scope_guard** — paused at `0c1ca9d`. Code-complete on Gemini (ADR-0031)
-but no live smoke. Separate owner. Do NOT auto-resume.
+Paused at `0c1ca9d`. Code-complete on Gemini (ADR-0031) but no live
+smoke. Separate owner. Do NOT auto-resume.
 Production: `fly secrets set LLMTRACK_PLUGINS_DISABLED=scope_guard -a llm-tracker-server`
 
-**Participant-#1 install** — back-burner, waits on signup-app redeploy.
-See ADR-0035 follow-up in `docs/worklog/2026-05-25-uv-tool-install.md`.
+### Participant-#1 install
+
+Back-burner, waits on signup-app redeploy. See ADR-0035 follow-up
+in `docs/worklog/2026-05-25-uv-tool-install.md`.

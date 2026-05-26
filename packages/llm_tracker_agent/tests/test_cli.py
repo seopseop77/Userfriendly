@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import socket
+import subprocess
 import sys
+import types
 
-import click
 import pytest
+import typer
 from llm_tracker_agent import cli
 from llm_tracker_agent.cli import _pick_port
 
@@ -79,8 +81,13 @@ def test_app_dispatches_setup_subcommand(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_app_translates_run_exit_to_systemexit(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ``_run`` raises ``typer.Exit`` (which extends typer's *vendored*
+    # click fork). Catching the public ``click.exceptions.Exit`` instead
+    # would silently let the exit bubble up as an uncaught exception
+    # — Python would print a traceback after Claude exits. Test the
+    # real-world exception type.
     def fake_run(argv: list[str]) -> None:
-        raise click.exceptions.Exit(code=42)
+        raise typer.Exit(code=42)
 
     monkeypatch.setattr(cli, "_run", fake_run)
     monkeypatch.setattr(sys, "argv", ["claude-manage", "--foo"])
@@ -88,3 +95,52 @@ def test_app_translates_run_exit_to_systemexit(monkeypatch: pytest.MonkeyPatch) 
     with pytest.raises(SystemExit) as excinfo:
         cli.app()
     assert excinfo.value.code == 42
+
+
+def test_app_translates_real_run_subprocess_returncode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # End-to-end: drive the real ``_run`` and confirm that the
+    # ``typer.Exit(code=completed.returncode)`` it raises after
+    # ``subprocess.run`` is translated to ``SystemExit`` with the same
+    # code by ``app()``. Regression for v0.1.2 where the wrong exception
+    # base let the typer.Exit propagate and Python printed a traceback
+    # whenever Claude exited.
+    monkeypatch.setattr(
+        cli,
+        "load_config",
+        lambda: types.SimpleNamespace(local_port=18080),
+    )
+    monkeypatch.setattr(cli, "_pick_port", lambda preferred: preferred)
+    monkeypatch.setattr(cli, "make_proxy_app", lambda config: object())
+    monkeypatch.setattr(cli, "_wait_ready", lambda port: None)
+
+    class _StubServer:
+        def __init__(self, config: object) -> None:
+            pass
+
+        def run(self) -> None:
+            pass
+
+    class _StubConfig:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+    monkeypatch.setattr(cli.uvicorn, "Server", _StubServer)
+    monkeypatch.setattr(cli.uvicorn, "Config", _StubConfig)
+
+    captured: dict[str, list[str]] = {}
+
+    def fake_subprocess_run(
+        cmd: list[str], env: dict[str, str] | None = None, check: bool = False
+    ) -> subprocess.CompletedProcess[bytes]:
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, returncode=42)
+
+    monkeypatch.setattr(subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(sys, "argv", ["claude-manage", "--dangerously-skip-permissions"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.app()
+    assert excinfo.value.code == 42
+    assert captured["cmd"] == ["claude", "--dangerously-skip-permissions"]

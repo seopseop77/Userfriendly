@@ -12,7 +12,6 @@ import urllib.error
 import urllib.request
 from typing import Annotated
 
-import click
 import typer
 import uvicorn
 
@@ -146,7 +145,14 @@ def app() -> None:
         return
     try:
         _run(argv)
-    except click.exceptions.Exit as exc:
+    except typer.Exit as exc:
+        # ``typer.Exit`` extends ``typer._click.exceptions.Exit`` (typer
+        # vendors its own click fork), *not* the public
+        # ``click.exceptions.Exit`` — catching the wrong base lets the
+        # exit bubble up as an uncaught exception and Python dumps a
+        # traceback after Claude exits. Catching ``typer.Exit`` directly
+        # is also the most semantically correct since that's what
+        # ``_run`` / ``_wait_ready`` actually raise.
         sys.exit(exc.exit_code)
 
 

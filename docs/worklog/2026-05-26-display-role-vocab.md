@@ -227,7 +227,7 @@ Fix:
 - Applied one-shot UPDATE to live Supabase, flipping
   `01KSGW0CHY3HAFEM4QRRJ3Y1ST` msg_index=0 from `user_input` to
   `title_gen`. Verification: all 11 string-`<session>` rows now
-  carry role `title_gen`, zero stragglers. (commit <pending>)
+  carry role `title_gen`, zero stragglers. (commit 937f6d1)
 
 No ADR — ADR-0037's spec ("`title_gen` is `<session>...</session>`")
 is unchanged; this is a missed implementation case in

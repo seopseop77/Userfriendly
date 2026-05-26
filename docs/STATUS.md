@@ -17,21 +17,32 @@
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: backfill d34818a + 5f60435 hashes in worklog + STATUS
+- `<pending>` docs: backfill 937f6d1 hash in worklog + STATUS
+- `937f6d1` analytics_sink: fix title_gen list-shape classify
+- `400a68c` docs: backfill d34818a + 5f60435 hashes in worklog + STATUS
 - `5f60435` analytics_sink: ADR-0037 backfill script + applied
 - `d34818a` analytics_sink: ADR-0037 display role vocab split
-- `cf7fcd2` docs: backfill 354d2e2 hash in STATUS + worklog
-- `354d2e2` analytics_sink: ADR-0036 backfill script + applied
 
 ## Where we paused
 
-**ADR-0037 fully delivered.** `conversation_messages.role` now uses
-the 5-value display vocab (`system_prompt`, `user_input`,
-`title_gen`, `model_output`, `assistant`); the session-opener
-splits into its own row at `msg_index=0` and the user's first
-typed text lives at `msg_index=1`. Forward writes, the priority
-UPSERT, and the helper view all updated; backfill applied to the
-246 historic rows.
+**ADR-0037 fully delivered + post-deploy regression fixed.**
+`conversation_messages.role` now uses the 5-value display vocab
+(`system_prompt`, `user_input`, `title_gen`, `model_output`,
+`assistant`); the session-opener splits into its own row at
+`msg_index=0` and the user's first typed text lives at
+`msg_index=1`. Forward writes, the priority UPSERT, and the helper
+view all updated; backfill applied to the 246 historic rows.
+
+**Follow-up (937f6d1)**: first title-gen sidecar to arrive after
+the ADR-0037 deploy (conv `01KSGW0CHY3HAFEM4QRRJ3Y1ST`,
+2026-05-26 00:47) was misclassified as `user_input`.
+`classify_message` only fired the `<session>` rule on string
+content; title-gen arrives as a single-block list and Rule B
+collapses to string at storage time, so the un-normalised
+classification missed the shape. Added a narrow list-of-one branch
+mirroring the string rule + two unit tests + one-shot UPDATE on
+the affected row. All 11 string-`<session>` rows now carry
+`title_gen`.
 
 - Backfill applied via Supabase MCP `execute_sql` in three phases.
   Phase A: one UPDATE renamed roles across un-migrated convs

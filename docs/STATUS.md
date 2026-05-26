@@ -9,22 +9,27 @@
 
 ---
 
-**Last updated**: 2026-05-26
+**Last updated**: 2026-05-27
 
 ## Active worklog
 
 `docs/worklog/2026-05-26-vocab-and-collapse-refinement.md`
 
 (Agent-stream-resilience track waiting on operator push + reinstall.
-ADR-0038 deploy track still pending. See "Inactive tracks" below.)
+ADR-0038 deploy track still pending. See "Inactive tracks" below.
+
+Side-fix landed 2026-05-27: `claude-manage` now forwards arbitrary
+`claude` flags (`--dangerously-skip-permissions`, etc.) — see
+`docs/worklog/2026-05-27-claude-manage-passthrough-args.md`. No
+follow-up; back to the deploy track below.)
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: backfill f9197cd hash in worklog + STATUS
+- `<pending>` docs: backfill ded0215 hash in worklog + STATUS
+- `ded0215` agent: pass-through claude flags via claude-manage
+- `8595775` docs: backfill f9197cd hash in worklog + STATUS
 - `f9197cd` analytics_sink: 3-value vocab + retire Rule-B collapse
 - `3695c48` docs: backfill 2963629 hash in worklog + STATUS
-- `2963629` analytics_sink: framework prompts as wrappers
-- `021cc39` docs: backfill 9dee369 hash in worklog + STATUS
 
 **Three ADR-0038 refinements landed code-level** (no schema
 change, no new ADR — §spec sections updated in place):

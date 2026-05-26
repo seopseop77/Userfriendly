@@ -1,6 +1,6 @@
 # ADR-0036 · Canonical conversation grouping, per-message origin role, priority UPSERT
 
-- **Status**: Accepted
+- **Status**: Superseded by ADR-0038
 - **Date**: 2026-05-25
 - **Author**: Claude Code (operator-directed)
 - **Related**:

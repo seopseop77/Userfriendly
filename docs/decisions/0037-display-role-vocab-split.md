@@ -1,6 +1,6 @@
 # ADR-0037 · Display role vocab — split system_prompt / user_input, name title_gen, merge sidecars into assistant
 
-- **Status**: Accepted
+- **Status**: Superseded by ADR-0038
 - **Date**: 2026-05-25
 - **Author**: Claude Code (operator-directed)
 - **Related**:

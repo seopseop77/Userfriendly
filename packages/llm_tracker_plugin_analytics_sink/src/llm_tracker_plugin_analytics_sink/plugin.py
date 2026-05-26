@@ -1,7 +1,20 @@
-"""`AnalyticsSink` — writes one row per exchange to `plugin_analytics`."""
+"""`AnalyticsSink` — writes one row per exchange to `plugin_analytics`.
+
+ADR-0038. Each exchange becomes a single row whose user-side delta
+sits in `request_jsonb`, model response in `response_jsonb`, and
+`system_prompt_jsonb` is populated only when the request's system
+field differs from the most recent non-null system in this
+conversation (or this is the conversation's first exchange).
+
+The per-message dedup table (`conversation_messages`) and its helper
+view (`plugin_analytics_with_messages`) introduced by ADR-0036 are
+retired by ADR-0038. The `turn_kind` column on `plugin_analytics`
+gives way to a per-row `role` derived from `classify_message`.
+"""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from typing import Any
@@ -16,9 +29,8 @@ from .classifier import (
     Classification,
     classify_message,
     classify_request,
-    split_first_message,
+    extract_request_content,
 )
-from .normalize import canonical_message
 
 DATABASE_URL_ENV = "LLMTRACK_DATABASE_URL"
 
@@ -26,60 +38,27 @@ _INSERT_SQL = sa.text(
     """
     INSERT INTO plugin_analytics (
         id, exchange_id, org_id, model_requested, model_served,
-        n_messages_at_request, response_json,
+        response_jsonb,
         input_tokens, output_tokens, cache_read_tokens,
         cache_write_tokens, stop_reason,
-        turn_kind, turn_seq, slash_commands,
-        first_msg_hash, conversation_id
+        role, turn_seq, slash_commands,
+        first_msg_hash, conversation_id,
+        request_jsonb, system_prompt_jsonb
     ) VALUES (
         :id, :exchange_id, :org_id, :model_requested, :model_served,
-        :n_messages_at_request, :response_json,
+        CAST(:response_jsonb AS jsonb),
         :input_tokens, :output_tokens, :cache_read_tokens,
         :cache_write_tokens, :stop_reason,
-        :turn_kind, :turn_seq, CAST(:slash_commands AS jsonb),
-        :first_msg_hash, :conversation_id
+        :role, :turn_seq, CAST(:slash_commands AS jsonb),
+        :first_msg_hash, :conversation_id,
+        CAST(:request_jsonb AS jsonb), CAST(:system_prompt_jsonb AS jsonb)
     )
     """
 )
 
-# Per-message UPSERT for the conversation_messages dedup table
-# (migration 0015). Runs once per stored message row before the
-# analytics row INSERT, inside the same transaction so the view never
-# sees a row whose messages haven't landed yet.
-#
-# Priority UPSERT (ADR-0037): a stored row whose role is `title_gen`
-# (Claude Code's per-session title fetch landing first at the same
-# msg_index where the main-flow user input will later arrive) can be
-# displaced by an arrival whose role is one of the real-content
-# values. The `WHERE` guards both directions so real content never
-# gets overwritten by a later sidecar, and stream-retry idempotency is
-# preserved (a retry's `EXCLUDED.role` equals the stored role, so the
-# `WHERE` is false and the UPDATE is elided).
-_UPSERT_MESSAGE_SQL = sa.text(
-    """
-    INSERT INTO conversation_messages
-        (conversation_id, msg_index, org_id, role, content_jsonb)
-    VALUES
-        (:conversation_id, :msg_index, :org_id, :role,
-         CAST(:content_jsonb AS jsonb))
-    ON CONFLICT (conversation_id, msg_index) DO UPDATE
-        SET role = EXCLUDED.role,
-            content_jsonb = EXCLUDED.content_jsonb
-        WHERE conversation_messages.role = 'title_gen'
-          AND EXCLUDED.role
-                IN ('system_prompt', 'user_input', 'model_output', 'assistant')
-    """
-)
-
-# Chain-lookup: most recent row with this `first_msg_hash` in this org.
-# Used to inherit the prior conversation_id when one exists. (B) rule
-# (2026-05-19): same `first_msg_hash` in the same org always belongs to
-# the same conversation -- /compact and /clear are what change the hash
-# and start a new conversation, so the message-count comparison the
-# earlier (A) rule used is unnecessary. Dropping the JSONB cast on the
-# stored body also makes the lookup safe against historic rows that
-# carry a malformed JSON escape (the PII scrubber's orphan-backslash
-# bug discovered the same day -- now fixed in the SDK scrubber).
+# Chain-lookup: most recent row with this `first_msg_hash` in this
+# org. Used to inherit the prior conversation_id when one exists.
+# ADR-0036 (B) rule, unchanged by ADR-0038.
 _PREV_BY_HASH_SQL = sa.text(
     """
     SELECT conversation_id
@@ -91,12 +70,10 @@ _PREV_BY_HASH_SQL = sa.text(
     """
 )
 
-# Max turn_seq already assigned in this conversation. New rows get
-# MAX(turn_seq) + 1, giving a cumulative per-conversation step counter
-# (a single user_input_turn_start is N, its tool_continuations are
-# N+1, N+2, ..., and the next user_input_turn_start picks up from
-# where they left off). internal_subprompt / claude_manage_probe stay
-# off the axis (turn_seq=NULL).
+# Max turn_seq already assigned in this conversation. ADR-0038
+# `turn_seq` axis is `role IN ('user_input', 'tool_result')`; other
+# roles (title_gen, sidecar) stay NULL. The MAX query is identical
+# to ADR-0036 — only the axis definition changed.
 _LAST_SEQ_IN_CONV_SQL = sa.text(
     """
     SELECT MAX(turn_seq) AS turn_seq
@@ -106,9 +83,24 @@ _LAST_SEQ_IN_CONV_SQL = sa.text(
     """
 )
 
+# Most recent non-null system_prompt_jsonb in this conversation.
+# Used by the system-variation hash compare on every write.
+_LAST_SYSTEM_IN_CONV_SQL = sa.text(
+    """
+    SELECT system_prompt_jsonb
+    FROM plugin_analytics
+    WHERE conversation_id = :conversation_id
+      AND org_id = :org_id
+      AND system_prompt_jsonb IS NOT NULL
+    ORDER BY created_at DESC
+    LIMIT 1
+    """
+)
+
+_TURN_AXIS_ROLES: frozenset[str] = frozenset({"user_input", "tool_result"})
+
 
 def _parse_request(body: str | None) -> dict[str, Any] | None:
-    """Parse a request body string into a dict, or return None."""
     if body is None:
         return None
     try:
@@ -125,15 +117,35 @@ def _model_from_request(parsed: dict[str, Any] | None) -> str | None:
     return model if isinstance(model, str) else None
 
 
+def _system_hash(system_field: Any) -> str | None:
+    """SHA-256[:16] of the system field's flattened text.
+
+    Drops prompt-caching artefacts (`cache_control` on system text
+    blocks) by extracting only the `text` strings, then joining.
+    Returns None when system is absent.
+    """
+    if system_field is None:
+        return None
+    if isinstance(system_field, str):
+        return hashlib.sha256(system_field.encode("utf-8")).hexdigest()[:16]
+    if isinstance(system_field, list):
+        parts: list[str] = []
+        for b in system_field:
+            if isinstance(b, dict):
+                t = b.get("text")
+                if isinstance(t, str):
+                    parts.append(t)
+        canonical = "\n".join(parts)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+    return None
+
+
 class AnalyticsSink(BasePlugin):
     """Stash request on `on_request_received`; write row on `on_persisted`."""
 
     name = "analytics_sink"
 
     def __init__(self, engine: AsyncEngine | None = None) -> None:
-        # Tests pass a pre-built engine; production constructs one in
-        # `on_init` so plugin loading does not depend on the env var
-        # being present at import time.
         self._engine: AsyncEngine | None = engine
         self._engine_owned: bool = False
         self._stash: dict[str, str] = {}  # exchange_id -> messages_json
@@ -158,11 +170,6 @@ class AnalyticsSink(BasePlugin):
     async def on_request_received(self, exchange_id: str, ctx: HookContext) -> Pass:
         body = ctx.request_text()
         if body is None:
-            # The request body sometimes isn't readable yet at this hook
-            # (forwarder hasn't drained the body into the context — see
-            # HookContext.request_text docstring). Log loudly so the
-            # follow-up miss in on_persisted is traceable. on_persisted
-            # will re-try and recover when the body is available there.
             self._log.warning("analytics_sink.stash_skipped", exchange_id=exchange_id)
             return Pass()
         self._stash[exchange_id] = body
@@ -176,11 +183,6 @@ class AnalyticsSink(BasePlugin):
         classification: Classification,
     ) -> dict[str, Any]:
         usage = ctx.response_usage()
-        # Encode `slash_commands` as a JSON string. The INSERT casts it
-        # to jsonb in SQL. asyncpg's raw-SQL binding path (sa.text)
-        # has no column type info and rejects a Python list as JSONB
-        # input with "'list' object has no attribute 'encode'" —
-        # discovered live 2026-05-19, exchange 01KRZARYVBNAN9XCPNB8N8BAVT.
         slash = classification.slash_commands
         return {
             "id": str(ULID()),
@@ -188,26 +190,24 @@ class AnalyticsSink(BasePlugin):
             "org_id": ctx.org_id,
             "model_requested": _model_from_request(parsed),
             "model_served": getattr(usage, "model_served", None),
-            "n_messages_at_request": classification.n_messages,
-            "response_json": ctx.response_content_json(),
+            "response_jsonb": ctx.response_content_json(),
             "input_tokens": getattr(usage, "input_tokens", None),
             "output_tokens": getattr(usage, "output_tokens", None),
             "cache_read_tokens": getattr(usage, "cache_read_tokens", None),
             "cache_write_tokens": getattr(usage, "cache_write_tokens", None),
             "stop_reason": getattr(usage, "stop_reason", None),
-            "turn_kind": classification.turn_kind,
+            "role": None,  # filled below
             "turn_seq": None,  # filled by caller after conversation resolution
             "slash_commands": json.dumps(slash) if slash is not None else None,
             "first_msg_hash": classification.first_msg_hash,
             "conversation_id": None,  # filled by caller
+            "request_jsonb": None,  # filled below
+            "system_prompt_jsonb": None,  # filled below (variation tracker)
         }
 
     async def on_persisted(self, exchange_id: str, ctx: HookContext) -> None:
         messages_json = self._stash.pop(exchange_id, None)
         if messages_json is None:
-            # Fallback: if the body wasn't ready at on_request_received,
-            # try once more here. The context's raw body is typically
-            # populated by the forwarder before on_persisted fires.
             messages_json = ctx.request_text()
             if messages_json is None:
                 self._log.warning(
@@ -232,18 +232,26 @@ class AnalyticsSink(BasePlugin):
         row = self._build_row(exchange_id, ctx, parsed, classification)
 
         parsed_messages = (parsed or {}).get("messages") or []
+        last_msg = (
+            parsed_messages[-1]
+            if parsed_messages and isinstance(parsed_messages[-1], dict)
+            else None
+        )
 
-        # ADR-0037 split: when messages[0] carries leading wrapper
-        # blocks (Claude Code's session-opener shape), peel them into
-        # a separate `system_prompt` row at msg_index=0 and shift the
-        # user's typed text to msg_index=1. All subsequent messages
-        # shift by +1 as well. The split is `None` when no shift is
-        # needed (string content, single-block list, only wrappers,
-        # etc.) — the loop then degenerates to the pre-ADR-0037
-        # 1:1 mapping.
-        split = split_first_message(parsed_messages[0]) if parsed_messages else None
-        if split is not None:
-            row["n_messages_at_request"] = classification.n_messages + 1
+        # ADR-0038: role from messages[-1]; request_jsonb is the
+        # wrapper-stripped content of that same message.
+        if last_msg is not None:
+            row["role"] = classify_message(last_msg)
+            content = extract_request_content(last_msg)
+            row["request_jsonb"] = (
+                json.dumps(content, ensure_ascii=False) if content is not None else None
+            )
+        else:
+            # Malformed request — no messages array. Still write the
+            # row for observability, with NULLs in the new columns.
+            row["role"] = "sidecar"
+
+        system_field = (parsed or {}).get("system")
 
         try:
             async with self._engine.begin() as conn:
@@ -252,91 +260,24 @@ class AnalyticsSink(BasePlugin):
                     row_id=row["id"],
                     org_id=ctx.org_id,
                     classification=classification,
+                    role=row["role"],
                 )
                 row["conversation_id"] = conv_id
                 row["turn_seq"] = turn_seq
-                # Messages first — the helper view joins on
-                # conversation_id and msg_index, so the analytics row
-                # must not be visible before the messages it points to.
-                #
-                # ADR-0037: `role` carries the display vocab (5 values:
-                # system_prompt / user_input / title_gen / model_output
-                # / assistant). `cm.role = pa.turn_kind` no longer
-                # joins symbolically; analyst queries that depended on
-                # that equivalence must update.
-                await self._upsert_messages(
+
+                # System variation tracker: store iff first exchange in
+                # conv or current system hash differs from most recent
+                # stored.
+                row["system_prompt_jsonb"] = await self._resolve_system(
                     conn,
-                    conv_id=conv_id,
+                    conversation_id=conv_id,
                     org_id=ctx.org_id,
-                    parsed_messages=parsed_messages,
-                    split=split,
+                    system_field=system_field,
                 )
+
                 await conn.execute(_INSERT_SQL, row)
         except Exception as exc:  # pragma: no cover — defensive
             self._log.warning("analytics_sink.insert_failed", error=str(exc))
-
-    async def _upsert_messages(
-        self,
-        conn: Any,
-        *,
-        conv_id: str | None,
-        org_id: Any,
-        parsed_messages: list[Any],
-        split: tuple[list[dict[str, Any]], dict[str, Any]] | None,
-    ) -> None:
-        """Walk `parsed_messages` and emit one UPSERT per stored row.
-
-        When `split` is set (ADR-0037 session-opener shape), the first
-        API message expands to two stored rows (msg_index 0=system,
-        1=user); subsequent API messages occupy msg_index 2, 3, ….
-        When `split` is `None`, the mapping is 1:1.
-        """
-        if split is not None:
-            system_blocks, user_msg = split
-            await conn.execute(
-                _UPSERT_MESSAGE_SQL,
-                {
-                    "conversation_id": conv_id,
-                    "msg_index": 0,
-                    "org_id": org_id,
-                    "role": "system_prompt",
-                    "content_jsonb": json.dumps(system_blocks, ensure_ascii=False),
-                },
-            )
-            user_norm = canonical_message(user_msg)
-            await conn.execute(
-                _UPSERT_MESSAGE_SQL,
-                {
-                    "conversation_id": conv_id,
-                    "msg_index": 1,
-                    "org_id": org_id,
-                    "role": "user_input",
-                    "content_jsonb": json.dumps(user_norm["content"], ensure_ascii=False),
-                },
-            )
-            shift = 1
-            start_idx = 1
-        else:
-            shift = 0
-            start_idx = 0
-
-        for api_idx, m in enumerate(parsed_messages):
-            if api_idx < start_idx:
-                continue
-            if not isinstance(m, dict):
-                continue
-            norm = canonical_message(m)
-            role = classify_message(m)
-            await conn.execute(
-                _UPSERT_MESSAGE_SQL,
-                {
-                    "conversation_id": conv_id,
-                    "msg_index": api_idx + shift,
-                    "org_id": org_id,
-                    "role": role,
-                    "content_jsonb": json.dumps(norm["content"], ensure_ascii=False),
-                },
-            )
 
     async def _resolve_conversation(
         self,
@@ -345,20 +286,13 @@ class AnalyticsSink(BasePlugin):
         row_id: str,
         org_id: Any,
         classification: Classification,
+        role: str | None,
     ) -> tuple[str | None, int | None]:
         """Run the chain lookup and decide `(conversation_id, turn_seq)`.
 
-        (B) rule: same `first_msg_hash` in the same org always inherits
-        the prior `conversation_id`. No prior row -> new conversation
-        (this row's id becomes the conversation id). /compact and
-        /clear are what change the hash and start a new conversation;
-        identical first-prompt collisions are deliberately folded into
-        one conversation per the 2026-05-19 design call.
-
-        `turn_seq` is the cumulative step counter for the conversation:
-        `MAX(turn_seq) + 1` across user_input_turn_start and
-        tool_continuation rows. internal_subprompt and
-        claude_manage_probe stay off the axis (NULL).
+        ADR-0036 (B) rule for conversation grouping. `turn_seq` axis
+        per ADR-0038: `role IN ('user_input', 'tool_result')` only.
+        Other roles (title_gen, sidecar) stay off the axis.
         """
         prev = (
             await conn.execute(
@@ -370,8 +304,7 @@ class AnalyticsSink(BasePlugin):
         prev_conv_id = prev.conversation_id if prev is not None else None
         conv_id: str | None = prev_conv_id if prev_conv_id is not None else row_id
 
-        kind = classification.turn_kind
-        if kind in ("user_input_turn_start", "tool_continuation"):
+        if role in _TURN_AXIS_ROLES:
             last_seq_row = (
                 await conn.execute(
                     _LAST_SEQ_IN_CONV_SQL,
@@ -385,7 +318,42 @@ class AnalyticsSink(BasePlugin):
             )
             turn_seq: int | None = base + 1
         else:
-            # internal_subprompt, claude_manage_probe — out of turn axis
             turn_seq = None
 
         return conv_id, turn_seq
+
+    async def _resolve_system(
+        self,
+        conn: Any,
+        *,
+        conversation_id: str | None,
+        org_id: Any,
+        system_field: Any,
+    ) -> str | None:
+        """Return the JSON-encoded `system_prompt_jsonb` value, or None.
+
+        Stores the current request's system iff it is the first
+        exchange in the conversation (no prior non-null system) or
+        its hash differs from the most recent non-null stored
+        system. Otherwise returns None so the row stores NULL.
+        """
+        if system_field is None or conversation_id is None:
+            return (
+                json.dumps(system_field, ensure_ascii=False) if system_field is not None else None
+            )
+
+        prev = (
+            await conn.execute(
+                _LAST_SYSTEM_IN_CONV_SQL,
+                {"conversation_id": conversation_id, "org_id": org_id},
+            )
+        ).first()
+
+        current_hash = _system_hash(system_field)
+        if prev is None or prev.system_prompt_jsonb is None:
+            return json.dumps(system_field, ensure_ascii=False)
+
+        prev_hash = _system_hash(prev.system_prompt_jsonb)
+        if current_hash == prev_hash:
+            return None
+        return json.dumps(system_field, ensure_ascii=False)

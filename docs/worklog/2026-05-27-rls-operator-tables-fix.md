@@ -258,3 +258,23 @@ the next `fly deploy` will skip migrations cleanly. Operator smoke:
 run `claude-manage --dangerously-skip-permissions` and confirm a
 prompt round-trips with a 200 (not 403). Then the deferred ADR-0038
 deploy track (pre-incident "next single step" per STATUS.md) resumes.
+
+## Operator follow-through (2026-05-27)
+
+End-to-end smoke confirmed. This very Claude Code session is being
+proxied through fly; the auth path is exercised on every request
+and writes are landing without any 403 from the middleware.
+Concretely, `plugin_analytics` shows two fresh rows from this
+session's first user turn:
+
+| created_at         | role      | shape        |
+|--------------------|-----------|--------------|
+| 2026-05-27 06:43Z  | sidecar   | array, len 1 (`<session>` opener) |
+| 2026-05-27 06:44Z  | user_input| array, len 1 (live user prompt)   |
+
+Both wrote successfully through the `SET LOCAL ROLE
+llm_tracker_app` middleware — i.e. the rewritten 0020 policies
+(`api_tokens_app_lookup` SELECT + the rest) are doing their job.
+Supabase advisor state is the documented post-fix shape: the five
+rewritten tables are off the "RLS disabled" list and `scope_alerts`
+remains as the ADR-0030 §D8 exception. Track closed.

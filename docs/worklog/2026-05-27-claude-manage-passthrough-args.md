@@ -218,6 +218,20 @@ After that, the analytics_sink / ADR-0038 deploy track in
 `docs/worklog/2026-05-26-vocab-and-collapse-refinement.md` is the
 remaining work.
 
+## Operator follow-through (2026-05-27)
+
+Operator pushed `main` + `agent/v0.1.3`. Verified locally:
+
+```
+$ git log origin/main..HEAD            # → empty (all commits on remote)
+$ git ls-remote --tags origin agent/v0.1.3
+c786a5b6d5a5e76dc5f00ad0409f5ca34e669ca0  refs/tags/agent/v0.1.3
+```
+
+Tag is on the remote, so `release-agent.yml` has fired (or will);
+operator-side reinstall + traceback-smoke is owned by the operator
+from here. Track closed for this repo.
+
 ## Suggestions (untouched)
 
 - None — surgical change.

@@ -229,3 +229,27 @@ fly deploy (covers all three pending commits), then applies the
 two `UPDATE` statements above against the live DB. After deploy,
 sample a fresh `<session>` exchange and confirm it lands as
 `role='sidecar'`.
+
+## Operator follow-through (2026-05-27)
+
+Operator completed the deploy + backfill. Verified live via
+Supabase MCP `execute_sql` from this session:
+
+```sql
+SELECT count(*) FILTER (WHERE role = 'title_gen')                                 AS leftover_title_gen,
+       count(*) FILTER (WHERE role = 'user_input' AND jsonb_typeof(request_jsonb) = 'string') AS leftover_user_input_string,
+       count(*) AS total_rows,
+       max(created_at) AS latest_exchange_ts
+FROM   public.plugin_analytics;
+-- leftover_title_gen=0, leftover_user_input_string=0,
+-- total_rows=35, latest_exchange_ts=2026-05-27 06:55Z.
+```
+
+Both backfill UPDATEs ran cleanly. Fresh `<session>` opener
+written by the live proxy at 2026-05-27 06:43Z landed as
+`role='sidecar'` with array-shape `request_jsonb` — confirms
+the new code path (framework-prompt prefixes + 3-value vocab
++ Rule-B retired) is serving on fly. `request_jsonb` distribution
+across the 35 rows: `user_input` 13 (all array), `tool_result` 9
+(all array), `sidecar` 10 (7 array + 3 bare string from the
+RAW-message-content path — expected). Track closed.

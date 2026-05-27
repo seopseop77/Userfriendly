@@ -39,10 +39,10 @@ to remove. Operator agreed on the restore approach:
 - Wrote `docs/decisions/0039-restore-reconstruction-view.md` —
   Accepted ADR, documents the partial reversal of ADR-0038's view
   drop with the new delta-stitching SQL and the rationale for
-  excluding sidecars from `messages_jsonb`. (commit `<pending>`)
+  excluding sidecars from `messages_jsonb`. (commit `2518737`)
 - Wrote `packages/llm_tracker_server/alembic/versions/0021_restore_messages_view.py` —
   one-shot `CREATE VIEW` on upgrade, `DROP VIEW IF EXISTS` on
-  downgrade. Same SQL as ADR-0039 §"Shape". (commit `<pending>`)
+  downgrade. Same SQL as ADR-0039 §"Shape". (commit `2518737`)
 - Live-applied via Supabase MCP `apply_migration`
   (`restore_messages_view`): the `CREATE VIEW` + bump of
   `alembic_version` to `0021_restore_messages_view` in one

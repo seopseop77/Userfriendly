@@ -22,11 +22,11 @@ alembic ledger at `0021_restore_messages_view`. Tests + ruff clean.)
 
 ## Recent commits (last 5)
 
-- `<pending>` analytics: restore plugin_analytics_with_messages view (ADR-0039)
+- `<pending>` docs: backfill 2518737 hash in worklog + STATUS
+- `2518737` analytics: restore plugin_analytics_with_messages view (ADR-0039)
 - `5bf88ff` docs: backfill d1e8ae4 hash in worklog + STATUS
 - `d1e8ae4` analytics_sink: register WebFetch wrapper prefix
 - `b4aaaee` docs: backfill c599d08 hash in worklog + STATUS
-- `c599d08` docs: close three operator-side tracks
 
 ## Where we paused
 

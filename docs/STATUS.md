@@ -13,44 +13,42 @@
 
 ## Active worklog
 
-`docs/worklog/2026-05-27-webfetch-wrapper-prefix.md`
+`docs/worklog/2026-05-27-restore-reconstruction-view.md`
 
-(Single-prefix surgical add — `"Web page content:\n---\n"` joins
-the `_SYNTHETIC_WRAPPER_PREFIXES` tuple alongside WebSearch trigger
-and PreCompact prompt. Closes out the last documented small
-follow-up; no operator-side track is in flight.)
+(ADR-0039 + migration 0021 — restored `plugin_analytics_with_messages`
+view atop ADR-0038's per-exchange delta schema. Main-flow only; new
+`system_prompt_resolved` column. Live-applied via Supabase MCP;
+alembic ledger at `0021_restore_messages_view`. Tests + ruff clean.)
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: backfill d1e8ae4 hash in worklog + STATUS
+- `<pending>` analytics: restore plugin_analytics_with_messages view (ADR-0039)
+- `5bf88ff` docs: backfill d1e8ae4 hash in worklog + STATUS
 - `d1e8ae4` analytics_sink: register WebFetch wrapper prefix
 - `b4aaaee` docs: backfill c599d08 hash in worklog + STATUS
 - `c599d08` docs: close three operator-side tracks
-- `65e0839` docs: backfill c4e695d hash in worklog + STATUS
 
 ## Where we paused
 
-Quiet point. WebFetch wrapper prefix added, tested, ruff-clean, and
-live-DB backfill confirmed no-op (zero historic `user_input` rows
-match the new prefix). All three prior deferred operator tracks
-remain closed (see git history + the three closed-track worklogs
-referenced from the previous STATUS entry).
+View restored and verified against live data. Two test conversations
+exercised — 12-row main-flow (perfect A/B/A/B alternation, n_msgs =
+2k+1) and 11-row mixed (sidecars correctly excluded with
+`messages_jsonb IS NULL`, no count pollution).
 
 ## Next single step
 
-**Operator deploys `llm-tracker-server` to fly** to activate the new
-WebFetch wrapper prefix in production:
+**Operator deploys `llm-tracker-server` to fly** to activate the
+WebFetch wrapper prefix added in the prior commit (`d1e8ae4`):
 
 ```
 fly deploy -c packages/llm_tracker_server/fly.toml
 ```
 
-After deploy, send one WebFetch-bearing exchange through and confirm
-it lands as `role='sidecar'` (or stays `user_input` with the WebFetch
-block stripped from `request_jsonb` if accompanied by user-typed
-text). Until deploy, fresh WebFetch results keep writing as
-`role='user_input'` with the unstripped block — self-correcting on
-next deploy, no DB backfill needed.
+Same step that was outstanding before this view-restore work — the
+view doesn't depend on or block it. After deploy, send one
+WebFetch-bearing exchange through and confirm it lands as
+`role='sidecar'` (or stays `user_input` with the WebFetch block
+stripped from `request_jsonb` if accompanied by user-typed text).
 
 If the operator wants to keep going on this repo instead of touching
 fly, there is no documented next item — wait for the next request.

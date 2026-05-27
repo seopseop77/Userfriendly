@@ -22,8 +22,8 @@ follow-up; no operator-side track is in flight.)
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: backfill <pending> hash in worklog + STATUS
-- `<pending>` analytics_sink: register WebFetch result as wrapper prefix
+- `<pending>` docs: backfill d1e8ae4 hash in worklog + STATUS
+- `d1e8ae4` analytics_sink: register WebFetch wrapper prefix
 - `b4aaaee` docs: backfill c599d08 hash in worklog + STATUS
 - `c599d08` docs: close three operator-side tracks
 - `65e0839` docs: backfill c4e695d hash in worklog + STATUS

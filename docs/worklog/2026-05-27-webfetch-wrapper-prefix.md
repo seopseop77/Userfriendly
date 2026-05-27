@@ -28,7 +28,7 @@ PreCompact prompt only.
   `packages/llm_tracker_plugin_analytics_sink/src/llm_tracker_plugin_analytics_sink/classifier.py`.
   Extended the category-3 comment to cover "auto-presented content"
   (WebFetch result) in addition to "auto-call prompt" (WebSearch /
-  PreCompact). (commit <pending>)
+  PreCompact). (commit d1e8ae4)
 - Added two fixtures to
   `packages/llm_tracker_plugin_analytics_sink/tests/test_classifier.py`:
   - `test_classify_webfetch_result_is_sidecar` — wrapper-only
@@ -37,7 +37,7 @@ PreCompact prompt only.
   - `test_classify_webfetch_with_user_typed_is_user_input` —
     user-typed block alongside a WebFetch result block keeps role
     `user_input`, with `extract_request_content` stripping the
-    WebFetch block. (commit <pending>)
+    WebFetch block. (commit d1e8ae4)
 
 ## Decisions
 

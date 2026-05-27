@@ -252,4 +252,4 @@ the new code path (framework-prompt prefixes + 3-value vocab
 + Rule-B retired) is serving on fly. `request_jsonb` distribution
 across the 35 rows: `user_input` 13 (all array), `tool_result` 9
 (all array), `sidecar` 10 (7 array + 3 bare string from the
-RAW-message-content path — expected). Track closed.
+RAW-message-content path — expected). Track closed. (commit c599d08)

@@ -22,11 +22,12 @@ flight.)
 
 ## Recent commits (last 5)
 
+- `<pending>` docs: backfill c599d08 hash in worklog + STATUS
+- `c599d08` docs: close three operator-side tracks
 - `65e0839` docs: backfill c4e695d hash in worklog + STATUS
 - `c4e695d` storage: fix RLS 0020 to grant llm_tracker_app policies
 - `2cd100e` docs: backfill 496e517 hash in worklog + STATUS
 - `496e517` agent: release v0.1.3 (typer.Exit catch hotfix)
-- `53715ad` agent: catch typer.Exit (not click) in app() wrapper
 
 ## Where we paused
 

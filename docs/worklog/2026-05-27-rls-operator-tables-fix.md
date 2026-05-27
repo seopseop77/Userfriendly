@@ -277,4 +277,4 @@ llm_tracker_app` middleware — i.e. the rewritten 0020 policies
 (`api_tokens_app_lookup` SELECT + the rest) are doing their job.
 Supabase advisor state is the documented post-fix shape: the five
 rewritten tables are off the "RLS disabled" list and `scope_alerts`
-remains as the ADR-0030 §D8 exception. Track closed.
+remains as the ADR-0030 §D8 exception. Track closed. (commit c599d08)

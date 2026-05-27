@@ -230,7 +230,7 @@ c786a5b6d5a5e76dc5f00ad0409f5ca34e669ca0  refs/tags/agent/v0.1.3
 
 Tag is on the remote, so `release-agent.yml` has fired (or will);
 operator-side reinstall + traceback-smoke is owned by the operator
-from here. Track closed for this repo.
+from here. Track closed for this repo. (commit c599d08)
 
 ## Suggestions (untouched)
 

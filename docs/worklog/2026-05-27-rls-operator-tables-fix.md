@@ -53,14 +53,16 @@ inadvertent ADR-0030 §D8 violation on `scope_alerts` (see Decisions).
 
 - Rewrote
   `packages/llm_tracker_server/alembic/versions/0020_enable_rls_operator_tables.py`
-  in place (file was never committed, so no history rewrite). The new
-  version mirrors the 0005 / 0010 pattern: enable RLS *and* attach the
-  policies each access path actually needs.
-- Created this worklog. Live-DB convergence procedure documented below
-  under "Live DB rollback + reapply".
-
-(File modified, not yet committed -- waiting on live-DB convergence so the
-single commit + checkpoint covers both code and prod state.)
+  in place — mirrors the 0005 / 0010 pattern (enable RLS *and* attach
+  the policies each access path actually needs). (commit c4e695d)
+- Created this worklog. (commit c4e695d)
+- Updated `packages/llm_tracker_server/alembic/versions/0018_participant_registrations.py`
+  docstring to match the new 0020 behavior (was already staged by the
+  user; folded into the same commit). (commit c4e695d)
+- Applied the rollback + reapply SQL block live via Supabase MCP
+  `execute_sql`. `alembic_version` left pinned at
+  `0020_enable_rls_operator_tables` so the next `fly deploy` sees no
+  pending migrations.
 
 ## Decisions
 

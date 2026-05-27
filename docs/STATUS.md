@@ -13,24 +13,25 @@
 
 ## Active worklog
 
-`docs/worklog/2026-05-26-vocab-and-collapse-refinement.md`
+`docs/worklog/2026-05-27-rls-operator-tables-fix.md`
 
-(ADR-0038 deploy track still pending. See "Inactive tracks" below.
+(RLS-0020 incident: enabling RLS on six operator-side tables with
+no policies broke claude-manage because the auth middleware runs
+under the non-BYPASSRLS `llm_tracker_app` role. Diagnosed, rewrote
+0020 with proper policies, applied live via Supabase MCP. Auth
+path verified at the DB level; operator end-to-end smoke pending.
 
-Side-fix landed 2026-05-27: `claude-manage` now forwards arbitrary
-`claude` flags (`--dangerously-skip-permissions`, etc.). v0.1.2
-shipped but had a traceback-on-exit bug; **v0.1.3 hotfix supersedes
-it** — see `docs/worklog/2026-05-27-claude-manage-passthrough-args.md`
-"Hotfix: v0.1.3" section. Pending operator push, then back to the
-deploy track below.)
+After that smoke, the deferred ADR-0038 deploy track resumes —
+that was the pre-incident "next single step" and is captured in
+the inactive tracks below.)
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: backfill 496e517 hash in worklog + STATUS
+- `<pending>` docs: backfill c4e695d hash in worklog + STATUS
+- `c4e695d` storage: fix RLS 0020 to grant llm_tracker_app policies
+- `2cd100e` docs: backfill 496e517 hash in worklog + STATUS
 - `496e517` agent: release v0.1.3 (typer.Exit catch hotfix)
 - `53715ad` agent: catch typer.Exit (not click) in app() wrapper
-- `322d53c` docs: backfill 4ad1d04 hash in worklog + STATUS
-- `4ad1d04` agent: release v0.1.2 (claude-manage flag pass-through)
 
 **Three ADR-0038 refinements landed code-level** (no schema
 change, no new ADR — §spec sections updated in place):
@@ -66,6 +67,18 @@ will go in with the next discovery batch.
 Tests: 66 pkg / 289 repo / ruff clean.
 
 ## Next single step
+
+**Operator smoke-tests `claude-manage` against fly to confirm the
+RLS fix landed.** One prompt round-trip — if it 200s (not 403),
+the rollback + rewritten 0020 is end-to-end verified. Then resume
+the deferred deploy track below.
+
+```
+claude-manage --dangerously-skip-permissions
+# enter prompt, see normal response (no 403, no traceback)
+```
+
+### Pre-incident deploy track (resumes after smoke)
 
 **Operator deploys updated `llm-tracker-server` plugin code to
 fly, then runs the two backfill UPDATEs.** ADR-0038 schema work

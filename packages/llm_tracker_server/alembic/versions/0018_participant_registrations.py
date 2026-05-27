@@ -28,12 +28,16 @@ Schema mirrors the ``plugin_analytics`` (migration 0007) pattern:
 * ``created_at`` server-default ``now()`` matching the ``orgs`` /
   ``api_tokens`` / ``plugin_analytics`` convention.
 
-No RLS. Operator-only table — same posture as ``plugin_analytics``
-(ADR-0033): the signup app uses its own ``AsyncEngine`` from a
-separate Fly service and does not go through the proxy server's
-per-request session binding. Adding RLS would require every connection
-to ``SET LOCAL app.org_id`` for a table that no end-user surface ever
-reads.
+Operator-only table — same posture as ``plugin_analytics`` (ADR-0033):
+the signup app uses its own ``AsyncEngine`` from a separate Fly service
+and does not go through the proxy server's per-request session binding.
+No row-level policies are needed because no end-user surface ever reads
+this table.
+
+(Updated 2026-05-27: migration 0020 enables RLS on this table with no
+policies, blocking PostgREST's ``anon`` / ``authenticated`` paths. The
+backend's direct PG connection bypasses RLS as the ``postgres`` role,
+so no signup-flow code change was required.)
 
 Indexed on ``email`` so the duplicate pre-check and any operator
 ``WHERE email = …`` queries stay fast.

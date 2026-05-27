@@ -210,10 +210,10 @@ string is the correct stored shape.
   with `title_gen` role, with Rule-B collapse).
 - **Whack-a-mole inherent.** New framework auto-call prompts
   will need their prefix added when discovered. Currently
-  registered: WebSearch trigger, PreCompact prompt. Future
-  candidates: WebFetch trigger (operator observed once; prefix
-  not yet added — left as a deliberate sample so the new
-  prefix gets added together with the next discovery batch).
+  registered: WebSearch trigger, PreCompact prompt, WebFetch
+  result (added 2026-05-27, see
+  `docs/worklog/2026-05-27-webfetch-wrapper-prefix.md`). No
+  new candidates currently on the radar.
 - **No `cache_control` monitoring metric.** A defensive
   signal — log when a row's `cache_control` distribution
   disagrees with the prefix-based classification — was

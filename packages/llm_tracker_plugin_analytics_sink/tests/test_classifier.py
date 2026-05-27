@@ -432,6 +432,47 @@ def test_classify_precompact_with_user_typed_is_user_input() -> None:
     assert [b["text"] for b in out] == ["## Context Usage\n…stdout", "잘했으"]
 
 
+def test_classify_webfetch_result_is_sidecar() -> None:
+    """Claude Code surfaces a WebFetch tool's fetched page content as
+    a user-role text block whose text starts with
+    `"\\nWeb page content:\\n---\\n"` (the leading `\\n` is stripped
+    by `lstrip` before the prefix check; the in-prefix `\\n---\\n` is
+    the literal rule that separates the header from the page body).
+    With the prefix in the wrapper set, a turn carrying only this
+    block (plus `<system-reminder>` etc.) classifies as sidecar."""
+    msg = _user(
+        [
+            {"type": "text", "text": "<system-reminder>\nfoo"},
+            {
+                "type": "text",
+                "text": "\nWeb page content:\n---\n# Example page\n\nHello world…",
+            },
+        ]
+    )
+    assert classify_message(msg) == "sidecar"
+
+
+def test_classify_webfetch_with_user_typed_is_user_input() -> None:
+    """When a WebFetch result block sits alongside a user-typed block,
+    the user-typed text survives and the row stays user_input. The
+    fetched-content block is stripped from `request_jsonb`."""
+    msg = _user(
+        [
+            {"type": "text", "text": "<system-reminder>\nfoo"},
+            {"type": "text", "text": "내용 요약해줘"},
+            {
+                "type": "text",
+                "text": "Web page content:\n---\n# Doc\n\nbody…",
+            },
+        ]
+    )
+    assert classify_message(msg) == "user_input"
+    out = extract_request_content(msg)
+    # User-typed block survives; WebFetch result is stripped.
+    assert isinstance(out, list)
+    assert [b["text"] for b in out] == ["내용 요약해줘"]
+
+
 # ---------------------------------------------------------------------
 # normalize_system: drop `x-anthropic-billing-header` telemetry blocks.
 # ---------------------------------------------------------------------

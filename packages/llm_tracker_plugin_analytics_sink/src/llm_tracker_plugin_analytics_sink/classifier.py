@@ -77,14 +77,15 @@ MessageRole = Literal[
 #      `<local-command-*>`) — Claude Code attaches these around or
 #      alongside user-typed text in every main-flow message.
 #   2. Post-/compact resume prose header.
-#   3. Framework auto-call prompt prefixes — Claude Code internally
-#      issues these LLM calls without a user typing them
-#      (WebSearch trigger, PreCompact summarization request).
-#      Listed as wrapper prefixes so the surrounding turn classifies
-#      as `sidecar` (or stays `user_input` when accompanied by an
-#      actual typed message), and the framework prompt itself does
-#      not leak into `request_jsonb`. Whack-a-mole by design — new
-#      framework prompts get added as discovered.
+#   3. Framework auto-call prompt and auto-presented content prefixes
+#      — Claude Code internally issues these LLM calls (WebSearch
+#      trigger, PreCompact summarization request) or surfaces fetched
+#      content as a synthesised user-role text block (WebFetch result)
+#      without a user typing them. Listed as wrapper prefixes so the
+#      surrounding turn classifies as `sidecar` (or stays `user_input`
+#      when accompanied by an actual typed message), and the framework
+#      prompt itself does not leak into `request_jsonb`. Whack-a-mole
+#      by design — new framework prompts get added as discovered.
 _SYNTHETIC_WRAPPER_PREFIXES: tuple[str, ...] = (
     "<system-reminder>",
     "<local-command-caveat>",
@@ -98,6 +99,10 @@ _SYNTHETIC_WRAPPER_PREFIXES: tuple[str, ...] = (
     # Framework auto-call prompts (ADR-0038 refinement).
     "Perform a web search for the query: ",
     "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.",
+    # WebFetch result — Claude Code surfaces fetched page content as a
+    # user-role text block starting with this header (a literal "---"
+    # rule separates the header from the page body).
+    "Web page content:\n---\n",
 )
 
 # Text-block prefixes Anthropic surfaces inside the system field for

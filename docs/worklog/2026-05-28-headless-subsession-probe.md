@@ -29,7 +29,8 @@ run is consistent and reproducible.
   Surfaced 3 candidate anomalies, then followed each to root cause
   (`extractors/anthropic.py`, `plugin_analytics_sink/plugin.py`, and a
   re-run of the supabase queries with a correct time window). **None
-  require a fix** — see Suggestions for the individual diagnoses.
+  require a fix** — see Suggestions for the individual diagnoses
+  (commit b37916a).
 - Created
   `docs/experiments/headless-subsession/{README.md,runner.sh,results/}`
   as a self-contained runbook for the follow-on matrix session

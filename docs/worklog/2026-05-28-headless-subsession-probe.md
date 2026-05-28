@@ -30,10 +30,11 @@ run is consistent and reproducible.
   fixed in this session).
 - Created
   `docs/experiments/headless-subsession/{README.md,runner.sh,results/}`
-  as a self-contained runbook for the follow-on matrix session.
+  as a self-contained runbook for the follow-on matrix session
+  (commit 2b69a72).
 - Created `docs/experiments/README.md` describing the new folder's
-  purpose (probe / investigation track, separate from worklog and
-  decisions).
+  purpose — probe / investigation track, separate from worklog and
+  decisions (commit 2b69a72).
 
 ## Decisions
 

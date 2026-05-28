@@ -243,17 +243,29 @@ findings only in `results/`.
 
 ---
 
-## 7. Known anomalies (already on file)
+## 7. Known non-anomalies (already investigated)
 
-These were found during the origin probe. **Do not re-file as new
-findings** unless your round adds specifics (different model, different
-endpoint, different conditions). Reference them by number.
+Three surface observations from the origin probe were followed up to
+their root causes and **are not bugs**. They are listed here so a
+matrix round doesn't re-file them as findings. See origin worklog
+Suggestions for the full diagnosis.
 
-1. `model_served` context-window suffix (`[1m]`) lost / 404'd. See
-   origin worklog Suggestion #1.
-2. `plugin_analytics` sink omits Haiku traffic. See Suggestion #2.
-3. Some 200 rows have NULL `stop_reason` / `model_served`. See
-   Suggestion #3.
+1. **`model_served` lacks the `[1m]` suffix.** Anthropic's response
+   doesn't include the suffix; `[1m]` is a Claude-Code-internal
+   display tag. Not a sink bug.
+2. **Haiku traffic appears to be missing from `plugin_analytics`.**
+   It isn't — the original probe used too-narrow time windows in its
+   verification queries. Haiku is recorded normally. If your own
+   query returns no Haiku rows, **check the time filter first** before
+   filing.
+3. **Some 200 rows have NULL `stop_reason` / `model_served`.**
+   Intended per ADR-0027 axis 1 ("best-effort NULL"). Streams that
+   end without `message_delta` (cancelled, timed out, error-closed)
+   honestly leave those columns NULL.
+
+A round that confirms a *genuinely new* anomaly should be appended to
+the origin worklog's Suggestions section (not just buried in
+`results/`).
 
 ---
 

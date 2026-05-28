@@ -25,9 +25,11 @@ run is consistent and reproducible.
   collapses to 0 unless the model is pinned (autoselect flips between
   `claude-opus-4-7[1m]` and `claude-opus-4-7` across turns of one
   session, defeating the prompt cache).
-- Cross-checked `exchanges` + `plugin_analytics` for probe traffic and
-  surfaced 3 manage-logic anomalies (recorded under Suggestions — not
-  fixed in this session).
+- Cross-checked `exchanges` + `plugin_analytics` for probe traffic.
+  Surfaced 3 candidate anomalies, then followed each to root cause
+  (`extractors/anthropic.py`, `plugin_analytics_sink/plugin.py`, and a
+  re-run of the supabase queries with a correct time window). **None
+  require a fix** — see Suggestions for the individual diagnoses.
 - Created
   `docs/experiments/headless-subsession/{README.md,runner.sh,results/}`
   as a self-contained runbook for the follow-on matrix session
@@ -43,9 +45,11 @@ run is consistent and reproducible.
   verification used `claude-haiku-4-5` because pinning *any* model is
   enough to demonstrate cache survival, and Haiku kept the verification
   cost down. The matrix session uses the user-chosen sonnet.
-- **No fixes for the 3 anomalies yet** — the matrix session will collect
-  broader reproductions before remediation is designed. Logged in
-  Suggestions only.
+- **Investigated all 3 surface observations to root cause in this same
+  session; none warrant a fix** (see Suggestions). Original plan had
+  been to defer remediation to the matrix session, but reading the
+  code + re-querying supabase took only a few minutes and removed
+  three would-be false leads from the matrix's plate.
 - **STATUS.md untouched** — investigation track, fly deploy remains the
   active critical path.
 
@@ -89,24 +93,37 @@ For the human operator: STATUS.md still says "fly deploy" is the next
 critical step. This investigation track is parallel and does not block
 it.
 
-## Suggestions (untouched — found while probing)
+## Suggestions — investigated, no action needed
 
-1. **`model_served` context-window suffix is lost in supabase.** Claude
-   Code identifies 1M-context Opus as `claude-opus-4-7[1m]` client-side.
-   Two bad downstream outcomes were observed in `exchanges`:
-   - Row `01KSPPY37TS... 2026-05-28 07:14:14` —
-     `model_requested = 'claude-opus-4-7[1m]'` reached Anthropic
-     verbatim → `status_code = 404`. The `[1m]` suffix is a
-     Claude-Code-internal display tag, not a valid Anthropic model ID.
-   - Successful 200 rows record `model_served = 'claude-opus-4-7'` even
-     when the client reported `[1m]`. The 1M vs 200k distinction is not
-     queryable in supabase, which breaks any cost / latency cohort by
-     context window.
-2. **`plugin_analytics` sink omits Haiku traffic.** `exchanges` rows
-   `01KSPQKKRP...` and `01KSPQM9DP...` (Haiku 200 `end_turn`) have no
-   matching `plugin_analytics` row, while Opus 200 `end_turn` rows from
-   the same window do. Sink filter is likely model-gated. Breaks
-   model-cohort analytics.
-3. **`stop_reason` / `model_served` NULL on some 200 rows.** Example:
-   row `01KSPQQWN93Z... 07:28:20` — status 200 but both columns null.
-   Data-quality gap; root cause not investigated.
+Each candidate "anomaly" surfaced during the probe was followed up to a
+root cause in this session. None require a code change. They are kept
+here so a future session doesn't re-investigate the same surface.
+
+1. **`model_served` context suffix (`[1m]`) absent in supabase.**
+   Root cause: `extractors/anthropic.py:120` stores whatever
+   `message_start.message.model` contains. Anthropic returns the
+   resolved model id *without* the `[1m]` tag — `[1m]` is a
+   Claude-Code-internal display string, not a wire model id. The single
+   404 row (`01KSPPY37TS...`) was a transient case where the client
+   sent `[1m]` verbatim and Anthropic rejected it; in steady state the
+   client appears to strip the suffix before the wire call. Not a
+   manage-logic bug. No fix — stripping in proxy would be "fixing what
+   isn't ours" and violates CLAUDE.md §2.2 (simplicity first).
+2. **`plugin_analytics` initially appeared to omit Haiku.** Re-checked:
+   it does not. The original verification used `now() - 5 minutes`
+   windows that happened to land *after* the Haiku round had landed,
+   so the rows existed but were outside the time filter. Re-queried
+   with `created_at BETWEEN '2026-05-28 07:24' AND '07:27'`: Haiku
+   rows `01KSPQM5NN...` (T1, cache_write=41065) and `01KSPQMCTA...`
+   (T2, cache_read=41540) are present and match stdout 1:1. Sink code
+   (`plugin_analytics_sink/.../plugin.py`) confirmed to have no model
+   filter — every exchange the `on_persisted` hook fires for becomes a
+   row, regardless of model. False positive; no fix.
+3. **`stop_reason` / `model_served` NULL on some 200 rows.** Intended
+   behaviour. `extractors/anthropic.py` docstring lines 8–9 cite
+   ADR-0027 axis 1 ("best-effort NULL"). Both columns are captured
+   from streamed events (`message_start` for `model_served`,
+   `message_delta` for `stop_reason`). Streams that end without those
+   events — mid-flight cancellation, very long latency,
+   error-truncated replies — honestly record NULL instead of guessing.
+   NULL is the intended signal for "no information". No fix.

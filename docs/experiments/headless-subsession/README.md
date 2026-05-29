@@ -295,3 +295,15 @@ the origin worklog's Suggestions section (not just buried in
 `runner.sh` in this directory wraps §1 + §2 into one command. See its
 header for usage. Prefer it over hand-typing the env + flag combo on
 every call.
+
+## 10. Slash commands → interactive only
+
+Slash commands (`/help`, `/clear`, `/compact`, …) are **not parsed by
+`claude -p` headless mode** — they arrive as plain user text and the
+classifier's `<command-name>` / `<local-command-*>` / post-`/compact`
+resume-marker branches never fire (confirmed 2026-05-28; see
+`results/2026-05-28-r013-thru-r022-r026-slash-not-parsed.md`). Don't
+burn headless rounds on them. To exercise those branches, route an
+**interactive** Claude Code session through the proxy and type the
+slashes by hand — runbook: `INTERACTIVE-SLASH.md`, launcher:
+`runner-interactive.sh`.

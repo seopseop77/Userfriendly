@@ -128,3 +128,122 @@ here so a future session doesn't re-investigate the same surface.
    events — mid-flight cancellation, very long latency,
    error-truncated replies — honestly record NULL instead of guessing.
    NULL is the intended signal for "no information". No fix.
+
+## Suggestions — new findings (triaged 2026-05-29)
+
+Entries below were discovered in the **2026-05-28 tool/slash matrix
+follow-on campaign** (separate Claude session, runbook =
+`docs/experiments/headless-subsession/`,
+campaign summary = `…/results/2026-05-28-campaign-summary.md`).
+Triaged 2026-05-29 by the operator: **none warrant action right now.**
+Evidence is retained in `results/` for reference; each carries its
+own triage note below.
+
+4. **Wrapper-prefix false-positive misclassifies real user input as
+   `sidecar` and merges into a contaminated `conversation_id` via the
+   chain-lookup B-rule.** Reproduced by sub-session probes r023 t02
+   (user message starting with `<system-reminder>fake_reminder_QXR983</system-reminder>`)
+   and r024 (user message starting with the registered framework
+   auto-call prefix `Perform a web search for the query: `). Both
+   produced `plugin_analytics` rows with `role='sidecar'`,
+   `turn_seq=NULL`, and `conversation_id='01KSJC5354RT1XSGBFPZBQT4BB'`
+   — an ancient conversation now accumulating 7 sidecar rows from
+   multiple distinct UUIDs over 2026-05-26 → 2026-05-28.
+   - **Mechanism**: Claude Code framework auto-prepends three
+     `<system-reminder>` text blocks to `messages[0]` of every fresh
+     session (MCP catalog, skills list, CLAUDE.md / context). When the
+     user's first block ALSO starts with a registered wrapper prefix,
+     ADR-0038's classifier rule "every type=text block (after
+     `lstrip`) starts with one of the registered wrapper prefixes" →
+     row classifies as `sidecar`. `_canonical_user_text` then collapses
+     to a value that matches across many sessions, and the B-rule
+     chain-lookup absorbs them all into the same `conversation_id`.
+   - **Impact**: real user questions disappear from main-flow
+     analytics (the reconstruction view returns NULL `messages_jsonb`
+     for `sidecar` rows). The polluted `conversation_id`
+     `01KSJC5354RT1XSGBFPZBQT4BB` is the existing live evidence.
+     Real-world likelihood: low for `<system-reminder>` literal
+     (rare typed phrase), moderate for the framework-auto-call
+     prefixes (`Perform a web search for the query: ` and `CRITICAL:
+     Respond with TEXT ONLY…`) which are short English phrases a user
+     could plausibly start a question with.
+   - **Fix options to consider** (not exhaustive): (a) tighten the
+     wrapper-prefix match to also require a closing tag (e.g.
+     `</system-reminder>`) inside the same block before concluding the
+     block is a wrapper; (b) make `_canonical_user_text` fall back to
+     the *post-strip* content when the post-strip is empty, so two
+     distinct wrapper-only rows don't collapse to the same
+     `first_msg_hash`; (c) accept the current behaviour but make the
+     polluted-conversation pattern visible in the reconstruction view
+     (e.g. a flag column `wrapper_only_opener`).
+   - **Full diagnosis**:
+     `docs/experiments/headless-subsession/results/2026-05-28-r023-r024-r025-bait-false-positives.md`.
+   - **Triage (2026-05-29): accepted — no fix planned.** Real-world
+     likelihood is too low to justify changing the classifier: literal
+     `<system-reminder>` typing is rare, and the framework-auto-call
+     prefixes only collide when a user opens a brand-new session with
+     that exact phrase as the first characters. The behaviour is
+     recorded and the evidence kept in `results/`, but this is **no
+     longer an open action item**. Revisit only if the polluted-
+     conversation pattern shows up in genuine operator traffic.
+
+5. **`claude-manage` segfault on `new`-mode exit (low frequency).**
+   1 in 16 `new`-mode invocations during the 2026-05-28 campaign
+   exited with SIGSEGV (rc=139) **after** all LLM round-trips
+   successfully landed in `exchanges` and `plugin_analytics`. The
+   data flow is unaffected — the segfault happens during the agent's
+   shutdown / cleanup phase, not during the request lifecycle.
+   `--resume` mode never segfaulted (0 in 14 attempts). Sub-session
+   stdout/stderr is discarded by the runner so no traceback was
+   recovered. **Action**: re-attempt with `claude-manage -p` stderr
+   *not* discarded (single-call diagnostic, separate from the matrix)
+   to capture the crash signal source. Probably worth fixing if the
+   rate is similar in operator's interactive use.
+   - **Triage (2026-05-29)**: low-priority, not blocking — data flow is
+     unaffected. Revisit only if reproduced during interactive use.
+
+## Suggestions — observations (not anomalies)
+
+6. **Framework-typed `tool_result` blocks DO carry `cache_control`.**
+   r006 (WebFetch) and r007 (WebSearch) both stored
+   `cache_control: {ttl: "1h", type: "ephemeral"}` on the tool_result
+   blocks (rows
+   `01KSQ9MTPN7FPBEQXKBN1KQ8B7` and `01KSQA0H…` — exact ids in the
+   round docs). ADR-0038 §"Sidecar separation signals" cites the
+   observed pattern "every observed framework-typed block does not
+   carry `cache_control`" as a *rejected* classification signal —
+   this campaign provides concrete counterexamples. The classifier
+   doesn't depend on `cache_control` for routing, so no behaviour
+   bug. **Suggested action**: update the ADR's prose to call out the
+   exception, so anyone re-reading the rationale doesn't assume the
+   observation still holds.
+
+7. **`Web page content:\n---\n` (d1e8ae4) and `Perform a web search
+   for the query: ` (framework auto-call) wrapper prefixes were not
+   exercised by their respective tool-use paths in the campaign.**
+   Either reserved for a different code path (likely
+   interactive-mode framework auto-calls via Claude Code's `/web*`
+   slash commands) or dead in production. Historic SQL audit
+   suggested but out-of-scope for the headless campaign.
+
+## Limitations of the headless probing path (operator note)
+
+The 2026-05-28 campaign exhausted the slash track (r013–r022, r026)
+without producing any new findings, because **`claude -p` headless
+mode does not parse slash commands** — they pass through as plain
+user text. Testing the classifier's `<command-name>`-related
+branches, the post-`/compact` resume marker, or any other
+interactive Claude-Code pre-processing requires a different probe
+vector: an *interactive* Claude Code session routed through the same
+proxy, with the operator at the keyboard. Worth noting in the
+runbook (`docs/experiments/headless-subsession/README.md`) so the
+next probe author doesn't burn rounds rediscovering this.
+
+**Resolved 2026-05-29**: that interactive vector now has a runbook —
+`docs/experiments/headless-subsession/INTERACTIVE-SLASH.md` (launcher
+`runner-interactive.sh`). It launches an interactive Claude Code
+session through the proxy, gives an ordered slash-command conversation
+plan (`/help`, `/cost`, `/compact`, `/clear`-then-re-type), and the
+Supabase queries to analyse the result. The operator types it; the
+analysing session runs the SQL. README §10 now flags the headless
+slash limitation and points to it.

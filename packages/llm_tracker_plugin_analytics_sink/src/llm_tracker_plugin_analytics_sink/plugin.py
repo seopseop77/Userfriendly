@@ -302,12 +302,18 @@ class AnalyticsSink(BasePlugin):
         per ADR-0038: `role IN ('user_input', 'tool_result')` only.
         Other roles (title_gen, sidecar) stay off the axis.
         """
-        prev = (
-            await conn.execute(
-                _PREV_BY_HASH_SQL,
-                {"first_msg_hash": classification.first_msg_hash, "org_id": org_id},
-            )
-        ).first()
+        # ADR-0040: a None hash means no user message carried real text
+        # (e.g. a request whose only user content is wrapper-only). Skip
+        # the chain-lookup so the row opens its own conversation_id
+        # instead of collapsing onto the shared empty-text hash.
+        prev = None
+        if classification.first_msg_hash is not None:
+            prev = (
+                await conn.execute(
+                    _PREV_BY_HASH_SQL,
+                    {"first_msg_hash": classification.first_msg_hash, "org_id": org_id},
+                )
+            ).first()
 
         prev_conv_id = prev.conversation_id if prev is not None else None
         conv_id: str | None = prev_conv_id if prev_conv_id is not None else row_id

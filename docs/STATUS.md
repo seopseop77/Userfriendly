@@ -9,49 +9,48 @@
 
 ---
 
-**Last updated**: 2026-05-27
+**Last updated**: 2026-05-30
 
 ## Active worklog
 
-`docs/worklog/2026-05-27-restore-reconstruction-view.md`
+`docs/worklog/2026-05-28-headless-subsession-probe.md`
 
-(ADR-0039 + migration 0021 — restored `plugin_analytics_with_messages`
-view atop ADR-0038's per-exchange delta schema. Main-flow only; new
-`system_prompt_resolved` column. Live-applied via Supabase MCP;
-alembic ledger at `0021_restore_messages_view`. Tests + ruff clean.)
+(Interactive slash probe `s001` (2026-05-29) found the post-`/compact`
+turn orphaning into the global empty-text conversation bucket
+`01KSJC53…` — Suggestion #8. **Fixed by ADR-0040**: `first_msg_hash`
+scans past wrapper-only leading messages (resume marker) to the first
+real user message; None → own conversation_id. Result doc:
+`docs/experiments/headless-subsession/results/2026-05-29-s001-interactive-slash.md`.
+Sink tests + ruff clean, 72 pass.)
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: backfill 2518737 hash in worklog + STATUS
-- `2518737` analytics: restore plugin_analytics_with_messages view (ADR-0039)
-- `5bf88ff` docs: backfill d1e8ae4 hash in worklog + STATUS
-- `d1e8ae4` analytics_sink: register WebFetch wrapper prefix
-- `b4aaaee` docs: backfill c599d08 hash in worklog + STATUS
+- `<pending>` analytics-sink: scan past wrapper messages for grouping hash (ADR-0040)
+- `f8f43d0` docs: drop runner-interactive.sh, inline the command
+- `e5ee423` docs: headless probe campaign results + slash runbook
+- `1f1f3d0` docs: backfill b37916a hash in worklog
+- `b37916a` docs: retract probe anomalies #1-#3 (non-bugs)
 
 ## Where we paused
 
-View restored and verified against live data. Two test conversations
-exercised — 12-row main-flow (perfect A/B/A/B alternation, n_msgs =
-2k+1) and 11-row mixed (sidecars correctly excluded with
-`messages_jsonb IS NULL`, no count pollution).
+ADR-0040 implemented and tested (forward-only, no migration —
+`first_msg_hash` column already nullable). The fix closes the
+`/compact` orphaning. Not yet deployed to fly; live behavior still
+shows the old empty-bucket merge until deploy.
 
 ## Next single step
 
-**Operator deploys `llm-tracker-server` to fly** to activate the
-WebFetch wrapper prefix added in the prior commit (`d1e8ae4`):
+**Operator deploys `llm-tracker-server` to fly** to activate ADR-0040
+(and the still-pending WebFetch prefix from `d1e8ae4`):
 
 ```
 fly deploy -c packages/llm_tracker_server/fly.toml
 ```
 
-Same step that was outstanding before this view-restore work — the
-view doesn't depend on or block it. After deploy, send one
-WebFetch-bearing exchange through and confirm it lands as
-`role='sidecar'` (or stays `user_input` with the WebFetch block
-stripped from `request_jsonb` if accompanied by user-typed text).
-
-If the operator wants to keep going on this repo instead of touching
-fly, there is no documented next item — wait for the next request.
+After deploy, verify with an interactive `/compact` + 2–3 follow-up
+messages (runbook `INTERACTIVE-SLASH.md`): the post-compact turns
+should now share one fresh `conversation_id` (not `01KSJC53…`), and a
+text-less request should get `first_msg_hash IS NULL`.
 
 ---
 

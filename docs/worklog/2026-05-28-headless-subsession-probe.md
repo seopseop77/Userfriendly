@@ -226,6 +226,66 @@ own triage note below.
    slash commands) or dead in production. Historic SQL audit
    suggested but out-of-scope for the headless campaign.
 
+## Suggestions — new findings (interactive slash, 2026-05-30)
+
+From the first interactive slash probe (`claude-manage` no `-p`, operator
+at the keyboard), runbook `…/INTERACTIVE-SLASH.md`, evidence
+`…/results/2026-05-29-s001-interactive-slash.md`. Session
+2026-05-29 15:01–15:08 UTC, tag `[PROBE 2026-05-29 s001]`.
+
+8. **Post-`/compact` turn is orphaned into the empty-hash bucket
+   `01KSJC5354RT1XSGBFPZBQT4BB` — reopens Suggestion #4.** The first turn
+   after an interactive `/compact` ("Reply with just: resumed", carrying
+   `slash_commands=["compact"]`) landed with `conversation_id=01KSJC53…`,
+   `role=user_input`, `turn_seq=1` — the **first `user_input` row ever**
+   in that bucket (previously only sidecars). The rest of the session
+   (turns 1–4 and the post-`/clear` re-anchor onward) stayed in the live
+   conversation `01KST434TQDCG554RSFWZFGPE7`.
+   - **Mechanism (code-confirmed)**: after `/compact`, `messages[0]` is
+     the resume-marker block `"This session is being continued…"`, a
+     registered `_SYNTHETIC_WRAPPER_PREFIXES` entry
+     (`classifier.py:98`). `_canonical_user_text` (`classifier.py:296`)
+     skips wrapper-only blocks → returns `""` → `_hash_first_message`
+     yields `first_msg_hash = SHA256("")`, the same fixed hash for every
+     compacted conversation, so the (B) chain-lookup absorbs them all
+     into the one empty-hash bucket. Identical root cause as #4
+     (empty canonical → shared hash → B-rule merge into `01KSJC53…`).
+   - **Why this changes the #4 triage**: #4 was accepted "no fix — real-
+     world likelihood too low" because the colliding openers were
+     rare/contrived (literal `<system-reminder>` typing, framework
+     auto-call prefixes). This run shows the **same collision fires on a
+     bare `/compact`** — a routine interactive action — so any genuinely
+     new message after `/compact` orphans. The runbook's identical-text
+     re-type is the *only* reason the post-`/clear` turn (t5) did not
+     also orphan (its non-empty canonical matched turn 1's hash). The
+     likelihood premise behind the #4 triage no longer holds.
+   - **Fix directions**: (a) make `_hash_first_message` / the B-rule
+     refuse to chain on empty canonical text — treat empty-canonical
+     openers as a fresh `conversation_id` instead of collapsing to
+     `SHA256("")`; (b) for resume-marker-only `messages[0]`, derive
+     continuity from the resumed conversation rather than the opener
+     hash.
+   - **Recommendation**: reopen #4 as an action item.
+   - **Resolved (2026-05-30) by ADR-0040** — `first_msg_hash` now scans
+     past wrapper-only leading messages (the resume marker) to the first
+     real user message, and returns None (→ own conversation_id) when no
+     user message carries real text. Fix in `classifier.py`
+     (`_hash_first_user_message`) + `plugin.py` resolver guard; tests in
+     `test_classifier.py`. The `/compact` orphaning is closed; the
+     orthogonal identical-opener (B)-rule collision is left out of scope.
+     Forward-only — existing `01KSJC53…` rows are not backfilled (source
+     message arrays not retained).
+
+9. **Confirmations from the same run (not anomalies).** `slash_commands`
+   extraction and `<local-command-*>` / `<command-message>` wrapper-strip
+   both work end-to-end (every slash turn populated, no wrapper leakage
+   in 22/22 stored bodies). The single-element `<session>` branch (F-4,
+   previously "suspected unreachable") **is reachable** — it fired twice
+   as title-generation sidecars and classified `role=sidecar` correctly.
+   `/clear` + identical re-type merged into the original
+   `conversation_id` (B-rule). `exchanges` ↔ `plugin_analytics` was 1:1
+   (22/22) in the window. Details in the s001 result doc.
+
 ## Limitations of the headless probing path (operator note)
 
 The 2026-05-28 campaign exhausted the slash track (r013–r022, r026)

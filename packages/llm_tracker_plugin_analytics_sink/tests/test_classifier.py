@@ -131,9 +131,72 @@ def test_slash_command_none_when_no_command_blocks() -> None:
 def test_empty_messages_array_defensive() -> None:
     result = classify_request({"messages": []})
     assert result.n_messages == 0
-    assert isinstance(result.first_msg_hash, str)
-    assert len(result.first_msg_hash) == 16
+    # ADR-0040: no user message carries text → None (was SHA-256("")).
+    assert result.first_msg_hash is None
     assert result.slash_commands is None
+
+
+def test_first_msg_hash_scans_past_wrapper_only_first_message() -> None:
+    """ADR-0040: when `messages[0]` is wrapper-only (post-`/compact`
+    resume marker), the hash keys on the first real user message, not
+    the empty string."""
+    marker = _user([{"type": "text", "text": "This session is being continued..."}])
+    post_compact = classify_request(
+        {
+            "messages": [
+                marker,
+                {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+                _user([{"type": "text", "text": "강아지 좋아해?"}]),
+            ]
+        }
+    )
+    plain = classify_request({"messages": [_user([{"type": "text", "text": "강아지 좋아해?"}])]})
+    assert post_compact.first_msg_hash == plain.first_msg_hash
+
+
+def test_first_msg_hash_stable_across_post_compact_turns() -> None:
+    """Successive post-`/compact` turns keep the resume marker at
+    `messages[0]`; they must share one hash so they group together."""
+    marker = _user([{"type": "text", "text": "This session is being continued..."}])
+    assistant = {"role": "assistant", "content": [{"type": "text", "text": "..."}]}
+    turn_a = classify_request({"messages": [marker, assistant, _user("강아지 좋아해?")]})
+    turn_b = classify_request(
+        {
+            "messages": [
+                marker,
+                assistant,
+                _user("강아지 좋아해?"),
+                assistant,
+                _user("강아지 vs 고양이"),
+            ]
+        }
+    )
+    assert turn_a.first_msg_hash == turn_b.first_msg_hash
+
+
+def test_first_msg_hash_none_when_only_wrapper_messages() -> None:
+    """Every user message wrapper-only → None (opens its own conv),
+    not the shared empty-text hash."""
+    result = classify_request(
+        {"messages": [_user([{"type": "text", "text": "This session is being continued..."}])]}
+    )
+    assert result.first_msg_hash is None
+
+
+def test_first_msg_hash_skips_assistant_text() -> None:
+    """The scan considers only `role=user` messages — an assistant
+    message must never become the conversation key."""
+    result = classify_request(
+        {
+            "messages": [
+                _user([{"type": "text", "text": "<system-reminder>\nx"}]),
+                {"role": "assistant", "content": [{"type": "text", "text": "assistant text"}]},
+                _user([{"type": "text", "text": "real question"}]),
+            ]
+        }
+    )
+    expected = classify_request({"messages": [_user("real question")]})
+    assert result.first_msg_hash == expected.first_msg_hash
 
 
 def test_classification_is_frozen_dataclass() -> None:

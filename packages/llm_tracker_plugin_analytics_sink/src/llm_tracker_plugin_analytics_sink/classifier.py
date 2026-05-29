@@ -44,9 +44,14 @@ ADR-0038 vocab. Three public entry points:
   variation-tracking hash and the storage write so the invariant
   "same hash ⇒ identical stored bytes" holds.
 
-`first_msg_hash` is SHA-256[:16] of the canonical user-typed text in
-`messages[0]`. ADR-0036's (B) rule unchanged: same hash in the same
-org collapses to the same `conversation_id`.
+`first_msg_hash` is SHA-256[:16] of the canonical user-typed text of
+the first `role=user` message that carries real (non-wrapper) text,
+scanning past wrapper-only leading messages such as the post-`/compact`
+resume marker (ADR-0040). It is `None` when no user message carries
+real text; such rows open their own `conversation_id` instead of
+collapsing onto the shared empty-text hash. ADR-0036's (B) rule is
+otherwise unchanged: the same hash in the same org resolves to the same
+`conversation_id`.
 """
 
 from __future__ import annotations
@@ -127,7 +132,7 @@ class Classification:
     """Result of `classify_request`. Three independent fields."""
 
     slash_commands: list[str] | None  # None when no `<command-name>` blocks
-    first_msg_hash: str
+    first_msg_hash: str | None  # None when no user message carries real text
     n_messages: int
 
 
@@ -135,7 +140,7 @@ def classify_request(request: dict[str, Any]) -> Classification:
     """Classify a parsed Anthropic Messages API request body."""
     messages = request.get("messages") or []
     n = len(messages)
-    first_msg_hash = _hash_first_message(messages[0]) if n > 0 else _hash_first_message({})
+    first_msg_hash = _hash_first_user_message(messages)
 
     if n == 0:
         return Classification(
@@ -287,10 +292,29 @@ def _extract_slash_commands(content: list[Any]) -> list[str] | None:
     return found or None
 
 
-def _hash_first_message(first: dict[str, Any]) -> str:
-    """SHA-256[:16] of `messages[0]`'s canonical user-typed text."""
-    canonical = _canonical_user_text(first.get("content"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+def _hash_first_user_message(messages: list[Any]) -> str | None:
+    """SHA-256[:16] of the first real user-typed text in the request.
+
+    Scans `messages` in order and hashes the canonical text of the
+    first `role=user` message that carries real (non-wrapper) text,
+    skipping non-user messages and wrapper-only user messages (ADR-0040).
+    The leading message after a `/compact` is the resume-marker block
+    (wrapper-only); scanning past it keys post-compact turns on the
+    first real post-compact user message instead of collapsing onto
+    `SHA-256("")`.
+
+    Returns None when no user message carries real text (every user
+    message is wrapper-only, or `messages` is empty). The caller opens a
+    fresh `conversation_id` for None rather than chaining on a shared
+    empty-text hash.
+    """
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        canonical = _canonical_user_text(msg.get("content"))
+        if canonical:
+            return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+    return None
 
 
 def _canonical_user_text(content: Any) -> str:

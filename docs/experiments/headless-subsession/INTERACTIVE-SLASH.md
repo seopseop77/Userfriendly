@@ -50,18 +50,32 @@ session). The proxy + Fly server must be live.
 
 ## 1. Launch
 
+No wrapper script needed — just run `claude-manage` interactively from
+your own terminal:
+
 ```bash
-docs/experiments/headless-subsession/runner-interactive.sh
+date +%s                      # ← record this; the §4 queries filter on it
+claude-manage --model sonnet  # interactive REPL, routed through the proxy
 ```
 
-It prints a `start_ms` epoch and an isolated workdir, then drops you into
-an interactive Claude Code REPL **through the proxy** (model pinned to
-sonnet, parent `ANTHROPIC_*` tokens unset — same load-bearing prelude as
-the headless runner).
+That's it. `claude-manage` with no `-p` forwards straight to an
+interactive `claude`, only setting `ANTHROPIC_BASE_URL` to the proxy
+(`cli.py`).
 
-**Record the `start_ms` value** — the Supabase queries in §4 filter on it.
-Don't run other Claude traffic while this session is open, so the time
-window stays clean.
+Notes:
+- **No `env -u ANTHROPIC_*` needed.** That prelude only matters when
+  spawning from *inside* a Claude Code session (the parent injects
+  `ANTHROPIC_API_KEY`). From your own shell those vars aren't set.
+- `--model sonnet` keeps the prompt cache consistent across turns — not
+  load-bearing for slash classification, but cheap and tidy. You can also
+  pin it later with `/model`.
+- Optionally `cd "$(mktemp -d)"` first for a clean workdir so the repo's
+  `CLAUDE.md` doesn't enter the system prompt — irrelevant to slash
+  classification, so skip it unless you want the isolation.
+- **Record the `date +%s` value** — the Supabase queries in §4 filter on
+  it (multiply by 1000 for `started_at`, which is epoch ms). Don't run
+  other Claude traffic while this session is open, so the window stays
+  clean.
 
 ---
 
@@ -111,7 +125,8 @@ Notes:
 
 Give Claude Code these three things:
 
-1. `start_ms` printed at launch.
+1. The `date +%s` you recorded at launch (call it `start_ms`; multiply
+   by 1000 for the `started_at` epoch-ms filter).
 2. The session tag + date (`[PROBE 2026-05-29 s001]`).
 3. Roughly when you typed `/exit` (so the upper time bound is known).
 
@@ -177,8 +192,8 @@ worklog Suggestions.
 ## 5. Pitfalls (in addition to README §8)
 
 - **Don't use `-p` and don't pass `--disallowedTools '*'`** — that's the
-  headless path this runbook exists to avoid. `runner-interactive.sh` is
-  already correct; don't hand-edit those flags back in.
+  headless path this runbook exists to avoid. Plain `claude-manage` (no
+  `-p`) is interactive, which is what we want.
 - **One session, no concurrent Claude traffic** — the analysis leans on
   the `start_ms` time window; other traffic in that window muddies it.
 - **Local-only slashes need a following message.** `/help` alone may never

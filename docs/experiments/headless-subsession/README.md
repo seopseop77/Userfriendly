@@ -305,5 +305,5 @@ resume-marker branches never fire (confirmed 2026-05-28; see
 `results/2026-05-28-r013-thru-r022-r026-slash-not-parsed.md`). Don't
 burn headless rounds on them. To exercise those branches, route an
 **interactive** Claude Code session through the proxy and type the
-slashes by hand — runbook: `INTERACTIVE-SLASH.md`, launcher:
-`runner-interactive.sh`.
+slashes by hand (`claude-manage --model sonnet`, no `-p`) — runbook:
+`INTERACTIVE-SLASH.md`.

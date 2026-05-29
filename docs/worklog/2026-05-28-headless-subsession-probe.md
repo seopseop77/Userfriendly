@@ -240,10 +240,12 @@ runbook (`docs/experiments/headless-subsession/README.md`) so the
 next probe author doesn't burn rounds rediscovering this.
 
 **Resolved 2026-05-29**: that interactive vector now has a runbook —
-`docs/experiments/headless-subsession/INTERACTIVE-SLASH.md` (launcher
-`runner-interactive.sh`). It launches an interactive Claude Code
-session through the proxy, gives an ordered slash-command conversation
-plan (`/help`, `/cost`, `/compact`, `/clear`-then-re-type), and the
-Supabase queries to analyse the result. The operator types it; the
-analysing session runs the SQL. README §10 now flags the headless
-slash limitation and points to it.
+`docs/experiments/headless-subsession/INTERACTIVE-SLASH.md`. No wrapper
+script needed: the operator just runs `claude-manage --model sonnet`
+(no `-p`) from their own terminal — the headless runner's `env -u
+ANTHROPIC_*` prelude only matters when spawning from inside a Claude
+Code session, not from the operator's shell. The runbook gives an
+ordered slash-command conversation plan (`/help`, `/cost`, `/compact`,
+`/clear`-then-re-type) and the Supabase queries to analyse the result.
+The operator types it; the analysing session runs the SQL. README §10
+now flags the headless slash limitation and points to it.

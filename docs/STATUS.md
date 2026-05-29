@@ -25,11 +25,11 @@ Sink tests + ruff clean, 72 pass.)
 
 ## Recent commits (last 5)
 
-- `<pending>` analytics-sink: scan past wrapper messages for grouping hash (ADR-0040)
+- `<pending>` docs: backfill 0d20585 hash in STATUS
+- `0d20585` analytics-sink: scan past wrapper messages for grouping hash (ADR-0040)
 - `f8f43d0` docs: drop runner-interactive.sh, inline the command
 - `e5ee423` docs: headless probe campaign results + slash runbook
-- `1f1f3d0` docs: backfill b37916a hash in worklog
-- `b37916a` docs: retract probe anomalies #1-#3 (non-bugs)
+- `1f04b2e` docs: backfill 2b69a72 hash in worklog
 
 ## Where we paused
 

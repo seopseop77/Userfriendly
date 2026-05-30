@@ -119,15 +119,37 @@ all three checks passed:
 - Header path (`x-claude-code-session-id`) left unused; metadata path
   suffices. `account_uuid` / `device_id` present but not captured.
 
+## Follow-up 2026-05-31 — surface session_id in the view
+
+- Created `packages/llm_tracker_server/alembic/versions/0023_view_session_id.py`
+  — drops + recreates `plugin_analytics_with_messages` so `SELECT pa.*`
+  re-expands to include `session_id` (the view froze its column list in
+  0021, before 0022 added the column). View body is **byte-identical**
+  to 0021 (verified by extracting both `_VIEW_SQL` literals); only the
+  expansion moment changes. (commit 62f56b3)
+- Verification: `ruff check` clean; `alembic heads` → single
+  `0023_view_session_id`; view-body identity check `True`. Not applied
+  to fly yet — runs on the next deploy. (Live SQL exec deferred to
+  deploy, as with 0022; the body is the already-deployed 0021 SQL.)
+
+## What's left / known limits
+
+- Header path (`x-claude-code-session-id`) left unused; metadata path
+  suffices. `account_uuid` / `device_id` present but not captured.
+- **Migration 0023 not yet applied to fly** — the view exposes
+  `session_id` only after the next deploy.
+
 ## Handoff
 
-**Closed.** Step 1 (capture, migration 0022) + step 2 (ADR-0041
-session-scoped grouping) deployed to fly and live-verified 2026-05-31
-(all three checks pass). No pending work on this track. Optional
-follow-up in Suggestions below (not started).
+Step 1 (capture, 0022) + step 2 (ADR-0041 grouping) deployed +
+live-verified 2026-05-31. Follow-up — `session_id` surfaced in
+`plugin_analytics_with_messages` (migration 0023) — code-complete,
+**awaiting deploy**. **Next single step**: operator deploys
+`llm-tracker-server` to fly (`alembic upgrade head` applies 0023), then
+spot-check `SELECT session_id FROM plugin_analytics_with_messages LIMIT
+1` returns the column. After that the track is fully closed.
 
 ## Suggestions (untouched)
 
-- Surface `session_id` in `plugin_analytics_with_messages` + build the
-  session-level rollup queries (cost/drift across an agent tree). The
-  column is on the base table today; the view still froze `pa.*`.
+- Build the session-level rollup queries (cost/drift across an agent
+  tree) on top of the now-exposed `session_id`. Not started.

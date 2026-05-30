@@ -23,7 +23,7 @@ more deploy.)
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: 0023 view-session_id follow-up worklog/STATUS
+- `a9a8878` docs: 0023 view-session_id follow-up worklog/STATUS
 - `62f56b3` storage: surface session_id in plugin_analytics_with_messages
 - `fbd2da9` docs: close session-id track (deployed + verified)
 - `25539f8` analytics-sink: scope conversation grouping by session id (ADR-0041)

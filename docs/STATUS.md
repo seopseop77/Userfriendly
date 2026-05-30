@@ -19,7 +19,7 @@ ADR-0041 session-scoped grouping — deployed + live-verified 2026-05-31).
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: close session-id track (deployed + verified)
+- `fbd2da9` docs: close session-id track (deployed + verified)
 - `4c30112` docs: ADR-0041 + session-id worklog/STATUS update
 - `25539f8` analytics-sink: scope conversation grouping by session id (ADR-0041)
 - `907f95f` analytics-sink: capture client session id (migration 0022)

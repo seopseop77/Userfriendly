@@ -58,14 +58,19 @@ _INSERT_SQL = sa.text(
 )
 
 # Chain-lookup: most recent row with this `first_msg_hash` in this
-# org. Used to inherit the prior conversation_id when one exists.
-# ADR-0036 (B) rule, unchanged by ADR-0038.
+# org AND the same client `session_id`. Used to inherit the prior
+# conversation_id when one exists. ADR-0036 (B) rule, scoped by
+# session_id per ADR-0041. `IS NOT DISTINCT FROM` makes NULL match
+# NULL, so traffic without a captured session id (non-Claude-Code
+# clients, historic rows) groups by first_msg_hash alone — the
+# unchanged ADR-0036 fallback.
 _PREV_BY_HASH_SQL = sa.text(
     """
     SELECT conversation_id
     FROM plugin_analytics
     WHERE first_msg_hash = :first_msg_hash
       AND org_id = :org_id
+      AND session_id IS NOT DISTINCT FROM :session_id
     ORDER BY created_at DESC
     LIMIT 1
     """
@@ -299,6 +304,7 @@ class AnalyticsSink(BasePlugin):
                     conn,
                     row_id=row["id"],
                     org_id=ctx.org_id,
+                    session_id=row["session_id"],
                     classification=classification,
                     role=row["role"],
                 )
@@ -325,14 +331,18 @@ class AnalyticsSink(BasePlugin):
         *,
         row_id: str,
         org_id: Any,
+        session_id: str | None,
         classification: Classification,
         role: str | None,
     ) -> tuple[str | None, int | None]:
         """Run the chain lookup and decide `(conversation_id, turn_seq)`.
 
-        ADR-0036 (B) rule for conversation grouping. `turn_seq` axis
-        per ADR-0038: `role IN ('user_input', 'tool_result')` only.
-        Other roles (title_gen, sidecar) stay off the axis.
+        ADR-0036 (B) rule for conversation grouping, scoped by
+        `session_id` (ADR-0041): a row inherits a prior conversation
+        only when both `first_msg_hash` and the client `session_id`
+        match. `turn_seq` axis per ADR-0038: `role IN ('user_input',
+        'tool_result')` only. Other roles (title_gen, sidecar) stay
+        off the axis.
         """
         # ADR-0040: a None hash means no user message carried real text
         # (e.g. a request whose only user content is wrapper-only). Skip
@@ -343,7 +353,11 @@ class AnalyticsSink(BasePlugin):
             prev = (
                 await conn.execute(
                     _PREV_BY_HASH_SQL,
-                    {"first_msg_hash": classification.first_msg_hash, "org_id": org_id},
+                    {
+                        "first_msg_hash": classification.first_msg_hash,
+                        "org_id": org_id,
+                        "session_id": session_id,
+                    },
                 )
             ).first()
 

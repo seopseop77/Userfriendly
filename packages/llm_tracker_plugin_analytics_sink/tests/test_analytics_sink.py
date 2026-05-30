@@ -638,6 +638,75 @@ async def test_session_id_none_when_metadata_absent() -> None:
     assert params["session_id"] is None
 
 
+def _chain_lookup_params(conn: AsyncMock) -> dict:
+    """Return the param dict from the (B) chain-lookup SELECT.
+
+    The chain-lookup binds `first_msg_hash` but, unlike the INSERT, not
+    `request_jsonb`."""
+    for call in conn.execute.await_args_list:
+        params = call.args[1] if len(call.args) > 1 else None
+        if (
+            isinstance(params, dict)
+            and "first_msg_hash" in params
+            and "request_jsonb" not in params
+        ):
+            return params
+    raise AssertionError("chain-lookup call not found")
+
+
+@pytest.mark.asyncio
+async def test_chain_lookup_scoped_by_session_id() -> None:
+    """ADR-0041: the chain-lookup binds the row's session_id so a prior
+    conversation is inherited only within the same client session."""
+    engine, conn = _fake_engine()
+    plugin = AnalyticsSink(engine=engine)
+
+    user_id = json.dumps({"session_id": "11111111-2222-3333-4444-555555555555"})
+    body = json.dumps(
+        {
+            "model": "claude-x",
+            "metadata": {"user_id": user_id},
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        }
+    ).encode()
+    ctx = _make_ctx(request_body=body, org_id=uuid.uuid4(), parsed_response=None)
+
+    await plugin.on_request_received("ex_scope", ctx)
+    await plugin.on_persisted("ex_scope", ctx)
+
+    params = _chain_lookup_params(conn)
+    assert params["session_id"] == "11111111-2222-3333-4444-555555555555"
+    assert "first_msg_hash" in params
+
+
+@pytest.mark.asyncio
+async def test_chain_lookup_binds_null_session_id_when_absent() -> None:
+    """No captured session id → bind None; `IS NOT DISTINCT FROM` then
+    falls back to the ADR-0036 hash-only grouping."""
+    engine, conn = _fake_engine()
+    plugin = AnalyticsSink(engine=engine)
+
+    body = (
+        b'{"model":"claude-x","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}'
+    )
+    ctx = _make_ctx(request_body=body, org_id=uuid.uuid4(), parsed_response=None)
+
+    await plugin.on_request_received("ex_scope_null", ctx)
+    await plugin.on_persisted("ex_scope_null", ctx)
+
+    params = _chain_lookup_params(conn)
+    assert params["session_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_prev_by_hash_sql_filters_session_id() -> None:
+    """The chain-lookup SQL carries the ADR-0041 session_id predicate."""
+    from llm_tracker_plugin_analytics_sink.plugin import _PREV_BY_HASH_SQL
+
+    sql = str(_PREV_BY_HASH_SQL)
+    assert "session_id IS NOT DISTINCT FROM :session_id" in sql
+
+
 @pytest.mark.asyncio
 async def test_insert_sql_uses_new_column_names() -> None:
     """The INSERT SQL writes response_jsonb / request_jsonb /

@@ -28,7 +28,7 @@ ADR-0040 `/compact` orphaning fix.)
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: ADR-0041 + session-id worklog/STATUS update
+- `4c30112` docs: ADR-0041 + session-id worklog/STATUS update
 - `25539f8` analytics-sink: scope conversation grouping by session id (ADR-0041)
 - `907f95f` analytics-sink: capture client session id (migration 0022)
 - `3680caa` docs: session-id extraction worklog + STATUS

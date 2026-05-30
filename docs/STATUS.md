@@ -20,7 +20,7 @@ live-verified 2026-05-31).
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: fully close session-id track
+- `87bc575` docs: fully close session-id track
 - `a9a8878` docs: 0023 view-session_id follow-up worklog/STATUS
 - `62f56b3` storage: surface session_id in plugin_analytics_with_messages
 - `fbd2da9` docs: close session-id track (deployed + verified)

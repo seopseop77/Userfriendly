@@ -13,41 +13,31 @@
 
 ## Active worklog
 
-`docs/worklog/2026-05-30-session-id-extraction.md`
-
-(session_id capture (0022) + ADR-0041 session-scoped grouping deployed +
-live-verified 2026-05-31. Follow-up: `session_id` now surfaced in the
-`plugin_analytics_with_messages` view via migration 0023 — view body
-byte-identical to 0021, just re-expanded. Code-complete, awaiting one
-more deploy.)
+_None active._ Last closed:
+`docs/worklog/2026-05-30-session-id-extraction.md` (session_id capture +
+ADR-0041 session-scoped grouping + view exposure — all deployed and
+live-verified 2026-05-31).
 
 ## Recent commits (last 5)
 
+- `<pending>` docs: fully close session-id track
 - `a9a8878` docs: 0023 view-session_id follow-up worklog/STATUS
 - `62f56b3` storage: surface session_id in plugin_analytics_with_messages
 - `fbd2da9` docs: close session-id track (deployed + verified)
 - `25539f8` analytics-sink: scope conversation grouping by session id (ADR-0041)
-- `907f95f` analytics-sink: capture client session id (migration 0022)
 
 ## Where we paused
 
-session-id capture + grouping (0022 + ADR-0041) deployed + live-verified
-2026-05-31. Follow-up migration **0023** (view exposes `session_id`)
-code-complete, ruff clean, single alembic head, view body identical to
-0021 — **awaits the next fly deploy** to take effect.
+session-id track **fully closed** (deployed + live-verified 2026-05-31):
+capture (0022), session-scoped grouping (ADR-0041), and `session_id`
+exposed in `plugin_analytics_with_messages` (0023). Nothing pending.
 
 ## Next single step
 
-**Operator deploys `llm-tracker-server` to fly** (`alembic upgrade head`
-applies 0023):
-
-```
-fly deploy -c packages/llm_tracker_server/fly.toml
-```
-
-After deploy, spot-check `SELECT session_id FROM
-plugin_analytics_with_messages LIMIT 1` returns the column. Then the
-track is fully closed (optional rollup queries remain as a Suggestion).
+No active track — awaiting the next request. Optional follow-up on file
+(not started): session-level rollup queries (cost/drift across an agent
+tree) on top of the now-exposed `session_id` — see the closed worklog's
+Suggestions.
 
 ---
 

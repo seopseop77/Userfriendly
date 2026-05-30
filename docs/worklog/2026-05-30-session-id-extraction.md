@@ -136,18 +136,16 @@ all three checks passed:
 
 - Header path (`x-claude-code-session-id`) left unused; metadata path
   suffices. `account_uuid` / `device_id` present but not captured.
-- **Migration 0023 not yet applied to fly** — the view exposes
-  `session_id` only after the next deploy.
 
 ## Handoff
 
-Step 1 (capture, 0022) + step 2 (ADR-0041 grouping) deployed +
-live-verified 2026-05-31. Follow-up — `session_id` surfaced in
-`plugin_analytics_with_messages` (migration 0023) — code-complete,
-**awaiting deploy**. **Next single step**: operator deploys
-`llm-tracker-server` to fly (`alembic upgrade head` applies 0023), then
-spot-check `SELECT session_id FROM plugin_analytics_with_messages LIMIT
-1` returns the column. After that the track is fully closed.
+**Closed 2026-05-31.** All three pieces deployed to fly and
+live-verified: (1) `session_id` capture (migration 0022); (2) ADR-0041
+session-scoped grouping (parent + sub-agents share one `session_id`
+with distinct `conversation_id`s, identical-opener collision gone,
+resume stable); (3) `session_id` surfaced in
+`plugin_analytics_with_messages` (migration 0023, verified live). No
+pending work on this track.
 
 ## Suggestions (untouched)
 

@@ -38,7 +38,7 @@ DATABASE_URL_ENV = "LLMTRACK_DATABASE_URL"
 _INSERT_SQL = sa.text(
     """
     INSERT INTO plugin_analytics (
-        id, exchange_id, org_id, model_requested, model_served,
+        id, exchange_id, org_id, session_id, model_requested, model_served,
         response_jsonb,
         input_tokens, output_tokens, cache_read_tokens,
         cache_write_tokens, stop_reason,
@@ -46,7 +46,7 @@ _INSERT_SQL = sa.text(
         first_msg_hash, conversation_id,
         request_jsonb, system_prompt_jsonb
     ) VALUES (
-        :id, :exchange_id, :org_id, :model_requested, :model_served,
+        :id, :exchange_id, :org_id, :session_id, :model_requested, :model_served,
         CAST(:response_jsonb AS jsonb),
         :input_tokens, :output_tokens, :cache_read_tokens,
         :cache_write_tokens, :stop_reason,
@@ -116,6 +116,37 @@ def _model_from_request(parsed: dict[str, Any] | None) -> str | None:
         return None
     model = parsed.get("model")
     return model if isinstance(model, str) else None
+
+
+def _session_id_from_request(parsed: dict[str, Any] | None) -> str | None:
+    """Client session id from the request's `metadata.user_id`.
+
+    Claude Code packs a JSON object into the Anthropic Messages API
+    `metadata.user_id` string: `{"device_id", "account_uuid",
+    "session_id"}`. The `session_id` is stable across all requests of
+    one CLI session — parent and every sub-agent it spawns share it,
+    so it is the signal that links a sub-agent exchange back to its
+    originating session (captured here; grouping unchanged).
+
+    Returns None when metadata is absent or `user_id` is not in that
+    shape (e.g. another client sends an opaque string).
+    """
+    if parsed is None:
+        return None
+    metadata = parsed.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    user_id = metadata.get("user_id")
+    if not isinstance(user_id, str):
+        return None
+    try:
+        decoded = json.loads(user_id)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    session_id = decoded.get("session_id")
+    return session_id if isinstance(session_id, str) else None
 
 
 def _system_hash(system_field: Any) -> str | None:
@@ -196,6 +227,7 @@ class AnalyticsSink(BasePlugin):
             "id": str(ULID()),
             "exchange_id": exchange_id,
             "org_id": ctx.org_id,
+            "session_id": _session_id_from_request(parsed),
             "model_requested": _model_from_request(parsed),
             "model_served": getattr(usage, "model_served", None),
             "response_jsonb": ctx.response_content_json(),

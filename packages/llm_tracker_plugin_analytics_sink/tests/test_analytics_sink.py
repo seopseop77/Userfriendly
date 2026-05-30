@@ -585,6 +585,60 @@ async def test_system_prompt_null_when_unchanged_from_prev() -> None:
 
 
 @pytest.mark.asyncio
+async def test_session_id_extracted_from_metadata_user_id() -> None:
+    """Claude Code packs the CLI session id into `metadata.user_id` as
+    a JSON string; the plugin extracts `session_id` into its own column.
+    Fixture value mirrors a real captured payload."""
+    engine, conn = _fake_engine()
+    plugin = AnalyticsSink(engine=engine)
+
+    user_id = json.dumps(
+        {
+            "device_id": "0" * 64,
+            "account_uuid": "00000000-0000-0000-0000-000000000001",
+            "session_id": "11111111-2222-3333-4444-555555555555",
+        }
+    )
+    body = json.dumps(
+        {
+            "model": "claude-x",
+            "metadata": {"user_id": user_id},
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        }
+    ).encode()
+    ctx = _make_ctx(request_body=body, org_id=uuid.uuid4(), parsed_response=None)
+
+    await plugin.on_request_received("ex_sid", ctx)
+    await plugin.on_persisted("ex_sid", ctx)
+
+    params = _insert_params(conn)
+    assert params["session_id"] == "11111111-2222-3333-4444-555555555555"
+
+
+@pytest.mark.asyncio
+async def test_session_id_none_when_metadata_absent() -> None:
+    """No `metadata` field (or non-JSON / opaque user_id) → session_id
+    stays NULL; other clients are not forced into the CC-specific shape."""
+    engine, conn = _fake_engine()
+    plugin = AnalyticsSink(engine=engine)
+
+    body = json.dumps(
+        {
+            "model": "claude-x",
+            "metadata": {"user_id": "opaque-non-json-id"},
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        }
+    ).encode()
+    ctx = _make_ctx(request_body=body, org_id=uuid.uuid4(), parsed_response=None)
+
+    await plugin.on_request_received("ex_no_sid", ctx)
+    await plugin.on_persisted("ex_no_sid", ctx)
+
+    params = _insert_params(conn)
+    assert params["session_id"] is None
+
+
+@pytest.mark.asyncio
 async def test_insert_sql_uses_new_column_names() -> None:
     """The INSERT SQL writes response_jsonb / request_jsonb /
     system_prompt_jsonb / role; turn_kind / n_messages_at_request /
@@ -595,6 +649,7 @@ async def test_insert_sql_uses_new_column_names() -> None:
     assert "response_jsonb" in sql
     assert "request_jsonb" in sql
     assert "system_prompt_jsonb" in sql
+    assert "session_id" in sql
     assert "role" in sql
     assert "turn_kind" not in sql
     assert "n_messages_at_request" not in sql

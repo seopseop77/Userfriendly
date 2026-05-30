@@ -52,6 +52,23 @@ change is needed to pass headers through. Stored on the plugin-owned
   metadata absent / user_id opaque) + locked `session_id` into the
   INSERT-shape test. (commit 907f95f)
 
+### Step 2 — session-scoped grouping (ADR-0041)
+
+Operator verified the two load-bearing facts on real sessions
+(sub-agent shares parent `session_id`; `--resume` after exit in a new
+window preserves it), so step 2 was implemented in the same session.
+
+- Created `docs/decisions/0041-session-scoped-conversation-grouping.md`
+  — composite (session_id, first_msg_hash) grouping; NULL session_id
+  falls back to ADR-0036 hash-only via `IS NOT DISTINCT FROM`. (commit 25539f8)
+- Modified `.../analytics_sink/plugin.py` — `_PREV_BY_HASH_SQL` gains
+  `AND session_id IS NOT DISTINCT FROM :session_id`;
+  `_resolve_conversation` takes + binds the row's `session_id`. No
+  migration (column from 0022; existing
+  `idx_plugin_analytics_first_msg_hash` covers the query). (commit 25539f8)
+- Modified test file — 3 ADR-0041 tests (chain-lookup binds session_id;
+  binds None when absent; SQL carries the predicate). (commit 25539f8)
+
 ## Decisions
 
 - **Extract from `metadata.user_id`, not the `x-claude-code-session-id`
@@ -64,6 +81,11 @@ change is needed to pass headers through. Stored on the plugin-owned
 - **No view rebuild**: `plugin_analytics_with_messages` (0021) froze
   `pa.*` at creation, so ADD COLUMN neither breaks nor surfaces it.
   `session_id` is read from the base table.
+- **Session-scoped grouping (ADR-0041)**: composite (session_id,
+  first_msg_hash) chain-lookup. NULL session_id → `IS NOT DISTINCT
+  FROM` falls back to ADR-0036 hash-only (no regress for non-CC /
+  historic traffic). No new migration — column + index already exist.
+  Full rationale + options in ADR-0041.
 
 ## Verification
 
@@ -72,41 +94,42 @@ $ ruff format <changed paths> && ruff check <changed paths>
 All checks passed!
 
 $ .venv/bin/python3.12 -m pytest packages/llm_tracker_plugin_analytics_sink -q
-74 passed in 0.25s    (was 72; +2 new)
+77 passed in 0.24s    (was 72; +5 across step 1 + ADR-0041)
 
 $ alembic -c packages/llm_tracker_server/alembic.ini heads
 0022_plugin_analytics_session_id (head)   # single head, chain intact
 ```
 
-Reverted an unrelated `ruff format` change to
-`scripts/backfill_display_role_vocab.py` (out of scope).
+Mocked unit tests only — the engine mock returns canned chain-lookup
+results, so the session-scoping *SQL semantics* (different session_id ⇒
+no inherit) are not exercised by pytest; they are verified live at
+deploy. Reverted an unrelated `ruff format` change to
+`scripts/backfill_display_role_vocab.py` (out of scope), twice.
 
 ## What's left / known limits
 
-- **Migration not yet applied to fly.** Like ADR-0040, live activation
-  waits on operator deploy. Until then no row has a non-null
-  `session_id`.
+- **Not yet applied to fly.** Migration 0022 (`session_id` column) +
+  ADR-0040 + ADR-0041 (logic) all activate on the next operator
+  deploy. Until then: no non-null `session_id`, old grouping live.
 - Header path (`x-claude-code-session-id`) left unused; metadata path
-  is sufficient for Claude Code. `account_uuid` / `device_id` are also
-  in the payload but intentionally not captured (out of scope).
-- Verified only on headless `claude -p` with an explicit `--session-id`.
-  Interactive + `--resume` session-id stability not directly re-captured
-  (transcript keys imply it; confirm opportunistically).
+  suffices. `account_uuid` / `device_id` present but not captured.
+- Session-scoping SQL behavior verified only by mocked unit tests +
+  reasoning; needs one live confirmation post-deploy.
 
 ## Handoff
 
-Code complete + tested (mocked). **Next single step**: operator deploys
-`llm-tracker-server` to fly (`alembic upgrade head` runs there), then
-run a short interactive session that spawns a sub-agent and confirm in
-Supabase that parent + sub-agent rows share one `session_id` while
-keeping distinct `conversation_id`s. **Then return to the user to
-decide step 2** (whether to fold `session_id` into the grouping key —
-this would fix the r020 / A-1 identical-first-message collision but
-reverses ADR-0036's intentional cross-UUID unification, so it needs an
-ADR).
+Step 1 (capture) + step 2 (ADR-0041 session-scoped grouping) both
+code-complete + tested (mocked), 77 pass. **Next single step**:
+operator deploys `llm-tracker-server` to fly (`alembic upgrade head`
+applies 0022), then verify in Supabase on a real session that:
+1. parent + sub-agent rows **share one `session_id`** with **distinct
+   `conversation_id`s**;
+2. two sessions opening with the *same first message* now get
+   **separate `conversation_id`s** (the A-1 / r020 collision is gone);
+3. resume across windows keeps one `conversation_id`.
 
 ## Suggestions (untouched)
 
-- Step-2 ADR candidate: session-scoped conversation grouping vs the
-  current global (B) rule. Evidence: campaign r020 (✅ working as
-  designed today) and A-1 (`01KSJC53…` cross-UUID sidecar pollution).
+- Surface `session_id` in `plugin_analytics_with_messages` + build the
+  session-level rollup queries (cost/drift across an agent tree). The
+  column is on the base table today; the view still froze `pa.*`.

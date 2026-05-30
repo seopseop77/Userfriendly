@@ -16,45 +16,48 @@
 `docs/worklog/2026-05-30-session-id-extraction.md`
 
 (Confirmed via live wire capture that Claude Code sends the CLI session
-id in `metadata.user_id` JSON + an `x-claude-code-session-id` header,
-and that **sub-agents share the parent's session id**. Step 1 done:
-extract `session_id` from `metadata.user_id` into a new nullable
-`plugin_analytics.session_id` column — grouping unchanged. Sink tests +
-ruff clean, 74 pass. Step 2 — folding session_id into the grouping key
-— deferred to a future ADR. Prior track: ADR-0040 `/compact` orphaning
-fix, see `docs/worklog/2026-05-28-headless-subsession-probe.md`.)
+id in `metadata.user_id` JSON + an `x-claude-code-session-id` header;
+operator confirmed sub-agents share the parent's session id and
+`--resume` preserves it. **Step 1**: capture `session_id` into
+`plugin_analytics.session_id` (migration 0022). **Step 2 (ADR-0041)**:
+scope the (B) chain-lookup by session_id — composite (session_id,
+first_msg_hash); NULL falls back to hash-only via `IS NOT DISTINCT
+FROM`. Fixes the r020/A-1 identical-opener collision; links
+parent↔sub-agents. Sink tests + ruff clean, 77 pass. Prior track:
+ADR-0040 `/compact` orphaning fix.)
 
 ## Recent commits (last 5)
 
-- `3680caa` docs: session-id extraction worklog + STATUS
+- `<pending>` docs: ADR-0041 + session-id worklog/STATUS update
+- `25539f8` analytics-sink: scope conversation grouping by session id (ADR-0041)
 - `907f95f` analytics-sink: capture client session id (migration 0022)
-- `8559f77` docs: backfill 0d20585 hash in STATUS
+- `3680caa` docs: session-id extraction worklog + STATUS
 - `0d20585` analytics-sink: scan past wrapper messages for grouping hash (ADR-0040)
-- `f8f43d0` docs: drop runner-interactive.sh, inline the command
 
 ## Where we paused
 
-`session_id` extraction code-complete + tested (mocked). Migration 0022
-adds the column forward-only (no backfill). **Two changes now await the
-same fly deploy**: ADR-0040 (`first_msg_hash` wrapper scan) and 0022
-(`session_id` column + extraction). Until deploy, no row carries a
-non-null `session_id` and the `/compact` empty-bucket merge persists.
+session_id capture (0022) + session-scoped grouping (ADR-0041) both
+code-complete + tested (mocked, 77 pass). ADR-0041 needs no migration
+(column from 0022; existing index covers the query). **Three changes
+now await the same fly deploy**: ADR-0040 (wrapper scan), 0022 (column
++ extraction), ADR-0041 (grouping logic). Until deploy, old grouping is
+live and no row carries a non-null `session_id`.
 
 ## Next single step
 
 **Operator deploys `llm-tracker-server` to fly** (`alembic upgrade head`
-runs there, applying 0022):
+applies 0022):
 
 ```
 fly deploy -c packages/llm_tracker_server/fly.toml
 ```
 
-After deploy, run an interactive session that spawns a sub-agent and
-confirm in Supabase: parent + sub-agent rows **share one `session_id`**
-while keeping **distinct `conversation_id`s**. Then return to the user
-to decide step 2 (session-scoped grouping — needs an ADR; reverses
-ADR-0036's cross-UUID unification). Also still pending from ADR-0040:
-post-`/compact` turns share a fresh `conversation_id` (not `01KSJC53…`).
+After deploy, verify in Supabase on a real session: (1) parent +
+sub-agent rows **share one `session_id`** with **distinct
+`conversation_id`s**; (2) two sessions opening with the same first
+message now get **separate `conversation_id`s** (A-1/r020 collision
+gone); (3) resume across windows keeps one `conversation_id`; (4)
+ADR-0040: post-`/compact` turns share a fresh id (not `01KSJC53…`).
 
 ---
 

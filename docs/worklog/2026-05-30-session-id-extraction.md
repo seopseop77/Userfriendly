@@ -102,31 +102,29 @@ $ alembic -c packages/llm_tracker_server/alembic.ini heads
 
 Mocked unit tests only — the engine mock returns canned chain-lookup
 results, so the session-scoping *SQL semantics* (different session_id ⇒
-no inherit) are not exercised by pytest; they are verified live at
-deploy. Reverted an unrelated `ruff format` change to
+no inherit) are not exercised by pytest. **Verified live post-deploy**
+(2026-05-31, operator). Reverted an unrelated `ruff format` change to
 `scripts/backfill_display_role_vocab.py` (out of scope), twice.
 
-## What's left / known limits
-
-- **Not yet applied to fly.** Migration 0022 (`session_id` column) +
-  ADR-0040 + ADR-0041 (logic) all activate on the next operator
-  deploy. Until then: no non-null `session_id`, old grouping live.
-- Header path (`x-claude-code-session-id`) left unused; metadata path
-  suffices. `account_uuid` / `device_id` present but not captured.
-- Session-scoping SQL behavior verified only by mocked unit tests +
-  reasoning; needs one live confirmation post-deploy.
-
-## Handoff
-
-Step 1 (capture) + step 2 (ADR-0041 session-scoped grouping) both
-code-complete + tested (mocked), 77 pass. **Next single step**:
-operator deploys `llm-tracker-server` to fly (`alembic upgrade head`
-applies 0022), then verify in Supabase on a real session that:
+**Live verification (2026-05-31, operator-run on fly + Supabase)** —
+all three checks passed:
 1. parent + sub-agent rows **share one `session_id`** with **distinct
    `conversation_id`s**;
 2. two sessions opening with the *same first message* now get
-   **separate `conversation_id`s** (the A-1 / r020 collision is gone);
+   **separate `conversation_id`s** (A-1 / r020 collision gone);
 3. resume across windows keeps one `conversation_id`.
+
+## What's left / known limits
+
+- Header path (`x-claude-code-session-id`) left unused; metadata path
+  suffices. `account_uuid` / `device_id` present but not captured.
+
+## Handoff
+
+**Closed.** Step 1 (capture, migration 0022) + step 2 (ADR-0041
+session-scoped grouping) deployed to fly and live-verified 2026-05-31
+(all three checks pass). No pending work on this track. Optional
+follow-up in Suggestions below (not started).
 
 ## Suggestions (untouched)
 

@@ -9,55 +9,37 @@
 
 ---
 
-**Last updated**: 2026-05-30
+**Last updated**: 2026-05-31
 
 ## Active worklog
 
-`docs/worklog/2026-05-30-session-id-extraction.md`
-
-(Confirmed via live wire capture that Claude Code sends the CLI session
-id in `metadata.user_id` JSON + an `x-claude-code-session-id` header;
-operator confirmed sub-agents share the parent's session id and
-`--resume` preserves it. **Step 1**: capture `session_id` into
-`plugin_analytics.session_id` (migration 0022). **Step 2 (ADR-0041)**:
-scope the (B) chain-lookup by session_id — composite (session_id,
-first_msg_hash); NULL falls back to hash-only via `IS NOT DISTINCT
-FROM`. Fixes the r020/A-1 identical-opener collision; links
-parent↔sub-agents. Sink tests + ruff clean, 77 pass. Prior track:
-ADR-0040 `/compact` orphaning fix.)
+_None active._ Last closed:
+`docs/worklog/2026-05-30-session-id-extraction.md` (session_id capture +
+ADR-0041 session-scoped grouping — deployed + live-verified 2026-05-31).
 
 ## Recent commits (last 5)
 
+- `<pending>` docs: close session-id track (deployed + verified)
 - `4c30112` docs: ADR-0041 + session-id worklog/STATUS update
 - `25539f8` analytics-sink: scope conversation grouping by session id (ADR-0041)
 - `907f95f` analytics-sink: capture client session id (migration 0022)
-- `3680caa` docs: session-id extraction worklog + STATUS
 - `0d20585` analytics-sink: scan past wrapper messages for grouping hash (ADR-0040)
 
 ## Where we paused
 
-session_id capture (0022) + session-scoped grouping (ADR-0041) both
-code-complete + tested (mocked, 77 pass). ADR-0041 needs no migration
-(column from 0022; existing index covers the query). **Three changes
-now await the same fly deploy**: ADR-0040 (wrapper scan), 0022 (column
-+ extraction), ADR-0041 (grouping logic). Until deploy, old grouping is
-live and no row carries a non-null `session_id`.
+session-id track **closed**. Deployed to fly and live-verified
+2026-05-31: parent + sub-agents share one `session_id` with distinct
+`conversation_id`s; identical-opener collision (A-1/r020) gone; resume
+across windows keeps one `conversation_id`; ADR-0040 post-`/compact`
+turns group on a fresh id. No non-null `session_id` on rows predating
+the deploy (forward-only, expected).
 
 ## Next single step
 
-**Operator deploys `llm-tracker-server` to fly** (`alembic upgrade head`
-applies 0022):
-
-```
-fly deploy -c packages/llm_tracker_server/fly.toml
-```
-
-After deploy, verify in Supabase on a real session: (1) parent +
-sub-agent rows **share one `session_id`** with **distinct
-`conversation_id`s**; (2) two sessions opening with the same first
-message now get **separate `conversation_id`s** (A-1/r020 collision
-gone); (3) resume across windows keeps one `conversation_id`; (4)
-ADR-0040: post-`/compact` turns share a fresh id (not `01KSJC53…`).
+No active track — awaiting the next request. Optional follow-up on file
+(not started): surface `session_id` in `plugin_analytics_with_messages`
+and build session-level rollup queries (cost/drift across an agent
+tree) — see the closed worklog's Suggestions.
 
 ---
 

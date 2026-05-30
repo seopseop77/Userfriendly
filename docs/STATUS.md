@@ -13,44 +13,48 @@
 
 ## Active worklog
 
-`docs/worklog/2026-05-28-headless-subsession-probe.md`
+`docs/worklog/2026-05-30-session-id-extraction.md`
 
-(Interactive slash probe `s001` (2026-05-29) found the post-`/compact`
-turn orphaning into the global empty-text conversation bucket
-`01KSJC53…` — Suggestion #8. **Fixed by ADR-0040**: `first_msg_hash`
-scans past wrapper-only leading messages (resume marker) to the first
-real user message; None → own conversation_id. Result doc:
-`docs/experiments/headless-subsession/results/2026-05-29-s001-interactive-slash.md`.
-Sink tests + ruff clean, 72 pass.)
+(Confirmed via live wire capture that Claude Code sends the CLI session
+id in `metadata.user_id` JSON + an `x-claude-code-session-id` header,
+and that **sub-agents share the parent's session id**. Step 1 done:
+extract `session_id` from `metadata.user_id` into a new nullable
+`plugin_analytics.session_id` column — grouping unchanged. Sink tests +
+ruff clean, 74 pass. Step 2 — folding session_id into the grouping key
+— deferred to a future ADR. Prior track: ADR-0040 `/compact` orphaning
+fix, see `docs/worklog/2026-05-28-headless-subsession-probe.md`.)
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: backfill 0d20585 hash in STATUS
+- `<pending>` docs: session-id extraction worklog + STATUS
+- `907f95f` analytics-sink: capture client session id (migration 0022)
+- `8559f77` docs: backfill 0d20585 hash in STATUS
 - `0d20585` analytics-sink: scan past wrapper messages for grouping hash (ADR-0040)
 - `f8f43d0` docs: drop runner-interactive.sh, inline the command
-- `e5ee423` docs: headless probe campaign results + slash runbook
-- `1f04b2e` docs: backfill 2b69a72 hash in worklog
 
 ## Where we paused
 
-ADR-0040 implemented and tested (forward-only, no migration —
-`first_msg_hash` column already nullable). The fix closes the
-`/compact` orphaning. Not yet deployed to fly; live behavior still
-shows the old empty-bucket merge until deploy.
+`session_id` extraction code-complete + tested (mocked). Migration 0022
+adds the column forward-only (no backfill). **Two changes now await the
+same fly deploy**: ADR-0040 (`first_msg_hash` wrapper scan) and 0022
+(`session_id` column + extraction). Until deploy, no row carries a
+non-null `session_id` and the `/compact` empty-bucket merge persists.
 
 ## Next single step
 
-**Operator deploys `llm-tracker-server` to fly** to activate ADR-0040
-(and the still-pending WebFetch prefix from `d1e8ae4`):
+**Operator deploys `llm-tracker-server` to fly** (`alembic upgrade head`
+runs there, applying 0022):
 
 ```
 fly deploy -c packages/llm_tracker_server/fly.toml
 ```
 
-After deploy, verify with an interactive `/compact` + 2–3 follow-up
-messages (runbook `INTERACTIVE-SLASH.md`): the post-compact turns
-should now share one fresh `conversation_id` (not `01KSJC53…`), and a
-text-less request should get `first_msg_hash IS NULL`.
+After deploy, run an interactive session that spawns a sub-agent and
+confirm in Supabase: parent + sub-agent rows **share one `session_id`**
+while keeping **distinct `conversation_id`s**. Then return to the user
+to decide step 2 (session-scoped grouping — needs an ADR; reverses
+ADR-0036's cross-UUID unification). Also still pending from ADR-0040:
+post-`/compact` turns share a fresh `conversation_id` (not `01KSJC53…`).
 
 ---
 

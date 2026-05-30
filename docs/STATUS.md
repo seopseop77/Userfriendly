@@ -26,7 +26,7 @@ fix, see `docs/worklog/2026-05-28-headless-subsession-probe.md`.)
 
 ## Recent commits (last 5)
 
-- `<pending>` docs: session-id extraction worklog + STATUS
+- `3680caa` docs: session-id extraction worklog + STATUS
 - `907f95f` analytics-sink: capture client session id (migration 0022)
 - `8559f77` docs: backfill 0d20585 hash in STATUS
 - `0d20585` analytics-sink: scan past wrapper messages for grouping hash (ADR-0040)

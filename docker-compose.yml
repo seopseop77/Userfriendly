@@ -19,6 +19,7 @@ services:
     # (LLMTRACK_PLUGINS_DISABLED below). pg_cron is intentionally absent —
     # the retention migrations are gated and skip with a NOTICE (ADR-0042).
     image: pgvector/pgvector:pg16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: llm_tracker
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
@@ -50,6 +51,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    restart: unless-stopped
     environment:
       LLMTRACK_DATABASE_URL: postgresql+asyncpg://llm_tracker:${POSTGRES_PASSWORD}@db:5432/llm_tracker
       LLMTRACK_PLUGINS_DISABLED: scope_guard
@@ -68,6 +70,7 @@ services:
     build:
       context: packages/llm_tracker_signup
       dockerfile: Dockerfile
+    restart: unless-stopped
     environment:
       LLMTRACK_DATABASE_URL: postgresql+asyncpg://llm_tracker:${POSTGRES_PASSWORD}@db:5432/llm_tracker
       # Public URL participants are told to point claude-manage at — i.e.

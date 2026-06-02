@@ -74,6 +74,18 @@ Found + fixed two doc errors in `docs/deploy-selfhost.md`: the CLI is
 codes/explanation (valid token forwards upstream; distinguish by body/log,
 not status code). (commit hash: pending)
 
+### Checkpoint 3 — pre-stage what doesn't need the domain (operator box)
+
+Operator deferred buying the domain; pre-staged the domain-independent work:
+
+- Installed `cloudflared` 2026.5.2 to `~/.local/bin` (official GitHub
+  binary, no sudo). `cloudflared tunnel login/create/route` remain blocked
+  on having a Cloudflare-managed domain.
+- Added `restart: unless-stopped` to `db`/`server`/`signup` in
+  `docker-compose.yml` (migrate stays `no`); recreated. The Docker daemon is
+  already `systemctl enabled`, so the stack now survives a host reboot.
+  (commit 4473b3c)
+
 ## Decisions
 
 - **Self-host everything (topology 1) over keeping Fly + local DB** —

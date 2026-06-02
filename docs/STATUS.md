@@ -35,14 +35,18 @@ token, forward w/ token). No Fly/Supabase involved. No source code changed
 — DB repoint is purely `LLMTRACK_DATABASE_URL`. Docker is reachable in this
 session without sudo.
 
+Pre-staged (CP3, domain not needed): `cloudflared` 2026.5.2 installed to
+`~/.local/bin`; compose given `restart: unless-stopped` (survives reboot,
+docker daemon already enabled on boot).
+
 ## Next single step
 
-Set up the **Cloudflare Tunnel** (`docs/deploy-selfhost.md §4`) — needs an
-interactive `cloudflared tunnel login` (browser) by the operator — to
-expose the server + signup hostnames. Then set `PUBLIC_SERVER_URL` in
-`.env`, `docker compose up -d`, repoint a client (`claude-manage setup
-<TOKEN> --server-url https://<host>`), and confirm a live
-`plugin_analytics` row.
+**Blocked on the operator buying a Cloudflare-managed domain.** Once it
+exists: `cloudflared tunnel login` → `tunnel create llm-tracker` → route
+`<domain>` (server) + `signup.<domain>` (signup) → set `PUBLIC_SERVER_URL`
+in `.env`, `docker compose up -d` → repoint a client (`claude-manage setup
+<TOKEN> --server-url https://<domain>`) → confirm a live `plugin_analytics`
+row. Steps in `docs/deploy-selfhost.md §4–5`.
 
 ---
 

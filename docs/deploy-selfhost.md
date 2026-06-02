@@ -100,24 +100,30 @@ curl -s http://127.0.0.1:8000/healthz    # signup health
 
 ### 3. Issue a demo org + token (sanity check)
 
-The server CLI ships inside the image:
+The server CLI (`llm-tracker-server`) ships inside the image:
 
 ```
-docker compose exec server llm-tracker tokens issue --org demo
+docker compose exec server llm-tracker-server tokens issue --org demo
 ```
 
 Save the printed token (shown once). Confirm auth is live:
 
 ```
-# With token → passes middleware, fails upstream 400 (empty messages):
-curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:8080/v1/messages \
-  -H "X-LLM-Tracker-Token: <token>" -H "Content-Type: application/json" \
-  -d '{"model":"claude-opus-4-5","max_tokens":1,"messages":[]}'   # expect 400
-
-# Without token → rejected by auth middleware:
+# Without token → rejected by OUR auth middleware (request never forwarded):
 curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:8080/v1/messages \
   -H "Content-Type: application/json" \
   -d '{"model":"claude-opus-4-5","max_tokens":1,"messages":[]}'    # expect 401
+
+# With a valid token → middleware passes and forwards upstream. With no
+# Anthropic credential attached, Anthropic itself replies 401 with body
+# {"error":{"message":"x-api-key header is required"}} — proof the request
+# reached upstream. Look at the BODY, not just the code: a middleware 401
+# has no body; an upstream 401 carries the Anthropic error JSON. The server
+# log also emits a `proxy.forward` line only for the forwarded (valid-token)
+# request.
+curl -s -w "\nHTTP %{http_code}\n" -X POST http://127.0.0.1:8080/v1/messages \
+  -H "X-LLM-Tracker-Token: <token>" -H "Content-Type: application/json" \
+  -d '{"model":"claude-opus-4-5","max_tokens":1,"messages":[]}'
 ```
 
 ### 4. Expose via Cloudflare Tunnel

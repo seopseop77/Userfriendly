@@ -52,6 +52,28 @@ No source code is touched — only `LLMTRACK_DATABASE_URL` is repointed.
 
 (commit 909e039)
 
+### Checkpoint 2 — live local bring-up + verification (operator box)
+
+Docker Engine 29.5.2 + Compose v5.1.4 installed on the box. Stack brought
+up with `docker compose up -d --build` and verified end-to-end against the
+local Postgres (no Fly, no Supabase, no tunnel yet):
+
+- All four services healthy; `migrate` exited 0; `alembic_version` ==
+  `0023_view_session_id` (head). pgvector migrations (0010/0012) applied via
+  the `pgvector/pgvector:pg16` image; pg_cron migrations (0009/0011) ran
+  without error (gated → skipped scheduling).
+- `llm_tracker_app` RLS role present (self-created by migration 0005).
+- `llm-tracker-server tokens issue --org demo` wrote one `orgs` + one
+  `api_tokens` row to the local DB → DB writes confirmed.
+- Auth: no-token POST /v1/messages → middleware 401 (no forward); valid-token
+  POST → `proxy.forward` logged + forwarded to api.anthropic.com, which
+  replied 401 "x-api-key header is required" (upstream, not middleware).
+
+Found + fixed two doc errors in `docs/deploy-selfhost.md`: the CLI is
+`llm-tracker-server` (not `llm-tracker`), and the auth check's expected
+codes/explanation (valid token forwards upstream; distinguish by body/log,
+not status code). (commit hash: pending)
+
 ## Decisions
 
 - **Self-host everything (topology 1) over keeping Fly + local DB** —
@@ -88,22 +110,27 @@ $ python3 -c "import yaml; d=yaml.safe_load(open('docker-compose.yml')); print(l
   `CREATE EXTENSION IF NOT EXISTS vector` → requires the pgvector image
   (handled).
 
-**Not yet verified (requires the operator's machine):** `docker compose up`
-end-to-end, `alembic upgrade head` against the real local DB, tunnel
-reachability, and one live exchange landing a `plugin_analytics` row.
+**Verified live on the box (CP2)**: `docker compose up` end-to-end, schema
+at head against the real local DB, RLS role, token issuance writing to the
+local DB, and the auth middleware (reject without token / forward with
+token).
+
+**Not yet verified**: tunnel reachability from off-box, and one live
+exchange (real Anthropic key) landing a `plugin_analytics` row.
 
 ## What's left / known limits
 
-Operator-driven steps (need sudo / interactive browser auth — see
+Done (CP2): steps 1–3 below — Docker installed, stack up, schema/auth
+verified locally.
+
+Remaining operator-driven steps (need interactive browser auth — see
 `docs/deploy-selfhost.md`):
 
-1. Install Docker Engine + Compose plugin, and cloudflared.
-2. `cp selfhost.env.example .env`; set `POSTGRES_PASSWORD`.
-3. `docker compose up -d --build` → verify `/healthz` on :8080 and :8000.
 4. `cloudflared tunnel login/create/route` → public hostnames for server
-   and signup; set `PUBLIC_SERVER_URL`; `docker compose up -d` to refresh.
-5. Issue a token; repoint a client with `claude-manage setup <TOKEN>
-   --server-url https://<host>`; confirm a `plugin_analytics` row.
+   and signup; set `PUBLIC_SERVER_URL` in `.env`; `docker compose up -d` to
+   refresh the signup success-page URL.
+5. Repoint a client with `claude-manage setup <TOKEN> --server-url
+   https://<host>`; run one real exchange; confirm a `plugin_analytics` row.
 6. Tear down the Fly apps + Supabase project once the cutover is confirmed.
 
 Known limits: no off-box backups yet (ADR-0042 open question); retention
@@ -111,11 +138,14 @@ not running (pg_cron absent — host-cron DELETE if needed).
 
 ## Handoff
 
-Repo scaffolding (ADR-0042 + compose + env example + deploy guide) is in
-place and committed. The next session — or the operator — executes the
-six steps above starting with **installing Docker + cloudflared on the
-box**, then `docker compose up -d --build`. Nothing further can be verified
-in-repo; the remaining work is on the machine.
+The stack is **running and verified locally** on the box (CP2): server
+:8080 + signup :8000 + Postgres, schema at head, auth working, demo token
+issued. Everything keys off the local DB; no Fly/Supabase involved.
+
+Next single step: **set up the Cloudflare Tunnel** (step 4 — needs an
+interactive `cloudflared tunnel login` in a browser) to expose the server
+and signup hostnames, then set `PUBLIC_SERVER_URL` and repoint a client to
+confirm a live `plugin_analytics` row. See `docs/deploy-selfhost.md §4–5`.
 
 ## Suggestions (untouched)
 

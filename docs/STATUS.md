@@ -15,7 +15,7 @@
 
 `docs/worklog/2026-06-02-local-storage-migration.md` — migrate storage from
 Supabase to a self-hosted local box (ADR-0042, supersedes ADR-0022).
-**Repo scaffolding done; machine-side execution pending.**
+**Stack up + verified locally; Cloudflare Tunnel + client cutover pending.**
 
 ## Recent commits (last 5)
 
@@ -27,19 +27,22 @@ Supabase to a self-hosted local box (ADR-0042, supersedes ADR-0022).
 
 ## Where we paused
 
-Decided topology 1 (self-host server + signup + Postgres on the operator
-box, expose only auth'd HTTP via Cloudflare Tunnel; ADR-0042). Authored the
-repo artifacts: `docker-compose.yml`, `selfhost.env.example`,
-`docs/deploy-selfhost.md`, ADR-0042. No source code changed — DB repoint is
-purely `LLMTRACK_DATABASE_URL`. The box has no docker/postgres/cloudflared
-yet, so nothing is live-verified.
+Topology 1 (ADR-0042) is **running and verified locally** on the box:
+`docker compose up` brought up server :8080 + signup :8000 + Postgres
+(pgvector image), `migrate` reached head (0023), RLS role present, demo
+token issued (wrote to local DB), auth middleware verified (reject w/o
+token, forward w/ token). No Fly/Supabase involved. No source code changed
+— DB repoint is purely `LLMTRACK_DATABASE_URL`. Docker is reachable in this
+session without sudo.
 
 ## Next single step
 
-On the box: install Docker Engine + Compose plugin and cloudflared, then
-`cp selfhost.env.example .env`, set `POSTGRES_PASSWORD`, and
-`docker compose up -d --build`. Verify `/healthz` on :8080 and :8000. Full
-step list in `docs/deploy-selfhost.md` / the active worklog's "What's left".
+Set up the **Cloudflare Tunnel** (`docs/deploy-selfhost.md §4`) — needs an
+interactive `cloudflared tunnel login` (browser) by the operator — to
+expose the server + signup hostnames. Then set `PUBLIC_SERVER_URL` in
+`.env`, `docker compose up -d`, repoint a client (`claude-manage setup
+<TOKEN> --server-url https://<host>`), and confirm a live
+`plugin_analytics` row.
 
 ---
 

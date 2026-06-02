@@ -50,7 +50,7 @@ No source code is touched — only `LLMTRACK_DATABASE_URL` is repointed.
   cloudflared), `docker compose up`, token issuance, Cloudflare Tunnel
   setup, client repoint, ops (backup/retention/upgrade).
 
-(commit hash: pending — see git log)
+(commit 909e039)
 
 ## Decisions
 

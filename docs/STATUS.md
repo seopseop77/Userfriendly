@@ -19,7 +19,7 @@ Supabase to a self-hosted local box (ADR-0042, supersedes ADR-0022).
 
 ## Recent commits (last 5)
 
-- (pending) infra: self-host compose + ADR-0042 + deploy-selfhost guide
+- `909e039` infra: self-host stack on local Postgres (ADR-0042)
 - `87bc575` docs: fully close session-id track
 - `a9a8878` docs: 0023 view-session_id follow-up worklog/STATUS
 - `62f56b3` storage: surface session_id in plugin_analytics_with_messages

@@ -9,35 +9,37 @@
 
 ---
 
-**Last updated**: 2026-05-31
+**Last updated**: 2026-06-02
 
 ## Active worklog
 
-_None active._ Last closed:
-`docs/worklog/2026-05-30-session-id-extraction.md` (session_id capture +
-ADR-0041 session-scoped grouping + view exposure — all deployed and
-live-verified 2026-05-31).
+`docs/worklog/2026-06-02-local-storage-migration.md` — migrate storage from
+Supabase to a self-hosted local box (ADR-0042, supersedes ADR-0022).
+**Repo scaffolding done; machine-side execution pending.**
 
 ## Recent commits (last 5)
 
+- (pending) infra: self-host compose + ADR-0042 + deploy-selfhost guide
 - `87bc575` docs: fully close session-id track
 - `a9a8878` docs: 0023 view-session_id follow-up worklog/STATUS
 - `62f56b3` storage: surface session_id in plugin_analytics_with_messages
 - `fbd2da9` docs: close session-id track (deployed + verified)
-- `25539f8` analytics-sink: scope conversation grouping by session id (ADR-0041)
 
 ## Where we paused
 
-session-id track **fully closed** (deployed + live-verified 2026-05-31):
-capture (0022), session-scoped grouping (ADR-0041), and `session_id`
-exposed in `plugin_analytics_with_messages` (0023). Nothing pending.
+Decided topology 1 (self-host server + signup + Postgres on the operator
+box, expose only auth'd HTTP via Cloudflare Tunnel; ADR-0042). Authored the
+repo artifacts: `docker-compose.yml`, `selfhost.env.example`,
+`docs/deploy-selfhost.md`, ADR-0042. No source code changed — DB repoint is
+purely `LLMTRACK_DATABASE_URL`. The box has no docker/postgres/cloudflared
+yet, so nothing is live-verified.
 
 ## Next single step
 
-No active track — awaiting the next request. Optional follow-up on file
-(not started): session-level rollup queries (cost/drift across an agent
-tree) on top of the now-exposed `session_id` — see the closed worklog's
-Suggestions.
+On the box: install Docker Engine + Compose plugin and cloudflared, then
+`cp selfhost.env.example .env`, set `POSTGRES_PASSWORD`, and
+`docker compose up -d --build`. Verify `/healthz` on :8080 and :8000. Full
+step list in `docs/deploy-selfhost.md` / the active worklog's "What's left".
 
 ---
 

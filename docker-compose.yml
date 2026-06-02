@@ -1,0 +1,85 @@
+# docker-compose.yml — Local self-host of the llm-tracker stack (ADR-0042).
+#
+# Supersedes the Fly.io + Supabase deployment (ADR-0022). Postgres data
+# never leaves this box: the `db` port is not published, and the server /
+# signup ports bind to 127.0.0.1 only. The public edge is a Cloudflare
+# Tunnel (cloudflared) that connects out to localhost:8080 / :8000 — see
+# docs/deploy-selfhost.md.
+#
+# Usage:
+#   cp selfhost.env.example .env      # then edit the two values
+#   docker compose up -d --build
+#
+# Reuses the existing per-service Dockerfiles unchanged.
+
+services:
+  db:
+    # pgvector image so the scope_guard migrations (0010/0012) apply
+    # cleanly; the extension is present but scope_guard stays disabled
+    # (LLMTRACK_PLUGINS_DISABLED below). pg_cron is intentionally absent —
+    # the retention migrations are gated and skip with a NOTICE (ADR-0042).
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: llm_tracker
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: llm_tracker
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Reachable only on the compose network — never published to the host.
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U llm_tracker -d llm_tracker"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      LLMTRACK_DATABASE_URL: postgresql+asyncpg://llm_tracker:${POSTGRES_PASSWORD}@db:5432/llm_tracker
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      LLMTRACK_DATABASE_URL: postgresql+asyncpg://llm_tracker:${POSTGRES_PASSWORD}@db:5432/llm_tracker
+      LLMTRACK_PLUGINS_DISABLED: scope_guard
+      LLMTRACK_LOG_LEVEL: INFO
+      LLMTRACK_KEYWORD_BLOCK_LIST: no_response
+    # Bind to loopback only; Cloudflare Tunnel fronts the public edge.
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  signup:
+    build:
+      context: packages/llm_tracker_signup
+      dockerfile: Dockerfile
+    environment:
+      LLMTRACK_DATABASE_URL: postgresql+asyncpg://llm_tracker:${POSTGRES_PASSWORD}@db:5432/llm_tracker
+      # Public URL participants are told to point claude-manage at — i.e.
+      # the server's Cloudflare Tunnel hostname.
+      LLMTRACK_PROXY_SERVER_URL: ${PUBLIC_SERVER_URL:?set PUBLIC_SERVER_URL in .env}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:

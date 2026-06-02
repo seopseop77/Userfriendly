@@ -88,3 +88,9 @@ forwarding). Postgres is never published off the box.
 - **Retention**: with pg_cron absent, the 6-month deletion jobs do not run.
   If retention is required, schedule a host-cron `DELETE` (see
   `docs/deploy.md §Data collection & privacy` for the column predicates).
+- **DB storage path (deferred)**: data currently lives in the Docker-managed
+  named volume `userfriendly_pgdata`
+  (`/var/lib/docker/volumes/userfriendly_pgdata/_data`). The operator intends
+  to pin it to an explicit fixed path (bind mount, possibly a dedicated data
+  disk) but has not chosen the path. Cheapest to switch now while data is
+  disposable. Tracked in `docs/worklog/2026-06-02-local-storage-migration.md`.

@@ -148,6 +148,25 @@ Remaining operator-driven steps (need interactive browser auth — see
 Known limits: no off-box backups yet (ADR-0042 open question); retention
 not running (pg_cron absent — host-cron DELETE if needed).
 
+**Deferred decision — DB storage path.** The Postgres data currently lives
+in the Docker-managed named volume `userfriendly_pgdata`
+(`/var/lib/docker/volumes/userfriendly_pgdata/_data`, on the NVMe root
+`/dev/nvme0n1p2`). The operator wants to switch to an **explicit fixed
+path** (bind mount, e.g. a dedicated data disk or `~/llm-tracker-data`) but
+has not chosen the path yet. Easiest to do *now* while data is disposable
+(fresh-start) — swap the `pgdata` named volume for a bind mount in
+`docker-compose.yml` and re-run `docker compose up`. Revisit when the target
+path/disk is decided. Capacity is not a concern (see CP-note below).
+
+**Capacity (asked 2026-06-02, no action taken)** — for a handful of research
+participants this box is wildly over-provisioned: Fly ran the same stack on
+512MB/1 shared vCPU (scaled to zero); this box is 24 cores / 60GB, idle
+usage ~157MB / 0.1% CPU. `exchanges` stores metadata only; `plugin_analytics`
+stores per-turn deltas (not full history), so disk grows slowly (~10s–100s
+of MB/day even at 30 heavy users; bounded further if retention is enabled).
+The only real-world pinch at peak concurrency is home upstream bandwidth,
+not CPU/RAM/disk.
+
 ## Handoff
 
 The stack is **running and verified locally** on the box (CP2): server

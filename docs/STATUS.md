@@ -39,6 +39,11 @@ Pre-staged (CP3, domain not needed): `cloudflared` 2026.5.2 installed to
 `~/.local/bin`; compose given `restart: unless-stopped` (survives reboot,
 docker daemon already enabled on boot).
 
+Deferred decisions (recorded, not blocking): pin the DB to an explicit
+fixed storage path (currently the Docker named volume
+`userfriendly_pgdata`); backups; retention. See the active worklog. Capacity
+is a non-issue for the participant scale.
+
 ## Next single step
 
 **Blocked on the operator buying a Cloudflare-managed domain.** Once it

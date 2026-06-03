@@ -94,18 +94,19 @@ for `signup.userfriendly.win`; keys added to `.env` (gitignored) and
 key + `api.js` render on GET `/`; a bogus-token POST `/register` → **400**
 with 0 rows in `participant_registrations`/`orgs` (rejected before insert).
 
-Remaining:
+**Go-live checklist complete (2026-06-04).**
 
-1. **Uptime alerting** (operator, external) — add a monitor (e.g. UptimeRobot
-   free, 5-min) on `https://llm-tracker.userfriendly.win/healthz` and
-   `https://signup.userfriendly.win/healthz`, with a down-alert.
-2. **One real browser signup** (operator) — open `signup.userfriendly.win`,
-   solve the captcha, register, and confirm the success page + token. The
-   happy path was verified with Cloudflare test keys; a single real
-   browser-solved submission is the final human confirmation.
+1. **Uptime alerting** — DONE. Operator added UptimeRobot monitors. First
+   checks reported 405 because UptimeRobot defaults to HEAD and `/healthz`
+   was GET-only; fixed by allowing GET+HEAD on `/healthz` in both server and
+   signup (commit 8718a82). Verified through the tunnel: HEAD → 200 on both.
+2. **One real browser signup** — DONE. Operator completed a real
+   browser-solved signup; `participant_registrations` is at 2 rows,
+   confirming the captcha happy path writes through end-to-end.
 
 Still deferred from ADR-0042 (not blocking): retention (pg_cron absent);
 read-only analyst DB role.
 
-Next single step: set up the UptimeRobot monitors, then do one real browser
-signup to confirm the end-to-end happy path before sharing the link widely.
+Next single step: none blocking — the public signup link is ready to share.
+Backups, captcha, uptime monitoring, and a real end-to-end signup are all
+verified.

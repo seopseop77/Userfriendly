@@ -60,12 +60,12 @@ read-only analyst DB role. Capacity is a non-issue for the participant scale.
 
 ## Next single step
 
-**Before sharing the link widely** (operator actions): (1) Add an UptimeRobot
-monitor on both `/healthz` endpoints with a down-alert. (2) Do one real
-browser signup on `signup.userfriendly.win` (solve captcha → confirm token)
-as the final happy-path check. Backups + captcha are done. See
-`docs/worklog/2026-06-03-signup-hardening.md` Handoff. (Client cutover step 5
-effectively done — `plugin_analytics` has rows.)
+**Go-live ready — the public signup link can be shared.** All hardening
+done and verified: daily off-disk backups, Turnstile captcha (live, bots
+rejected pre-insert), UptimeRobot monitors (HEAD `/healthz` → 200 after the
+GET+HEAD fix), and a real browser signup that wrote through end-to-end
+(`participant_registrations` = 2). See
+`docs/worklog/2026-06-03-signup-hardening.md`. No blocking next step.
 
 ---
 

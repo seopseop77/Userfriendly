@@ -13,18 +13,19 @@
 
 ## Active worklog
 
-`docs/worklog/2026-06-02-local-storage-migration.md` — migrate storage from
-Supabase to a self-hosted local box (ADR-0042, supersedes ADR-0022).
-**Stack live + publicly reachable via Cloudflare Tunnel on `userfriendly.win`;
-only client cutover (step 5) remains.**
+`docs/worklog/2026-06-03-signup-hardening.md` — go-live readiness before
+sharing the public signup link: **daily off-disk backups (done) + optional
+Cloudflare Turnstile captcha (code done, keys pending) + uptime ping
+(operator action)**. Migration track:
+`docs/worklog/2026-06-02-local-storage-migration.md`.
 
 ## Recent commits (last 5)
 
+- `0e090ee` signup: add optional Cloudflare Turnstile captcha
+- `97093b4` infra: add daily pg_dump backup to separate disk
+- `b00e29a` infra: pin DB to bind mount /srv/llm-tracker/pgdata
 - `79eaf60` docs: refresh STATUS recent-commits list
 - `ddad009` signup: trim form to name + email + institution
-- `f8035d6` docs: tunnel live on userfriendly.win (CP4)
-- `e32ea95` docs: record deferred DB storage-path decision + capacity note
-- `7d98039` docs: record CP3 pre-staging (cloudflared + restart policy)
 
 ## Where we paused
 
@@ -47,17 +48,23 @@ mount **`/srv/llm-tracker/pgdata`** (cold-copy, counts verified identical;
 old `userfriendly_pgdata` volume kept as backup). See
 `docs/worklog/2026-06-03-db-storage-path.md`.
 
-Still deferred (recorded, not blocking): backups (`pg_dump` cron); retention;
+**Go-live hardening (2026-06-03)**: daily backups now run via `scripts/
+pg-backup.sh` (user cron 03:30 → `/srv/backup/llm-tracker/` on sdb, a
+physically separate disk; 14-day retention; restorable dump verified).
+Optional Turnstile captcha code is merged but **disabled until the operator
+sets `LLMTRACK_TURNSTILE_*` keys** in `.env`.
+
+Still deferred (recorded, not blocking): retention (pg_cron absent);
 read-only analyst DB role. Capacity is a non-issue for the participant scale.
 
 ## Next single step
 
-**Client cutover (step 5).** Issue a real-org token (`docker compose exec
-server llm-tracker-server tokens issue --org <org>`), then on a participant
-PC `claude-manage setup <TOKEN> --server-url
-https://llm-tracker.userfriendly.win`, run one real exchange, and confirm a
-`plugin_analytics` row lands. Then step 6: tear down Fly + Supabase. Steps in
-`docs/deploy-selfhost.md §5`.
+**Two operator actions before sharing the link** (both external/account-bound):
+(1) Cloudflare → Turnstile → create a widget for `signup.userfriendly.win`,
+put the site key + secret in `.env`, `docker compose up -d signup` — then I
+verify live. (2) Add an UptimeRobot monitor on both `/healthz` endpoints with
+a down-alert. See `docs/worklog/2026-06-03-signup-hardening.md` Handoff.
+(Client cutover step 5 is effectively done — `plugin_analytics` has rows.)
 
 ---
 

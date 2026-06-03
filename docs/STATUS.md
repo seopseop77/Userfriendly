@@ -20,11 +20,11 @@ only client cutover (step 5) remains.**
 
 ## Recent commits (last 5)
 
-- `909e039` infra: self-host stack on local Postgres (ADR-0042)
-- `87bc575` docs: fully close session-id track
-- `a9a8878` docs: 0023 view-session_id follow-up worklog/STATUS
-- `62f56b3` storage: surface session_id in plugin_analytics_with_messages
-- `fbd2da9` docs: close session-id track (deployed + verified)
+- `ddad009` signup: trim form to name + email + institution
+- `f8035d6` docs: tunnel live on userfriendly.win (CP4)
+- `e32ea95` docs: record deferred DB storage-path decision + capacity note
+- `7d98039` docs: record CP3 pre-staging (cloudflared + restart policy)
+- `4473b3c` infra: restart: unless-stopped on db/server/signup
 
 ## Where we paused
 

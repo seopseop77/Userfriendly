@@ -81,6 +81,11 @@ services:
       # Public URL participants are told to point claude-manage at — i.e.
       # the server's Cloudflare Tunnel hostname.
       LLMTRACK_PROXY_SERVER_URL: ${PUBLIC_SERVER_URL:?set PUBLIC_SERVER_URL in .env}
+      # Cloudflare Turnstile (anti-bot). Leave unset to disable; set both to
+      # enforce captcha on the signup form. Keys come from the Cloudflare
+      # dashboard (Turnstile → add site for the signup hostname).
+      LLMTRACK_TURNSTILE_SITE_KEY: ${LLMTRACK_TURNSTILE_SITE_KEY:-}
+      LLMTRACK_TURNSTILE_SECRET: ${LLMTRACK_TURNSTILE_SECRET:-}
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:

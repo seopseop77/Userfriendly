@@ -31,6 +31,7 @@ from llm_tracker_signup.registration import (
     DuplicateEmailError,
     register_participant,
 )
+from llm_tracker_signup.turnstile import verify_turnstile
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 
@@ -53,6 +54,8 @@ def create_app(
             eng = create_async_engine(resolved.database_url)
         app.state.engine = eng
         app.state.proxy_server_url = resolved.proxy_server_url
+        app.state.turnstile_site_key = resolved.turnstile_site_key
+        app.state.turnstile_secret = resolved.turnstile_secret
         try:
             yield
         finally:
@@ -67,17 +70,31 @@ def create_app(
     )
     templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 
+    def render_form(
+        request: Request,
+        *,
+        error: str | None = None,
+        form: dict[str, str] | None = None,
+        status_code: int = 200,
+    ):
+        return templates.TemplateResponse(
+            request,
+            "register.html",
+            {
+                "error": error,
+                "form": form or {},
+                "turnstile_site_key": request.app.state.turnstile_site_key,
+            },
+            status_code=status_code,
+        )
+
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.get("/")
     async def register_form(request: Request):
-        return templates.TemplateResponse(
-            request,
-            "register.html",
-            {"error": None, "form": {}},
-        )
+        return render_form(request)
 
     @app.post("/register")
     async def register_submit(
@@ -85,7 +102,23 @@ def create_app(
         name: Annotated[str, Form()],
         email: Annotated[str, Form()],
         institution: Annotated[str, Form()],
+        cf_turnstile_response: Annotated[
+            str, Form(alias="cf-turnstile-response")
+        ] = "",
     ):
+        form = {"name": name, "email": email, "institution": institution}
+
+        secret = request.app.state.turnstile_secret
+        if secret:
+            client_ip = request.client.host if request.client else None
+            if not await verify_turnstile(secret, cf_turnstile_response, client_ip):
+                return render_form(
+                    request,
+                    error="Captcha verification failed. Please try again.",
+                    form=form,
+                    status_code=400,
+                )
+
         try:
             plaintext = await register_participant(
                 request.app.state.engine,
@@ -94,17 +127,10 @@ def create_app(
                 institution=institution,
             )
         except DuplicateEmailError:
-            return templates.TemplateResponse(
+            return render_form(
                 request,
-                "register.html",
-                {
-                    "error": "This email is already registered.",
-                    "form": {
-                        "name": name,
-                        "email": email,
-                        "institution": institution,
-                    },
-                },
+                error="This email is already registered.",
+                form=form,
                 status_code=400,
             )
 

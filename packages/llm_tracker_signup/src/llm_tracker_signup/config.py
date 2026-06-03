@@ -19,5 +19,9 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     database_url: str = ""
     proxy_server_url: str = ""
+    # Cloudflare Turnstile (anti-bot). Verification is enforced only when
+    # `turnstile_secret` is set; with both empty the form behaves as before.
+    turnstile_site_key: str = ""
+    turnstile_secret: str = ""
 
     model_config = {"env_prefix": "LLMTRACK_"}

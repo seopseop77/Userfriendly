@@ -129,3 +129,41 @@ async def test_register_route_duplicate_email_returns_400(app_with_engine) -> No
         )
     assert second.status_code == 400
     assert "already registered" in second.text.lower()
+
+
+async def test_get_root_renders_turnstile_widget_when_configured() -> None:
+    settings = Settings(database_url="ignored-test", turnstile_site_key="site-key-123")
+    app = create_app(settings=settings, engine=object())  # engine not used for GET /
+    async with app.router.lifespan_context(app), await _client_for(app) as client:
+        resp = await client.get("/")
+    body = resp.text
+    assert 'class="cf-turnstile"' in body
+    assert 'data-sitekey="site-key-123"' in body
+    assert "challenges.cloudflare.com/turnstile/v0/api.js" in body
+
+
+async def test_register_rejects_failed_turnstile(monkeypatch) -> None:
+    # Secret set → verification enforced. Stub it to fail; the request must
+    # be rejected before any DB work (engine is a dummy that is never used).
+    async def _fail(secret, token, remote_ip):
+        return False
+
+    monkeypatch.setattr("llm_tracker_signup.app.verify_turnstile", _fail)
+    settings = Settings(
+        database_url="ignored-test",
+        turnstile_site_key="site-key-123",
+        turnstile_secret="secret-123",
+    )
+    app = create_app(settings=settings, engine=object())
+    async with app.router.lifespan_context(app), await _client_for(app) as client:
+        resp = await client.post(
+            "/register",
+            data={
+                "name": "Bot",
+                "email": "bot@example.com",
+                "institution": "Bot Inc.",
+                "cf-turnstile-response": "bad-token",
+            },
+        )
+    assert resp.status_code == 400
+    assert "captcha" in resp.text.lower()

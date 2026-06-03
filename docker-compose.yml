@@ -25,7 +25,12 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: llm_tracker
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # Explicit host path (bind mount) outside any user home, under the
+      # FHS service-data tree, so the DB files are discoverable for ops /
+      # backup. The directory is owned by the postgres container uid (999),
+      # mode 0700 — these files are postgres-internal and never read
+      # directly. See ADR-0042 + docs/worklog/2026-06-03-db-storage-path.md.
+      - /srv/llm-tracker/pgdata:/var/lib/postgresql/data
     # Reachable only on the compose network — never published to the host.
     expose:
       - "5432"
@@ -83,6 +88,3 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-
-volumes:
-  pgdata:

@@ -88,9 +88,12 @@ forwarding). Postgres is never published off the box.
 - **Retention**: with pg_cron absent, the 6-month deletion jobs do not run.
   If retention is required, schedule a host-cron `DELETE` (see
   `docs/deploy.md §Data collection & privacy` for the column predicates).
-- **DB storage path (deferred)**: data currently lives in the Docker-managed
-  named volume `userfriendly_pgdata`
-  (`/var/lib/docker/volumes/userfriendly_pgdata/_data`). The operator intends
-  to pin it to an explicit fixed path (bind mount, possibly a dedicated data
-  disk) but has not chosen the path. Cheapest to switch now while data is
-  disposable. Tracked in `docs/worklog/2026-06-02-local-storage-migration.md`.
+- **DB storage path (resolved 2026-06-03)**: moved from the Docker-managed
+  named volume to an explicit **bind mount at `/srv/llm-tracker/pgdata`**
+  (FHS service-data tree, outside any user home). Data was cold-copied
+  preserving postgres uid 999 / mode 0700; row counts verified identical
+  before/after. The old `userfriendly_pgdata` volume is retained as a
+  backup. Note: the storage *path* is independent of analyst access — the
+  data files are postgres-internal (0700, never read directly); multi-user
+  analysis is a DB-role/connection concern, deferred. See
+  `docs/worklog/2026-06-03-db-storage-path.md`.

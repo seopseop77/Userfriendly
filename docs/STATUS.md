@@ -20,11 +20,11 @@ only client cutover (step 5) remains.**
 
 ## Recent commits (last 5)
 
+- `79eaf60` docs: refresh STATUS recent-commits list
 - `ddad009` signup: trim form to name + email + institution
 - `f8035d6` docs: tunnel live on userfriendly.win (CP4)
 - `e32ea95` docs: record deferred DB storage-path decision + capacity note
 - `7d98039` docs: record CP3 pre-staging (cloudflared + restart policy)
-- `4473b3c` infra: restart: unless-stopped on db/server/signup
 
 ## Where we paused
 
@@ -42,10 +42,13 @@ Persistence: cloudflared installed as a **systemd service**
 `restart: unless-stopped` + daemon enabled on boot. Whole stack survives
 reboot.
 
-Deferred decisions (recorded, not blocking): pin the DB to an explicit
-fixed storage path (currently the Docker named volume
-`userfriendly_pgdata`); backups; retention. See the active worklog. Capacity
-is a non-issue for the participant scale.
+DB storage path **resolved (2026-06-03)**: data moved to an explicit bind
+mount **`/srv/llm-tracker/pgdata`** (cold-copy, counts verified identical;
+old `userfriendly_pgdata` volume kept as backup). See
+`docs/worklog/2026-06-03-db-storage-path.md`.
+
+Still deferred (recorded, not blocking): backups (`pg_dump` cron); retention;
+read-only analyst DB role. Capacity is a non-issue for the participant scale.
 
 ## Next single step
 

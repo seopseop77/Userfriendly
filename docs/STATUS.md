@@ -51,20 +51,21 @@ old `userfriendly_pgdata` volume kept as backup). See
 **Go-live hardening (2026-06-03)**: daily backups now run via `scripts/
 pg-backup.sh` (user cron 03:30 → `/srv/backup/llm-tracker/` on sdb, a
 physically separate disk; 14-day retention; restorable dump verified).
-Optional Turnstile captcha code is merged but **disabled until the operator
-sets `LLMTRACK_TURNSTILE_*` keys** in `.env`.
+Turnstile captcha is **LIVE** on `signup.userfriendly.win` (keys in
+`.env`, gitignored; verified through the tunnel — bogus submit → 400, no DB
+row).
 
 Still deferred (recorded, not blocking): retention (pg_cron absent);
 read-only analyst DB role. Capacity is a non-issue for the participant scale.
 
 ## Next single step
 
-**Two operator actions before sharing the link** (both external/account-bound):
-(1) Cloudflare → Turnstile → create a widget for `signup.userfriendly.win`,
-put the site key + secret in `.env`, `docker compose up -d signup` — then I
-verify live. (2) Add an UptimeRobot monitor on both `/healthz` endpoints with
-a down-alert. See `docs/worklog/2026-06-03-signup-hardening.md` Handoff.
-(Client cutover step 5 is effectively done — `plugin_analytics` has rows.)
+**Before sharing the link widely** (operator actions): (1) Add an UptimeRobot
+monitor on both `/healthz` endpoints with a down-alert. (2) Do one real
+browser signup on `signup.userfriendly.win` (solve captcha → confirm token)
+as the final happy-path check. Backups + captcha are done. See
+`docs/worklog/2026-06-03-signup-hardening.md` Handoff. (Client cutover step 5
+effectively done — `plugin_analytics` has rows.)
 
 ---
 

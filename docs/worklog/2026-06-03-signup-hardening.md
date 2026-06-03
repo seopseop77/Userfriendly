@@ -88,18 +88,24 @@ the box is down). Left as an operator step (account-bound); see Handoff.
 
 ## What's left / Handoff
 
-Code is in place; two operator actions remain (both external/account-bound):
+**Captcha is now LIVE** (2026-06-03). Operator created a Turnstile widget
+for `signup.userfriendly.win`; keys added to `.env` (gitignored) and
+`signup` recreated. Verified through the public tunnel: widget + real site
+key + `api.js` render on GET `/`; a bogus-token POST `/register` → **400**
+with 0 rows in `participant_registrations`/`orgs` (rejected before insert).
 
-1. **Activate captcha.** Cloudflare dashboard → Turnstile → add a widget for
-   the signup hostname (`signup.userfriendly.win`) → copy site key + secret
-   into `.env` (`LLMTRACK_TURNSTILE_SITE_KEY`, `LLMTRACK_TURNSTILE_SECRET`)
-   → `docker compose up -d signup`. Until then captcha is off (form works).
-2. **Uptime alerting.** Add an external monitor (e.g. UptimeRobot free, 5-min
-   interval) on `https://llm-tracker.userfriendly.win/healthz` and
-   `https://signup.userfriendly.win/healthz`, with email/Slack alert on down.
+Remaining:
+
+1. **Uptime alerting** (operator, external) — add a monitor (e.g. UptimeRobot
+   free, 5-min) on `https://llm-tracker.userfriendly.win/healthz` and
+   `https://signup.userfriendly.win/healthz`, with a down-alert.
+2. **One real browser signup** (operator) — open `signup.userfriendly.win`,
+   solve the captcha, register, and confirm the success page + token. The
+   happy path was verified with Cloudflare test keys; a single real
+   browser-solved submission is the final human confirmation.
 
 Still deferred from ADR-0042 (not blocking): retention (pg_cron absent);
 read-only analyst DB role.
 
-Next single step: operator sets Turnstile keys → I wire `.env` + recreate +
-verify live; then set up the UptimeRobot monitors.
+Next single step: set up the UptimeRobot monitors, then do one real browser
+signup to confirm the end-to-end happy path before sharing the link widely.

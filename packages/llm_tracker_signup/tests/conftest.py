@@ -11,7 +11,7 @@ the subprocess invocation is a filesystem path lookup, not a Python
 import.
 
 Tests that need a real DB request the `db_engine` fixture; tests
-without that dependency (the PDF extraction unit tests) run
+without that dependency (the pure-template render tests) run
 unconditionally. The fixture skips cleanly when
 `LLMTRACK_TEST_DATABASE_URL` is unset, matching the proxy server's
 conftest convention.

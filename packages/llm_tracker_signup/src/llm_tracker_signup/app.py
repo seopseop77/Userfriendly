@@ -4,7 +4,7 @@ Routes:
 
 * ``GET /healthz`` — Fly health-check target.
 * ``GET /`` — serves the public registration form.
-* ``POST /register`` — accepts the form (multipart, optional PDF),
+* ``POST /register`` — accepts the form (name, email, institution),
   issues a token, redirects to ``/success?token=…``.
 * ``GET /success`` — renders the token + the three install steps
   for ``claude-manage``.
@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import FastAPI, Form, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -29,7 +29,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from llm_tracker_signup.config import Settings
 from llm_tracker_signup.registration import (
     DuplicateEmailError,
-    extract_pdf_text,
     register_participant,
 )
 
@@ -86,23 +85,13 @@ def create_app(
         name: Annotated[str, Form()],
         email: Annotated[str, Form()],
         institution: Annotated[str, Form()],
-        research_description: Annotated[str, Form()],
-        proposal: Annotated[UploadFile | None, File()] = None,
     ):
-        proposal_text: str | None = None
-        if proposal is not None and proposal.filename:
-            body = await proposal.read()
-            extracted = extract_pdf_text(body)
-            proposal_text = extracted or None
-
         try:
             plaintext = await register_participant(
                 request.app.state.engine,
                 name=name,
                 email=email,
                 institution=institution,
-                research_description=research_description,
-                proposal_text=proposal_text,
             )
         except DuplicateEmailError:
             return templates.TemplateResponse(
@@ -114,7 +103,6 @@ def create_app(
                         "name": name,
                         "email": email,
                         "institution": institution,
-                        "research_description": research_description,
                     },
                 },
                 status_code=400,

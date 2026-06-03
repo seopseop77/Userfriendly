@@ -10,20 +10,11 @@ from __future__ import annotations
 
 import httpx
 import pytest
-from fpdf import FPDF
 from httpx import ASGITransport
 from llm_tracker_signup.app import create_app
 from llm_tracker_signup.config import Settings
 from llm_tracker_signup.registration import PLAINTEXT_PREFIX
 from sqlalchemy.ext.asyncio import AsyncEngine
-
-
-def _make_pdf_bytes(text: str = "Test research proposal") -> bytes:
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("helvetica", size=12)
-    pdf.cell(40, 10, text)
-    return bytes(pdf.output())
 
 
 async def _client_for(app) -> httpx.AsyncClient:
@@ -51,8 +42,7 @@ async def test_get_root_renders_form() -> None:
     body = resp.text
     assert "<form" in body
     assert 'name="email"' in body
-    assert 'name="research_description"' in body
-    assert 'accept=".pdf"' in body
+    assert 'name="institution"' in body
 
 
 async def test_healthz_ok() -> None:
@@ -110,34 +100,11 @@ async def test_register_route_creates_registration(app_with_engine) -> None:
                 "name": "Carol",
                 "email": "carol@example.com",
                 "institution": "Carol Univ.",
-                "research_description": "Studying scope guard plugin effectiveness.",
-            },
-            files={
-                "proposal": (
-                    "proposal.pdf",
-                    _make_pdf_bytes("Carol's proposal."),
-                    "application/pdf",
-                ),
             },
         )
     assert resp.status_code == 303
     location = resp.headers["location"]
     assert location.startswith(f"/success?token={PLAINTEXT_PREFIX}")
-
-
-async def test_register_route_no_proposal_pdf(app_with_engine) -> None:
-    async with await _client_for(app_with_engine) as client:
-        resp = await client.post(
-            "/register",
-            data={
-                "name": "Dave",
-                "email": "dave@example.com",
-                "institution": "Dave Univ.",
-                "research_description": "No proposal attached.",
-            },
-        )
-    assert resp.status_code == 303
-    assert resp.headers["location"].startswith(f"/success?token={PLAINTEXT_PREFIX}")
 
 
 async def test_register_route_duplicate_email_returns_400(app_with_engine) -> None:
@@ -148,7 +115,6 @@ async def test_register_route_duplicate_email_returns_400(app_with_engine) -> No
                 "name": "Eve",
                 "email": "eve@example.com",
                 "institution": "Eve Univ.",
-                "research_description": "First attempt.",
             },
         )
         assert first.status_code == 303
@@ -159,7 +125,6 @@ async def test_register_route_duplicate_email_returns_400(app_with_engine) -> No
                 "name": "Eve Again",
                 "email": "eve@example.com",
                 "institution": "Eve Univ. 2",
-                "research_description": "Second attempt should fail.",
             },
         )
     assert second.status_code == 400

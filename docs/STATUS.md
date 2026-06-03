@@ -9,13 +9,14 @@
 
 ---
 
-**Last updated**: 2026-06-02
+**Last updated**: 2026-06-03
 
 ## Active worklog
 
 `docs/worklog/2026-06-02-local-storage-migration.md` — migrate storage from
 Supabase to a self-hosted local box (ADR-0042, supersedes ADR-0022).
-**Stack up + verified locally; Cloudflare Tunnel + client cutover pending.**
+**Stack live + publicly reachable via Cloudflare Tunnel on `userfriendly.win`;
+only client cutover (step 5) remains.**
 
 ## Recent commits (last 5)
 
@@ -27,17 +28,19 @@ Supabase to a self-hosted local box (ADR-0042, supersedes ADR-0022).
 
 ## Where we paused
 
-Topology 1 (ADR-0042) is **running and verified locally** on the box:
-`docker compose up` brought up server :8080 + signup :8000 + Postgres
-(pgvector image), `migrate` reached head (0023), RLS role present, demo
-token issued (wrote to local DB), auth middleware verified (reject w/o
-token, forward w/ token). No Fly/Supabase involved. No source code changed
-— DB repoint is purely `LLMTRACK_DATABASE_URL`. Docker is reachable in this
-session without sudo.
+Topology 1 (ADR-0042) is **live and publicly reachable** (CP4). On the box:
+server :8080 + signup :8000 + Postgres (pgvector image), schema at head
+(0023), RLS role present, auth middleware verified. Fronted by a **Cloudflare
+Tunnel on `userfriendly.win`**: `llm-tracker.userfriendly.win` → server,
+`signup.userfriendly.win` → signup (tunnel id
+`694232c8-b020-469a-bdb7-dd6135c4f801`). Off-box `/healthz` 200 on both;
+no-token `POST /v1/messages` → 401 through the tunnel. `PUBLIC_SERVER_URL`
+set to the server host. No Fly/Supabase involved; no source code changed.
 
-Pre-staged (CP3, domain not needed): `cloudflared` 2026.5.2 installed to
-`~/.local/bin`; compose given `restart: unless-stopped` (survives reboot,
-docker daemon already enabled on boot).
+Persistence: cloudflared installed as a **systemd service**
+(`/etc/cloudflared/config.yml`, `active`+`enabled`); Docker stack has
+`restart: unless-stopped` + daemon enabled on boot. Whole stack survives
+reboot.
 
 Deferred decisions (recorded, not blocking): pin the DB to an explicit
 fixed storage path (currently the Docker named volume
@@ -46,12 +49,12 @@ is a non-issue for the participant scale.
 
 ## Next single step
 
-**Blocked on the operator buying a Cloudflare-managed domain.** Once it
-exists: `cloudflared tunnel login` → `tunnel create llm-tracker` → route
-`<domain>` (server) + `signup.<domain>` (signup) → set `PUBLIC_SERVER_URL`
-in `.env`, `docker compose up -d` → repoint a client (`claude-manage setup
-<TOKEN> --server-url https://<domain>`) → confirm a live `plugin_analytics`
-row. Steps in `docs/deploy-selfhost.md §4–5`.
+**Client cutover (step 5).** Issue a real-org token (`docker compose exec
+server llm-tracker-server tokens issue --org <org>`), then on a participant
+PC `claude-manage setup <TOKEN> --server-url
+https://llm-tracker.userfriendly.win`, run one real exchange, and confirm a
+`plugin_analytics` row lands. Then step 6: tear down Fly + Supabase. Steps in
+`docs/deploy-selfhost.md §5`.
 
 ---
 

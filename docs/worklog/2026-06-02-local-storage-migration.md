@@ -86,6 +86,35 @@ Operator deferred buying the domain; pre-staged the domain-independent work:
   already `systemctl enabled`, so the stack now survives a host reboot.
   (commit 4473b3c)
 
+### Checkpoint 4 — Cloudflare Tunnel live + persistent (operator box)
+
+Operator created a Cloudflare account and bought the domain
+**`userfriendly.win`**. Brought the public edge up (step 4):
+
+- `cloudflared tunnel login` (browser, operator) → `~/.cloudflared/cert.pem`.
+- `cloudflared tunnel create llm-tracker` → tunnel id
+  `694232c8-b020-469a-bdb7-dd6135c4f801` + credentials JSON.
+- Wrote `~/.cloudflared/config.yml` ingress (subdomain split):
+  `llm-tracker.userfriendly.win` → `127.0.0.1:8080` (server),
+  `signup.userfriendly.win` → `127.0.0.1:8000` (signup), else 404.
+- `cloudflared tunnel route dns` added both CNAMEs.
+- Set `PUBLIC_SERVER_URL=https://llm-tracker.userfriendly.win` in `.env`;
+  `docker compose up -d` recreated signup with the real URL.
+- **Persistence**: copied the binary to `/usr/local/bin/cloudflared` and
+  `config.yml`+credentials to `/etc/cloudflared/` (credentials-file path
+  rewritten to `/etc/cloudflared/`), then `cloudflared service install` +
+  `systemctl enable --now cloudflared`. Service is `active` + `enabled` →
+  survives reboot alongside the Docker stack.
+
+Verified off-box through the tunnel: `GET /healthz` 200 on both hostnames;
+`POST /v1/messages` with no token → middleware 401
+(`missing X-LLM-Tracker-Token header`), proving the auth path is reachable
+end-to-end (edge → server → auth). Single cloudflared process (the service);
+the temporary foreground tunnel used for the first check was stopped.
+
+(no repo commit for the tunnel itself — config + credentials live outside
+the repo under `~/.cloudflared` and `/etc/cloudflared`; `.env` is gitignored)
+
 ## Decisions
 
 - **Self-host everything (topology 1) over keeping Fly + local DB** —
@@ -127,22 +156,25 @@ at head against the real local DB, RLS role, token issuance writing to the
 local DB, and the auth middleware (reject without token / forward with
 token).
 
-**Not yet verified**: tunnel reachability from off-box, and one live
-exchange (real Anthropic key) landing a `plugin_analytics` row.
+**Verified live through the tunnel (CP4)**: both hostnames answer
+`/healthz` 200 off-box; no-token `POST /v1/messages` → middleware 401. The
+cloudflared systemd service is `active`+`enabled`.
+
+**Not yet verified**: one live exchange (real Anthropic key, via a repointed
+`claude-manage` client) landing a `plugin_analytics` row (step 5).
 
 ## What's left / known limits
 
-Done (CP2): steps 1–3 below — Docker installed, stack up, schema/auth
-verified locally.
+Done (CP2): steps 1–3 — Docker installed, stack up, schema/auth verified
+locally. Done (CP4): step 4 — tunnel live on `userfriendly.win`, persistent
+via systemd, verified off-box.
 
-Remaining operator-driven steps (need interactive browser auth — see
-`docs/deploy-selfhost.md`):
+Remaining:
 
-4. `cloudflared tunnel login/create/route` → public hostnames for server
-   and signup; set `PUBLIC_SERVER_URL` in `.env`; `docker compose up -d` to
-   refresh the signup success-page URL.
 5. Repoint a client with `claude-manage setup <TOKEN> --server-url
-   https://<host>`; run one real exchange; confirm a `plugin_analytics` row.
+   https://llm-tracker.userfriendly.win`; run one real exchange; confirm a
+   `plugin_analytics` row. (Issue a real-org token first:
+   `docker compose exec server llm-tracker-server tokens issue --org <org>`.)
 6. Tear down the Fly apps + Supabase project once the cutover is confirmed.
 
 Known limits: no off-box backups yet (ADR-0042 open question); retention
@@ -169,14 +201,20 @@ not CPU/RAM/disk.
 
 ## Handoff
 
-The stack is **running and verified locally** on the box (CP2): server
-:8080 + signup :8000 + Postgres, schema at head, auth working, demo token
-issued. Everything keys off the local DB; no Fly/Supabase involved.
+The full stack is **live and publicly reachable** (CP4): server :8080 +
+signup :8000 + Postgres on the box, fronted by a Cloudflare Tunnel on
+`userfriendly.win` (`llm-tracker.` → server, `signup.` → signup). The
+cloudflared systemd service and the Docker stack both auto-start on reboot.
+Off-box `/healthz` 200 on both hosts; proxy auth (401 without token) verified
+through the tunnel. No Fly/Supabase involved.
 
-Next single step: **set up the Cloudflare Tunnel** (step 4 — needs an
-interactive `cloudflared tunnel login` in a browser) to expose the server
-and signup hostnames, then set `PUBLIC_SERVER_URL` and repoint a client to
-confirm a live `plugin_analytics` row. See `docs/deploy-selfhost.md §4–5`.
+Next single step: **client cutover (step 5)** — issue a real-org token
+(`docker compose exec server llm-tracker-server tokens issue --org <org>`),
+then on a participant PC `claude-manage setup <TOKEN> --server-url
+https://llm-tracker.userfriendly.win`, run one real exchange, and confirm a
+`plugin_analytics` row lands (`docker compose exec db psql -U llm_tracker -d
+llm_tracker -c "SELECT count(*) FROM plugin_analytics;"`). Then step 6: tear
+down Fly + Supabase. See `docs/deploy-selfhost.md §5`.
 
 ## Suggestions (untouched)
 
